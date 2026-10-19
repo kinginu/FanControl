@@ -217,7 +217,13 @@ runtime behaviour. Still to verify on hardware:
   app checks the helper via `setCodeSigningRequirement`; needs real Team ID signing).
 - Whether 8 s (`callTimeout`) is a good bound for a helper reply on a loaded machine.
 - Whether Apple Silicon models accept `F<i>Md`/`F<i>Tg` writes as is, or need an extra unlock key
-  (`Ftst` is reported for some M1 models; it is not in the helper allowlist).
+  (`Ftst` is reported for some M1 models; it is not in the helper allowlist). On Mac14,9 (M2 Pro) /
+  macOS 26 `Ftst` does not exist; `F<i>Md` (`ui8 `, attr `0xd0`) and `F<i>Tg` (`flt `, attr `0xd4`)
+  carry the `0x40` write bit. No write has been attempted.
+
+SMC reads (the `SMCClient` path behind `FanControlManager` polling and `exportSMCDump()`) are verified
+on Mac14,9 / macOS 26 with the read-only `fancontrol-probe` executable (`swift run fancontrol-probe`,
+`--dump`, `--watch N`); results and per-model findings are in `docs/integration.md` §6 Phase 1.
 - Whether the provisional thresholds (alert 90 °C, emergency 95 °C, hysteresis 5 °C, sensor
   prefixes `Tp/Te/TC/Tg/TG`) suit each model (design doc §5.6).
 - Whether the SMC resets forced fans across sleep (the 5 s wake re-apply assumes it may).

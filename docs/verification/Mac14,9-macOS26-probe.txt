@@ -1,0 +1,290 @@
+model: Mac14,9  cpu: Apple M2 Pro
+os: Version 26.5.2 (Build 25F84)
+SMC keys (#KEY): 2299
+
+== Fan keys (raw) ==
+  FNum  [ui8 ] size=1 attr=80  02  => number(2.0)
+  FS!_  <absent: keyNotFound("FS! ")>
+  Ftst  <absent: keyNotFound("Ftst")>
+  F0ID  <absent: keyNotFound("F0ID")>
+  F0Mn  [flt ] size=4 attr=84  00 d0 10 45  => number(2317.0)
+  F0Mx  [flt ] size=4 attr=85  00 80 d4 45  => number(6800.0)
+  F0Ac  [flt ] size=4 attr=84  00 00 00 00  => number(0.0)
+  F0Tg  [flt ] size=4 attr=d4  00 00 00 00  => number(0.0)
+  F0Md  [ui8 ] size=1 attr=d0  00  => number(0.0)
+  F0Sf  [ui16] size=2 attr=80  00 00  => number(0.0)
+  F1ID  <absent: keyNotFound("F1ID")>
+  F1Mn  [flt ] size=4 attr=84  00 d0 10 45  => number(2317.0)
+  F1Mx  [flt ] size=4 attr=85  00 80 d4 45  => number(6800.0)
+  F1Ac  [flt ] size=4 attr=84  00 00 00 00  => number(0.0)
+  F1Tg  [flt ] size=4 attr=d4  00 00 00 00  => number(0.0)
+  F1Md  [ui8 ] size=1 attr=d0  00  => number(0.0)
+  F1Sf  [ui16] size=2 attr=80  00 00  => number(0.0)
+
+== Temperature discovery ==
+plausible temperature keys found: 259
+
+== Fans (2) @ 2026-10-19T07:56:21Z ==
+  idx  name              min    max    current  target  mode
+    0  Fan 1              2317   6800        0       0  automatic
+    1  Fan 2              2317   6800        0       0  automatic
+== Temperatures (259 of 259 keys) ==
+  TAOL  [flt ]    30.62 °C  Sensor TAOL
+  TB0T  [flt ]    33.10 °C  Battery
+  TB1T  [flt ]    33.00 °C  Battery 1T
+  TB2T  [flt ]    33.10 °C  Battery 2T
+  TCDX  [flt ]    61.61 °C  Sensor TCDX
+  TCHP  [flt ]    40.95 °C  Sensor TCHP
+  TCMb  [flt ]    63.40 °C  Sensor TCMb
+  TCMz  [flt ]    77.97 °C  Sensor TCMz
+  TD00  [flt ]    29.08 °C  Sensor TD00
+  TD01  [flt ]    29.23 °C  Sensor TD01
+  TD02  [flt ]    29.52 °C  Sensor TD02
+  TD03  [flt ]    28.98 °C  Sensor TD03
+  TD04  [flt ]    28.87 °C  Sensor TD04
+  TD10  [flt ]    29.65 °C  Sensor TD10
+  TD11  [flt ]    30.01 °C  Sensor TD11
+  TD12  [flt ]    30.14 °C  Sensor TD12
+  TD13  [flt ]    29.97 °C  Sensor TD13
+  TD14  [flt ]    29.51 °C  Sensor TD14
+  TD20  [flt ]    30.13 °C  Sensor TD20
+  TD21  [flt ]    31.41 °C  Sensor TD21
+  TD22  [flt ]    31.90 °C  Sensor TD22
+  TD23  [flt ]    32.75 °C  Sensor TD23
+  TD24  [flt ]    30.90 °C  Sensor TD24
+  TDBP  [flt ]    33.38 °C  Sensor TDBP
+  TDEL  [flt ]    33.50 °C  Sensor TDEL
+  TDER  [flt ]    33.25 °C  Sensor TDER
+  TDTC  [flt ]    33.56 °C  Sensor TDTC
+  TDTP  [flt ]    33.56 °C  Sensor TDTP
+  TDVx  [flt ]    32.75 °C  Sensor TDVx
+  TDeL  [flt ]    33.31 °C  Sensor TDeL
+  TDeR  [flt ]    33.00 °C  Sensor TDeR
+  TG0B  [ioft]    33.10 °C  Sensor TG0B
+  TG0C  [ioft]    33.00 °C  Sensor TG0C
+  TG0H  [ioft]    33.00 °C  Sensor TG0H
+  TG0V  [ioft]    33.10 °C  Sensor TG0V
+  TG1B  [ioft]    33.00 °C  Sensor TG1B
+  TG2B  [ioft]    33.10 °C  Sensor TG2B
+  TH0a  [flt ]    38.12 °C  Storage 0a
+  TH0b  [flt ]    38.20 °C  Storage 0b
+  TH0x  [flt ]    38.20 °C  Storage 0x
+  TH1a  [flt ]     0.00 °C  Storage 1a
+  TH1b  [flt ]     0.00 °C  Storage 1b
+  TMVR  [flt ]    41.22 °C  Memory VR
+  TPD0  [flt ]    44.59 °C  Sensor TPD0
+  TPD1  [flt ]    44.68 °C  Sensor TPD1
+  TPD2  [flt ]    44.68 °C  Sensor TPD2
+  TPD3  [flt ]    44.86 °C  Sensor TPD3
+  TPD4  [flt ]    45.39 °C  Sensor TPD4
+  TPD5  [flt ]    45.12 °C  Sensor TPD5
+  TPD6  [flt ]    45.30 °C  Sensor TPD6
+  TPD7  [flt ]    44.86 °C  Sensor TPD7
+  TPD8  [flt ]    44.94 °C  Sensor TPD8
+  TPD9  [flt ]    44.86 °C  Sensor TPD9
+  TPDX  [flt ]    45.39 °C  Sensor TPDX
+  TPDa  [flt ]    45.12 °C  Sensor TPDa
+  TPDb  [flt ]    44.94 °C  Sensor TPDb
+  TPDc  [flt ]    44.94 °C  Sensor TPDc
+  TPDd  [flt ]    44.86 °C  Sensor TPDd
+  TPDe  [flt ]    45.12 °C  Sensor TPDe
+  TPDf  [flt ]    44.59 °C  Sensor TPDf
+  TPDg  [flt ]    44.77 °C  Sensor TPDg
+  TPDh  [flt ]    44.68 °C  Sensor TPDh
+  TPDi  [flt ]    44.94 °C  Sensor TPDi
+  TPDj  [flt ]    44.94 °C  Sensor TPDj
+  TPMP  [flt ]    44.86 °C  Sensor TPMP
+  TPSP  [flt ]    46.72 °C  Sensor TPSP
+  TPVD  [flt ]    45.62 °C  Sensor TPVD
+  TR0Z  [ioft]    51.85 °C  Sensor TR0Z
+  TR1d  [ioft]    45.99 °C  Sensor TR1d
+  TR2d  [ioft]    46.19 °C  Sensor TR2d
+  TRD0  [flt ]    51.07 °C  Sensor TRD0
+  TRD1  [flt ]    50.36 °C  Sensor TRD1
+  TRD2  [flt ]    50.63 °C  Sensor TRD2
+  TRD3  [flt ]    50.63 °C  Sensor TRD3
+  TRD4  [flt ]    50.72 °C  Sensor TRD4
+  TRD5  [flt ]    50.01 °C  Sensor TRD5
+  TRD6  [flt ]    50.45 °C  Sensor TRD6
+  TRD7  [flt ]    50.36 °C  Sensor TRD7
+  TRD8  [flt ]    50.09 °C  Sensor TRD8
+  TRD9  [flt ]    50.27 °C  Sensor TRD9
+  TRDX  [flt ]    51.07 °C  Sensor TRDX
+  TRDa  [flt ]    51.07 °C  Sensor TRDa
+  TRDb  [flt ]    50.54 °C  Sensor TRDb
+  TRDc  [flt ]    49.92 °C  Sensor TRDc
+  TRDd  [flt ]    50.27 °C  Sensor TRDd
+  TRDe  [flt ]    50.80 °C  Sensor TRDe
+  TRDf  [flt ]    49.92 °C  Sensor TRDf
+  TRDg  [flt ]    50.27 °C  Sensor TRDg
+  TRDh  [flt ]    49.83 °C  Sensor TRDh
+  TRDi  [flt ]    50.80 °C  Sensor TRDi
+  TRDj  [flt ]    50.45 °C  Sensor TRDj
+  TS0P  [flt ]    45.07 °C  Sensor TS0P
+  TSVR  [flt ]    45.53 °C  Sensor TSVR
+  TSWR  [flt ]    43.24 °C  Sensor TSWR
+  TSXR  [flt ]    45.87 °C  Sensor TSXR
+  TVA0  [flt ]    28.22 °C  Sensor TVA0
+  TVD0  [flt ]    69.33 °C  Sensor TVD0
+  TVM0  [flt ]    67.04 °C  Sensor TVM0
+  TVM2  [flt ]    25.68 °C  Sensor TVM2
+  TVM3  [flt ]     4.16 °C  Sensor TVM3
+  TVM4  [flt ]     0.36 °C  Sensor TVM4
+  TVMC  [flt ]    49.08 °C  Sensor TVMC
+  TVMD  [flt ]     0.00 °C  Sensor TVMD
+  TVMO  [flt ]    17.95 °C  Sensor TVMO
+  TVS0  [flt ]    36.46 °C  Sensor TVS0
+  TVS1  [flt ]    36.80 °C  Sensor TVS1
+  TVS2  [flt ]    36.80 °C  Sensor TVS2
+  TVSx  [flt ]    36.80 °C  Sensor TVSx
+  TVV0  [flt ]    58.12 °C  Sensor TVV0
+  TVm0  [flt ]    67.04 °C  Sensor TVm0
+  TVm1  [flt ]    67.04 °C  Sensor TVm1
+  TW0P  [flt ]    45.27 °C  Wireless
+  Ta0C  [flt ]     0.00 °C  Sensor Ta0C
+  Ta0D  [flt ]     9.50 °C  Sensor Ta0D
+  Ta0G  [flt ]     0.00 °C  Sensor Ta0G
+  Ta0H  [flt ]     9.50 °C  Sensor Ta0H
+  Ta0K  [flt ]     0.00 °C  Sensor Ta0K
+  Ta0L  [flt ]     9.50 °C  Sensor Ta0L
+  Ta0V  [flt ]    52.97 °C  Sensor Ta0V
+  Ta0W  [flt ]    62.47 °C  Sensor Ta0W
+  TaLP  [flt ]    44.24 °C  Airflow Left P
+  TaLT  [flt ]    39.51 °C  Airflow Left T
+  TaLW  [flt ]    36.97 °C  Airflow Left W
+  TaRF  [flt ]    44.11 °C  Airflow Right F
+  TaRT  [flt ]    34.51 °C  Airflow Right T
+  TaRW  [flt ]    34.19 °C  Airflow Right W
+  TaTP  [flt ]    46.95 °C  Sensor TaTP
+  Te04  [flt ]    53.13 °C  CPU Efficiency Core 04
+  Te05  [flt ]    59.23 °C  CPU Efficiency Core 05
+  Te06  [flt ]    61.98 °C  CPU Efficiency Core 06
+  Tf00  [flt ]    -0.09 °C  Sensor Tf00
+  Tf01  [flt ]     8.25 °C  Sensor Tf01
+  Tf02  [flt ]   -12.23 °C  Sensor Tf02
+  Tf04  [flt ]    61.61 °C  Sensor Tf04
+  Tf05  [flt ]    21.66 °C  Sensor Tf05
+  Tf06  [flt ]    94.50 °C  Sensor Tf06
+  Tf08  [flt ]    59.74 °C  Sensor Tf08
+  Tf09  [flt ]    61.20 °C  Sensor Tf09
+  Tf0A  [flt ]    60.28 °C  Sensor Tf0A
+  Tf0B  [flt ]    60.85 °C  Sensor Tf0B
+  Tf0E  [flt ]    61.61 °C  Sensor Tf0E
+  Tf10  [flt ]     0.01 °C  Sensor Tf10
+  Tf11  [flt ]    12.23 °C  Sensor Tf11
+  Tf12  [flt ]   -12.80 °C  Sensor Tf12
+  Tf14  [flt ]    53.36 °C  Sensor Tf14
+  Tf15  [flt ]    21.66 °C  Sensor Tf15
+  Tf16  [flt ]    79.42 °C  Sensor Tf16
+  Tf18  [flt ]    52.28 °C  Sensor Tf18
+  Tf19  [flt ]    53.11 °C  Sensor Tf19
+  Tf1A  [flt ]    52.35 °C  Sensor Tf1A
+  Tf1B  [flt ]    52.70 °C  Sensor Tf1B
+  Tf1E  [flt ]    53.37 °C  Sensor Tf1E
+  Tf20  [flt ]     0.02 °C  Sensor Tf20
+  Tf21  [flt ]     5.69 °C  Sensor Tf21
+  Tf22  [flt ]   -11.38 °C  Sensor Tf22
+  Tf24  [flt ]    55.77 °C  Sensor Tf24
+  Tf25  [flt ]    22.23 °C  Sensor Tf25
+  Tf26  [flt ]    79.42 °C  Sensor Tf26
+  Tf28  [flt ]    55.76 °C  Sensor Tf28
+  Tf29  [flt ]    54.46 °C  Sensor Tf29
+  Tf2A  [flt ]    54.06 °C  Sensor Tf2A
+  Tf2B  [flt ]    54.27 °C  Sensor Tf2B
+  Tf2E  [flt ]    55.77 °C  Sensor Tf2E
+  Tg0W  [flt ]    51.97 °C  GPU 0W
+  Tg0X  [flt ]    58.54 °C  GPU 0X
+  Tg0e  [flt ]    52.13 °C  GPU 0e
+  Tg0f  [flt ]    57.83 °C  GPU 0f
+  Tg0i  [flt ]    52.39 °C  GPU 0i
+  Tg0j  [flt ]    58.09 °C  GPU 0j
+  Tg1g  [flt ]    52.02 °C  GPU 1g
+  Tg1h  [flt ]    57.72 °C  GPU 1h
+  Tg1k  [flt ]    52.12 °C  GPU 1k
+  Tg1l  [flt ]    57.82 °C  GPU 1l
+  Th00  [flt ]    51.64 °C  Sensor Th00
+  Th01  [flt ]    51.64 °C  Sensor Th01
+  Th02  [flt ]    51.98 °C  Sensor Th02
+  Th04  [flt ]    52.94 °C  Sensor Th04
+  Th05  [flt ]    52.94 °C  Sensor Th05
+  Th06  [flt ]    53.98 °C  Sensor Th06
+  Th08  [flt ]    52.81 °C  Sensor Th08
+  Th09  [flt ]    52.81 °C  Sensor Th09
+  Th0A  [flt ]    54.30 °C  Sensor Th0A
+  Th0C  [flt ]    51.89 °C  Sensor Th0C
+  Th0D  [flt ]    51.89 °C  Sensor Th0D
+  Th0E  [flt ]    52.66 °C  Sensor Th0E
+  Th0G  [flt ]    53.55 °C  Sensor Th0G
+  Th0H  [flt ]    53.55 °C  Sensor Th0H
+  Th0I  [flt ]    56.42 °C  Sensor Th0I
+  Tp00  [flt ]    56.31 °C  CPU Performance Core 00
+  Tp01  [flt ]    63.01 °C  CPU Performance Core 01
+  Tp02  [flt ]    77.13 °C  CPU Performance Core 02
+  Tp04  [flt ]    55.78 °C  CPU Performance Core 04
+  Tp05  [flt ]    60.41 °C  CPU Performance Core 05
+  Tp06  [flt ]    67.76 °C  CPU Performance Core 06
+  Tp08  [flt ]    56.70 °C  CPU Performance Core 08
+  Tp09  [flt ]    63.40 °C  CPU Performance Core 09
+  Tp0A  [flt ]    77.97 °C  CPU Performance Core 0A
+  Tp0C  [flt ]    55.92 °C  CPU Performance Core 0C
+  Tp0D  [flt ]    60.56 °C  CPU Performance Core 0D
+  Tp0E  [flt ]    69.20 °C  CPU Performance Core 0E
+  Tp0W  [flt ]    54.48 °C  CPU Performance Core 0W
+  Tp0X  [flt ]    61.18 °C  CPU Performance Core 0X
+  Tp0Y  [flt ]    75.80 °C  CPU Performance Core 0Y
+  Tp0a  [flt ]    53.53 °C  CPU Performance Core 0a
+  Tp0b  [flt ]    58.16 °C  CPU Performance Core 0b
+  Tp0c  [flt ]    65.67 °C  CPU Performance Core 0c
+  Tp0e  [flt ]    53.06 °C  CPU Performance Core 0e
+  Tp0f  [flt ]    59.76 °C  CPU Performance Core 0f
+  Tp0g  [flt ]    63.63 °C  CPU Performance Core 0g
+  Tp0i  [flt ]    53.23 °C  CPU Performance Core 0i
+  Tp0j  [flt ]    57.86 °C  CPU Performance Core 0j
+  Tp0k  [flt ]    61.50 °C  CPU Performance Core 0k
+  Tp16  [flt ]    53.43 °C  CPU Performance Core 16
+  Tp17  [flt ]    59.46 °C  CPU Performance Core 17
+  Tp18  [flt ]    62.46 °C  CPU Performance Core 18
+  Tp1A  [flt ]    54.33 °C  CPU Performance Core 1A
+  Tp1B  [flt ]    61.03 °C  CPU Performance Core 1B
+  Tp1C  [flt ]    76.05 °C  CPU Performance Core 1C
+  Tp1E  [flt ]    52.52 °C  CPU Performance Core 1E
+  Tp1F  [flt ]    57.15 °C  CPU Performance Core 1F
+  Tp1G  [flt ]    65.64 °C  CPU Performance Core 1G
+  Tp1I  [flt ]    53.94 °C  CPU Performance Core 1I
+  Tp1J  [flt ]    60.64 °C  CPU Performance Core 1J
+  Tp1K  [flt ]    71.18 °C  CPU Performance Core 1K
+  Tp1M  [flt ]    53.77 °C  CPU Performance Core 1M
+  Tp1N  [flt ]    58.40 °C  CPU Performance Core 1N
+  Tp1O  [flt ]    64.34 °C  CPU Performance Core 1O
+  Tp1g  [flt ]    52.65 °C  CPU Performance Core 1g
+  Tp1h  [flt ]    59.35 °C  CPU Performance Core 1h
+  Tp1i  [flt ]    69.33 °C  CPU Performance Core 1i
+  Tp1k  [flt ]    51.92 °C  CPU Performance Core 1k
+  Tp1l  [flt ]    56.55 °C  CPU Performance Core 1l
+  Tp1m  [flt ]    60.65 °C  CPU Performance Core 1m
+  Tp1o  [flt ]    53.12 °C  CPU Performance Core 1o
+  Tp1p  [flt ]    59.82 °C  CPU Performance Core 1p
+  Tp1q  [flt ]    63.52 °C  CPU Performance Core 1q
+  Tp1s  [flt ]    52.81 °C  CPU Performance Core 1s
+  Tp1t  [flt ]    57.44 °C  CPU Performance Core 1t
+  Tp1u  [flt ]    59.50 °C  CPU Performance Core 1u
+  Tp2G  [flt ]    53.10 °C  CPU Performance Core 2G
+  Tp2H  [flt ]    59.14 °C  CPU Performance Core 2H
+  Tp2I  [flt ]    62.03 °C  CPU Performance Core 2I
+  Ts0C  [flt ]    53.60 °C  Skin/Palm Rest 0C
+  Ts0D  [flt ]    53.60 °C  Skin/Palm Rest 0D
+  Ts0E  [flt ]    55.09 °C  Skin/Palm Rest 0E
+  Ts0P  [flt ]    31.75 °C  Palm Rest
+  Ts0e  [flt ]    52.86 °C  Skin/Palm Rest 0e
+  Ts0f  [flt ]    52.86 °C  Skin/Palm Rest 0f
+  Ts0g  [flt ]    53.92 °C  Skin/Palm Rest 0g
+  Ts1P  [flt ]    30.38 °C  Skin/Palm Rest 1P
+  Tz11  [flt ]     0.00 °C  Sensor Tz11
+  Tz12  [flt ]     0.00 °C  Sensor Tz12
+  Tz13  [flt ]     0.00 °C  Sensor Tz13
+  Tz14  [flt ]     0.00 °C  Sensor Tz14
+  Tz15  [flt ]     0.00 °C  Sensor Tz15
+  Tz16  [flt ]     0.00 °C  Sensor Tz16
+  Tz17  [flt ]     0.00 °C  Sensor Tz17
+  Tz18  [flt ]     0.00 °C  Sensor Tz18
+  Tz1j  [flt ]     0.00 °C  Sensor Tz1j
