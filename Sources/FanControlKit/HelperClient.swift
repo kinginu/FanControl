@@ -262,7 +262,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
 /// Resumes a checked continuation at most once (XPC may call both the reply
 /// block and the error handler in edge cases, e.g. invalidation mid-reply, and
 /// the call timeout races the reply).
-final class ResumeOnce<T>: @unchecked Sendable {
+final class ResumeOnce<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<T, Error>?
     private var resumeHandler: (@Sendable () -> Void)?
