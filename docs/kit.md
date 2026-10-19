@@ -3,8 +3,8 @@
 `FanControlKit` is what DynamicNotch links. It depends on `FanControlCore` (models, codec, engine),
 `FanControlSMC` (in-process, read-only IOKit SMC access) and `FanControlXPC` (helper protocol).
 Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (internal),
-`HelperInstallStatus`, `HelperConnectionState`, `FanControlKitInfo` and the `Notification.Name`
-constants is wrapped in `#if os(macOS)`.
+`HelperInstallStatus`, `HelperConnectionState`, `FanControlKitInfo`, `FanControlPlatform` and the
+`Notification.Name` constants is wrapped in `#if os(macOS)`.
 
 | File | Contents |
 |---|---|
@@ -13,6 +13,7 @@ constants is wrapped in `#if os(macOS)`.
 | `HelperClient.swift` | async `NSXPCConnection` client (`SMCWriter`), `HelperConnectionState` |
 | `FanWriteStrategy.swift` | pure per-platform write sequences (unit-tested on Linux) |
 | `ApplyGenerationGate.swift` | pure drop rule for stale poll write batches (unit-tested on Linux) |
+| `FanControlPlatform.swift` | `isAppleSilicon` (`sysctl hw.optional.arm64`) and `defaultSafetyPolicy` |
 
 ## Threading model
 
@@ -27,7 +28,7 @@ constants is wrapped in `#if os(macOS)`.
   session flag, then runs the poll on a private serial `DispatchQueue` (`pollQueue`, QoS utility).
 - `pollQueue` owns the `SMCClient`, the discovered fans, the cached temperature key list
   (`SensorCatalog.discoverTemperatureSensors` runs once; later polls use `readTemperatures(keys:)`),
-  the `AlertEvaluator`, the `FanWriteStrategy`, the write-throttle baseline, the apply generation
+  the `AlertEvaluator`, the `TemperatureSampleFilter`, the `FanWriteStrategy`, the write-throttle baseline, the apply generation
   (`ApplyGenerationGate`) and its own copy of the monitoring flag.
 - Helper writes go through a FIFO `WriteSerializer` actor, so a write list (mode key first,
   then target) is never interleaved with another list.
@@ -44,8 +45,8 @@ constants is wrapped in `#if os(macOS)`.
 
 ## Polling and control
 
-Every poll reads `F<i>Ac`, `F<i>Tg` and the cached temperature keys, runs
-`AlertEvaluator` (high temperature with hysteresis; emergency latch with hysteresis; 0 RPM with
+Every poll reads `F<i>Ac`, `F<i>Tg` and the cached temperature keys, passes the temperatures
+through the `TemperatureSampleFilter` (below), runs `AlertEvaluator` (high temperature with hysteresis; emergency latch with hysteresis; 0 RPM with
 target > 0 for 3 polls = anomaly), and publishes. If (and only if) a write session is open, it
 also computes `FanControlEngine.plan(profile:fans:sensors:policy:isEmergency:)` and writes the
 result.
@@ -123,6 +124,31 @@ first `startMonitoring` or `openSMCSession`), all fans are set to automatic and 
 closed, waiting at most 2 s on the main thread. Independently, the helper restores the original value of every key
 written during the session when the client connection goes away.
 
+**Temperature sample filter** (`FanControlCore.TemperatureSampleFilter`): on Mac14,9 the `Tp*`
+(P-core) keys read either their real value or a fixed near-zero pattern (`0.00 / 6.70 / 8.43`,
+`0.00 / 4.63 / 5.32`, `0.00 / 6.03 / 7.43`), alternating per read or for a whole power-gated
+cluster. Every sensor batch (discovery, each poll, and the fresh read of a user apply) is filtered
+on `pollQueue` before alerts, `plan` and publishing, so `sensorReadings` (UI) and the planned
+targets see the same values. For keys starting with `Tp`/`Te`/`Tg`/`TC`, a finite sample below
+10 °C is rejected and replaced by the key's last accepted value for up to 5 consecutive rejections,
+then by the hottest accepted sample of the same prefix group in that batch, and passed through raw
+only if the whole group is implausible. Substitutes are always hotter than the rejected sample, so
+the emergency maximum can only rise and a sensor-linked fan never runs slower than without the
+filter; non-finite values still pass through (fail hot). Sudden drops above the floor are not
+rejected (real core temperatures fall 10-20 °C per poll when load stops). The keys substituted in
+the latest poll are published as `substitutedSensorKeys` (e.g. to dim them). The filter is reset
+when sensors are rediscovered (SMC reader reopened). Defaults are the static `default*`
+constants; the manager does not expose the configuration.
+
+**Safety policy selection:** `safetyPolicy` starts as `FanControlPlatform.defaultSafetyPolicy`
+= `SafetyPolicy.default(appleSilicon: FanControlPlatform.isAppleSilicon)`. On Apple Silicon the
+emergency prefixes are `Tp/Te/TC/Tg` (`TG*` excluded: on Mac14,9 those are `ioft` battery-area
+sensors at ~33 °C; the GPU is `Tg*`); on Intel they stay `Tp/Te/TC/Tg/TG` (`TG0P`/`TG0D` = GPU).
+`isAppleSilicon` uses `sysctl hw.optional.arm64` (true on Apple Silicon also under Rosetta), not
+`FanWriteStrategy`'s key-presence detection: `F<i>Md` also exists on some late Intel models and
+the strategy is only known after fan discovery. `SafetyPolicy.default` (static) is unchanged and
+keeps the full list; `SafetyPolicy`'s stored properties and Codable keys are unchanged.
+
 The persisted active profile is **not** re-applied automatically at launch (design doc §5.5 is
 still open): the session stays closed until the user acts.
 
@@ -148,7 +174,7 @@ the DynamicNotch drop-in UI this is `FanControlAlertCoordinator.syncManagerSetti
 | `pollingInterval` | 2.0 s | timer interval (clamped to 0.5...300 s); setting it reschedules the timer |
 | `reapplyProfileAfterWake` | `true` | `true`: 5 s wake re-apply; `false`: close an open session on wake |
 | `keepAlertsWhilePaused` | `true` | keep a slow poll while paused without a session (the drop-in coordinator mirrors `highTemperatureAlertEnabled \|\| fanAnomalyAlertEnabled`) |
-| `safetyPolicy` | `.default` | thresholds; taken per poll |
+| `safetyPolicy` | `FanControlPlatform.defaultSafetyPolicy` | thresholds; taken per poll. An app that persists its own policy should start from `SafetyPolicy.default(appleSilicon: FanControlPlatform.isAppleSilicon)` |
 | `clientTeamID` | `FanControlHelperConstants.teamIdentifierPlaceholder` | Team ID in the helper code-signing requirement checked on every new helper connection (forwards to `HelperClient.clientTeamID`); set before the first helper call unless the constant was replaced |
 
 `HelperClient.callTimeout` (default 8 s, `<= 0` disables) is set on the `HelperClient` passed to

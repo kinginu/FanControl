@@ -70,7 +70,12 @@ public final class FanControlManager: @unchecked Sendable {
     public private(set) var fans: [FanDevice] = []
     public private(set) var currentRPMs: [Int: Int] = [:]
     public private(set) var targetRPMs: [Int: Int] = [:]
+    /// Filtered by `TemperatureSampleFilter` (implausible near-zero CPU/GPU
+    /// samples replaced); the same values are fed to `FanControlEngine.plan`.
     public private(set) var sensorReadings: [SensorReading] = []
+    /// Keys whose value in `sensorReadings` was substituted by the
+    /// `TemperatureSampleFilter` in the latest poll (e.g. to dim them in the UI).
+    public private(set) var substitutedSensorKeys: Set<String> = []
     /// While a write session is open: the active profile's mode per fan.
     /// Otherwise: the mode detected from the SMC (`FanDiscovery.fanControlModes`).
     public private(set) var fanControlModes: [Int: FanControlMode] = [:]
@@ -111,7 +116,11 @@ public final class FanControlManager: @unchecked Sendable {
     public var pollingInterval: TimeInterval = 2.0 {
         didSet { if isMonitoring { scheduleTimer() } }
     }
-    public var safetyPolicy: SafetyPolicy = .default
+    /// Starts as `FanControlPlatform.defaultSafetyPolicy` (on Apple Silicon the
+    /// emergency prefixes exclude `TG`, which is a battery-area sensor there;
+    /// see `SafetyPolicy.defaultEmergencySensorPrefixes(appleSilicon:)`).
+    /// Not persisted by the kit.
+    public var safetyPolicy: SafetyPolicy = FanControlPlatform.defaultSafetyPolicy
     /// When `true` (default), the active profile is re-applied 5 s after the Mac
     /// wakes, if a write session is still open. The app mirrors its own setting
     /// (e.g. `FanControlGeneralSettings.reapplyProfileAfterWake`) into this.
@@ -190,6 +199,9 @@ public final class FanControlManager: @unchecked Sendable {
     @ObservationIgnored private var polledFans: [FanDevice] = []
     @ObservationIgnored private var sensorKeys: [String] = []
     @ObservationIgnored private var alertEvaluator = AlertEvaluator()
+    /// Applied to every sensor batch before alerts, planning and publishing;
+    /// reset whenever sensors are rediscovered.
+    @ObservationIgnored private var sampleFilter = TemperatureSampleFilter()
     /// Last successfully written state per fan (throttle baseline).
     @ObservationIgnored private var appliedTargets: [Int: FanTarget] = [:]
     @ObservationIgnored private var pollWriteInFlight = false
@@ -554,7 +566,7 @@ public final class FanControlManager: @unchecked Sendable {
                 // selection; their batches now carry a stale generation.
                 self.applyGate.advance()
                 try self.prepareReaderOnQueue()
-                let sensors = self.reader.map { SensorCatalog.readTemperatures(keys: self.sensorKeys, using: $0) } ?? []
+                let sensors = self.reader.map { self.readFilteredTemperaturesOnQueue(using: $0) } ?? []
                 // Same latch as the poll loop, so a user action cannot drop an
                 // active emergency override inside the hysteresis band.
                 let emergency = self.alertEvaluator.evaluateEmergency(sensors: sensors, policy: policy)
@@ -684,16 +696,25 @@ public final class FanControlManager: @unchecked Sendable {
             publishOnMain { $0.isSMCConnected = false }
             throw error
         }
-        let sensors = (try? SensorCatalog.discoverTemperatureSensors(using: client)) ?? []
+        let discovered = (try? SensorCatalog.discoverTemperatureSensors(using: client)) ?? []
         reader = client
-        sensorKeys = sensors.map(\.id)
+        sensorKeys = discovered.map(\.id)
         alertEvaluator = AlertEvaluator()
+        sampleFilter.reset()
+        let sensors = sampleFilter.filter(discovered)
+        let substituted = sampleFilter.substitutedKeys
         strategy = nil
         discoverFansOnQueue(using: client)
         publishOnMain { manager in
             manager.isSMCConnected = true
             manager.sensorReadings = sensors
+            manager.substitutedSensorKeys = substituted
         }
+    }
+
+    /// pollQueue only. Re-reads `sensorKeys` and runs them through `sampleFilter`.
+    private func readFilteredTemperaturesOnQueue(using reader: SMCReader) -> [SensorReading] {
+        sampleFilter.filter(SensorCatalog.readTemperatures(keys: sensorKeys, using: reader))
     }
 
     /// pollQueue only. Runs `FanDiscovery.discoverFans`; a failure is published
@@ -736,7 +757,8 @@ public final class FanControlManager: @unchecked Sendable {
         let fans = polledFans
         let current = FanDiscovery.readCurrentRPMs(fans: fans, using: reader)
         let targets = FanDiscovery.readTargetRPMs(fans: fans, using: reader)
-        let sensors = SensorCatalog.readTemperatures(keys: sensorKeys, using: reader)
+        let sensors = readFilteredTemperaturesOnQueue(using: reader)
+        let substituted = sampleFilter.substitutedKeys
         let highTemp = alertEvaluator.evaluateHighTemperature(sensors: sensors, policy: context.policy)
         // Evaluated every poll (session or not) so the latch's hysteresis state
         // is current when a session opens.
@@ -771,6 +793,7 @@ public final class FanControlManager: @unchecked Sendable {
             manager.currentRPMs = current
             manager.targetRPMs = targets
             manager.sensorReadings = sensors
+            manager.substitutedSensorKeys = substituted
             manager.fanControlModes = modes
             manager.highTempAlertActive = highTemp
             manager.emergencyOverrideActive = emergency

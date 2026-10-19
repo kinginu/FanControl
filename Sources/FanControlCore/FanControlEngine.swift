@@ -33,8 +33,33 @@ public struct SafetyPolicy: Codable, Hashable, Sendable {
         self.enforceHardwareMinimum = enforceHardwareMinimum
     }
 
-    /// The default policy.
+    /// The default policy. Its `emergencySensorPrefixes` is the
+    /// architecture-neutral list `["Tp", "Te", "TC", "Tg", "TG"]` (kept for
+    /// compatibility). Prefer `default(appleSilicon:)`, which drops prefixes
+    /// whose meaning differs between architectures.
     public static let `default` = SafetyPolicy()
+
+    /// Emergency/alert sensor prefixes for the given CPU architecture.
+    ///
+    /// - Intel (`appleSilicon == false`): `["Tp", "Te", "TC", "Tg", "TG"]`
+    ///   (the list of `SafetyPolicy.default`). `TC*` = CPU, `TG0P`/`TG0D` = GPU;
+    ///   `Tp`/`Te`/`Tg` normally do not exist on Intel and are harmless.
+    /// - Apple Silicon: `["Tp", "Te", "TC", "Tg"]`. `TG*` is excluded: on
+    ///   Mac14,9 (M2 Pro) / macOS 26 the `TG*` keys (`TG0B`, `TG0C`, `TG0H`,
+    ///   `TG0V`, `TG1B`, `TG2B`, type `ioft`) read ~33 °C, tracking the battery
+    ///   sensor `TB0T`, while the GPU is `Tg*` (`flt `). Excluding them only
+    ///   removes battery-area sensors from the CPU/GPU emergency maximum.
+    ///   `TC*` stays (`TCMz` tracks the hottest P core on Mac14,9).
+    public static func defaultEmergencySensorPrefixes(appleSilicon: Bool) -> [String] {
+        appleSilicon ? ["Tp", "Te", "TC", "Tg"] : ["Tp", "Te", "TC", "Tg", "TG"]
+    }
+
+    /// `SafetyPolicy.default` with `emergencySensorPrefixes` set to
+    /// `defaultEmergencySensorPrefixes(appleSilicon:)`. Every other threshold
+    /// is the same as `default`.
+    public static func `default`(appleSilicon: Bool) -> SafetyPolicy {
+        SafetyPolicy(emergencySensorPrefixes: defaultEmergencySensorPrefixes(appleSilicon: appleSilicon))
+    }
 }
 
 /// Pure, stateless fan-speed calculations.
