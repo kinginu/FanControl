@@ -222,7 +222,7 @@ runtime behaviour. Still to verify on hardware:
   carry the `0x40` write bit. No write has been attempted.
 
 SMC reads (the `SMCClient` path behind `FanControlManager` polling and `exportSMCDump()`) are verified
-on Mac14,9 / macOS 26 with the read-only `fancontrol-probe` executable (`swift run fancontrol-probe`,
+on Mac14,9 / macOS 26 with the read-only `fanfi-probe` executable (`swift run fanfi-probe`,
 `--dump`, `--watch N`); results and per-model findings are in `docs/integration.md` §6 Phase 1.
 - Whether the provisional thresholds (alert 90 °C, emergency 95 °C, hysteresis 5 °C, sensor
   prefixes `Tp/Te/TC/Tg/TG`) suit each model (design doc §5.6).

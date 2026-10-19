@@ -1,4 +1,4 @@
-// fancontrol-probe — read-only SMC probe for Phase 1 verification (docs/integration.md §6).
+// fanfi-probe — read-only SMC probe for Phase 1 verification (docs/integration.md §6).
 //
 // READ-ONLY BY DESIGN. This tool must never write to the SMC: it uses only
 // `SMCReader` methods (keyInfo / readBytes / keyCount / key(at:)) and the
@@ -6,7 +6,7 @@
 // `SMCWriter`, profile application or helper registration from here, and do
 // not add any write option. It runs unprivileged (no sudo needed).
 //
-// Usage: fancontrol-probe [--dump] [--watch N]
+// Usage: fanfi-probe [--dump] [--watch N]
 //   (default)   machine model, SMC key count, fans, temperature sensors
 //   --dump      every SMC key with type/size/attributes and raw bytes
 //   --watch N   repeat the fan/temperature readout every N seconds (Ctrl-C to stop)
@@ -17,7 +17,7 @@ import FanControlCore
 import FanControlSMC
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: fancontrol-probe [--dump] [--watch N]\n".utf8))
+    FileHandle.standardError.write(Data("usage: fanfi-probe [--dump] [--watch N]\n".utf8))
     exit(2)
 }
 
@@ -143,5 +143,5 @@ if let interval = watchInterval {
     }
 }
 #else
-print("fancontrol-probe requires macOS")
+print("fanfi-probe requires macOS")
 #endif

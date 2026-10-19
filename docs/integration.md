@@ -135,15 +135,15 @@ DynamicNotch アプリターゲットで:
 
 ### Phase 1: 読み取り（ヘルパー不要）
 
-**パッケージ単体（`fancontrol-probe`、UI なし）**: 2026-10-19、MacBook Pro 14" Mac14,9（Apple M2 Pro）/ macOS 26.5.2（25F84）/
+**パッケージ単体（`fanfi-probe`、UI なし）**: 2026-10-19、MacBook Pro 14" Mac14,9（Apple M2 Pro）/ macOS 26.5.2（25F84）/
 Swift 6.3.3（Command Line Tools のみ）で確認。SMC への書込は一切していない（probe は読み取り専用）。
 出力: [`verification/Mac14,9-macOS26-probe.txt`](verification/Mac14,9-macOS26-probe.txt)、
 [`verification/Mac14,9-macOS26-dump.txt`](verification/Mac14,9-macOS26-dump.txt)（`BMSN` のバッテリーシリアルのみ伏せ字）。
 
 ```sh
-swift run fancontrol-probe            # 機種・キー数・ファン・温度
-swift run fancontrol-probe --dump     # 全キーの型/サイズ/属性/生バイト
-swift run fancontrol-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
+swift run fanfi-probe            # 機種・キー数・ファン・温度
+swift run fanfi-probe --dump     # 全キーの型/サイズ/属性/生バイト
+swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 ```
 
 - [x] 非特権プロセスから `AppleSMC` を開ける（`IOServiceMatching("AppleSMC")` → `IOServiceOpen` 成功）。`#KEY` = 2299、全キー列挙可。

@@ -15,7 +15,7 @@ Mach サービス名は `com.example.dynamicnotch.DynamicNotch.fanfi`（既存�
 | `Sources/FanControlXPC` | ヘルパーとの XPC プロトコル・定数・書込許可リスト |
 | `Sources/FanControlKit` | `FanControlManager` など app 側の層 |
 | `Sources/FanControlHelper` | 特権 launchd デーモン |
-| `Sources/FanControlProbe` | 読み取り専用の診断 CLI `fancontrol-probe`（Phase 1 検証用。SMC には書き込まない） |
+| `Sources/FanControlProbe` | 読み取り専用の診断 CLI `fanfi-probe`（Phase 1 検証用。SMC には書き込まない） |
 | `Support/` | launchd plist、`Helper-Info.plist` |
 | `DynamicNotchIntegration/` | DynamicNotch ターゲットにドロップインする SwiftUI/設定/Live Activity ファイル、`PATCHES.md`、Localizable |
 | `Tests/` | ユニットテスト（Core / SMC / XPC / Kit） |
@@ -25,7 +25,7 @@ Mach サービス名は `com.example.dynamicnotch.DynamicNotch.fanfi`（既存�
 
 | Phase | 対応する実装 |
 |---|---|
-| Phase 1 | `FanControlCore` + `FanControlSMC`（読取）、検証用 `fancontrol-probe` |
+| Phase 1 | `FanControlCore` + `FanControlSMC`（読取）、検証用 `fanfi-probe` |
 | Phase 2 | `DynamicNotchIntegration` のウィジェット/設定 |
 | Phase 3 | `FanControlHelper` + `FanControlXPC` + `HelperInstaller` |
 | Phase 4 | `FanControlManager` の制御/プロファイル + `FanWriteStrategy` |
@@ -43,13 +43,13 @@ Mac（Apple Silicon, macOS 26, Swift 6.3.3 / Command Line Tools）で確認済�
 
 - 実 macOS SDK に対して `swift build` が警告 0 で通る（Swift 5 言語モード。`-swift-version 6` でも診断 0）
 - `swift test` で 70 tests（14 suites）が通る
-- 実機の SMC 読取（2026-10-19、Mac14,9 / M2 Pro）: `fancontrol-probe` でファン 2 基（2317〜6800 RPM）と温度キー 259 個を取得。
+- 実機の SMC 読取（2026-10-19、Mac14,9 / M2 Pro）: `fanfi-probe` でファン 2 基（2317〜6800 RPM）と温度キー 259 個を取得。
   書込は未試行。結果と所見は `docs/integration.md` §6 Phase 1、生出力は `docs/verification/`
 
 テストは Swift Testing（`import Testing`）で書かれている。XCTest は Xcode.app にしか同梱されないため
 XCTest から移行した。Xcode.app があれば、または Linux の Swift 6 ツールチェーンでは、そのまま `swift test` で動く。
 Command Line Tools だけの環境では Testing.framework の検索パスを自分で渡す必要がある（下記）。
-SMC の読取確認は `swift run fancontrol-probe`（`--dump` で全キー、`--watch N` で繰返し）。読み取り専用で sudo も不要。
+SMC の読取確認は `swift run fanfi-probe`（`--dump` で全キー、`--watch N` で繰返し）。読み取り専用で sudo も不要。
 
 未確認:
 

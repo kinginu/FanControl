@@ -10,7 +10,7 @@ let package = Package(
         .library(name: "FanControlXPC", targets: ["FanControlXPC"]),
         .library(name: "FanControlKit", targets: ["FanControlKit"]),
         .executable(name: "FanControlHelper", targets: ["FanControlHelper"]),
-        .executable(name: "fancontrol-probe", targets: ["FanControlProbe"]),
+        .executable(name: "fanfi-probe", targets: ["FanControlProbe"]),
     ],
     targets: [
         .target(name: "FanControlCore"),
