@@ -35,19 +35,31 @@ Mach サービス名は `com.example.dynamicnotch.DynamicNotch.fancontrol`（既
 Linux 上で確認済み:
 
 - `swift build` が通る
-- `swift test` で 68 tests が通る
 - 全ファイルが `swiftc -parse` を通る
 - macOS 専用コードは SDK シグネチャのスタンドインで型検査済み（`docs/kit.md` 末尾）
 
+Mac（Apple Silicon, macOS 26, Swift 6.3.3 / Command Line Tools）で確認済み:
+
+- 実 macOS SDK に対して `swift build` が警告 0 で通る（Swift 5 言語モード。`-swift-version 6` でも診断 0）
+- `swift test` で 68 tests（14 suites）が通る
+
+テストは Swift Testing（`import Testing`）で書かれている。XCTest は Xcode.app にしか同梱されないため
+XCTest から移行した。Xcode.app があれば、または Linux の Swift 6 ツールチェーンでは、そのまま `swift test` で動く。
+Command Line Tools だけの環境では Testing.framework の検索パスを自分で渡す必要がある（下記）。
+
 未確認:
 
-- macOS SDK に対する実コンパイル
-- SwiftUI / Defaults / Settings を使う UI コードの型検査
+- SwiftUI / Defaults / Settings を使う UI コードの型検査（`DynamicNotchIntegration/` はパッケージ外）
 - 実機での SMC 読み書き、ヘルパー登録、署名要件
 
 ```
 swift build
 swift test
+
+# Command Line Tools のみ（Xcode.app なし）の場合:
+D=/Library/Developer/CommandLineTools/Library/Developer
+swift test -Xswiftc -F -Xswiftc $D/Frameworks \
+  -Xlinker -rpath -Xlinker $D/Frameworks -Xlinker -rpath -Xlinker $D/usr/lib
 ```
 
 ## 参照ドキュメント

@@ -206,9 +206,11 @@ Mode writes always come before target writes. Batches write `FS! ` once with all
 
 ## Not verifiable without a Mac
 
-The code was compiled on Linux only. macOS APIs were checked with a stand-in type-check
-(`/dev/shm/kit-stubs/run.sh`: SDK-signature stubs, `-strict-concurrency=complete`, Swift 5 and 6
-modes, 0 diagnostics), but this does not prove runtime behaviour. Still to verify on hardware:
+The code was first written on Linux against SDK-signature stubs. It now builds against the real
+macOS SDK (macOS 26, Swift 6.3.3) with 0 diagnostics in the package's Swift 5 mode and with
+`-swift-version 6` (`ResumeOnce` requires `T: Sendable` for the latter; `SMCConnection` uses
+`mach_task_self_` because the `mach_task_self()` macro is not importable). This does not prove
+runtime behaviour. Still to verify on hardware:
 
 - `SMAppService` register/approval flow, including the error `register()` throws while approval is pending.
 - The privileged XPC connection and both code-signing requirements (helper checks the app, the
