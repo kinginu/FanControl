@@ -1,0 +1,121 @@
+/*
+  Localizable.strings (English) — Fan Control integration for DynamicNotch.
+
+  Plain UTF-8 source. Merge these entries into DynamicNotch's en.lproj/Localizable.strings.
+  NOTE: the .strings files shipped inside DynamicNotch.app are compiled (binary/UTF-16 plists);
+  edit the project's source .strings (or the String Catalog, if the project uses one)
+  and let Xcode compile them, do not edit the files inside the built app.
+  Keys are the English text used in SwiftUI literals (Text("…"), Button("…"), …).
+  Interpolated keys use SwiftUI's format specifiers: String -> %@.
+  Not localized on purpose: RPM, °C/°F, SMC keys, sensor names from SensorCatalog,
+  fan names reported by the SMC, and FanControlError messages (English, from FanControlCore).
+*/
+
+
+/* MARK: Navigation / names */
+"Fan Control" = "Fan Control";
+"Fan Alert" = "Fan Alert";
+"General" = "General";
+"Profiles" = "Profiles";
+"Sensors" = "Sensors";
+
+/* MARK: Widget settings (FanControlWidgetSettingsView) */
+"Layout" = "Layout";
+"Grid Size" = "Grid Size";
+"2x1" = "2x1";
+"Double Wide" = "Double Wide";
+"Fans" = "Fans";
+"Show All Fans" = "Show All Fans";
+"No fans detected" = "No fans detected";
+"Show 3 Hottest Sensors" = "Show 3 Hottest Sensors";
+"No sensors found" = "No sensors found";
+"Display" = "Display";
+"Temperature Unit" = "Temperature Unit";
+"Celsius (°C)" = "Celsius (°C)";
+"Fahrenheit (°F)" = "Fahrenheit (°F)";
+"Show Profile Picker" = "Show Profile Picker";
+"Show Target RPM" = "Show Target RPM";
+
+/* MARK: General tab (FanControlGeneralTabView) */
+"Enable Fan Control" = "Enable Fan Control";
+"Polling Interval" = "Polling Interval";
+"1 second" = "1 second";
+"2 seconds" = "2 seconds";
+"5 seconds" = "5 seconds";
+"10 seconds" = "10 seconds";
+"Start Monitoring at Launch" = "Start Monitoring at Launch";
+"Pause When Nook Is Hidden" = "Pause When Nook Is Hidden";
+"Re-apply Profile After Wake" = "Re-apply Profile After Wake";
+"Alerts" = "Alerts";
+"High Temperature Alert" = "High Temperature Alert";
+"Fan Stopped Alert" = "Fan Stopped Alert";
+"Helper" = "Helper";
+"Privileged Helper" = "Privileged Helper";
+"Connection" = "Connection";
+"Not installed" = "Not installed";
+"Installed" = "Installed";
+"Waiting for approval" = "Waiting for approval";
+"Missing from app bundle" = "Missing from app bundle";
+"Unknown (%@)" = "Unknown (%@)";
+"Disconnected" = "Disconnected";
+"Connecting…" = "Connecting…";
+"Connected" = "Connected";
+"Connected (controlling fans)" = "Connected (controlling fans)";
+"Error: %@" = "Error: %@";
+"Allow “DynamicNotch” in System Settings ▸ General ▸ Login Items & Extensions (macOS 15) / Login Items (macOS 14) to let it change fan speeds." = "Allow “DynamicNotch” in System Settings ▸ General ▸ Login Items & Extensions (macOS 15) / Login Items (macOS 14) to let it change fan speeds.";
+"Open Login Items" = "Open Login Items";
+"Check Again" = "Check Again";
+"Reading temperatures works without the helper. Changing fan speeds requires installing it (administrator approval is needed)." = "Reading temperatures works without the helper. Changing fan speeds requires installing it (administrator approval is needed).";
+"Install Helper…" = "Install Helper…";
+"Maintenance" = "Maintenance";
+"Restore Automatic Control" = "Restore Automatic Control";
+"Export SMC Dump…" = "Export SMC Dump…";
+"Export SMC Dump" = "Export SMC Dump";
+"Dismiss" = "Dismiss";
+"Custom (%@ s)" = "Custom (%@ s)";
+"The helper’s launchd plist is missing from DynamicNotch.app. Reinstall DynamicNotch to change fan speeds." = "The helper’s launchd plist is missing from DynamicNotch.app. Reinstall DynamicNotch to change fan speeds.";
+
+/* MARK: Profiles tab (FanControlProfilesTabView) */
+"Select a profile" = "Select a profile";
+"New Profile" = "New Profile";
+"%@ Copy" = "%@ Copy";
+"Delete this profile?" = "Delete this profile?";
+"This cannot be undone." = "This cannot be undone.";
+"Delete" = "Delete";
+"Cancel" = "Cancel";
+"Profile Name" = "Profile Name";
+"Active" = "Active";
+"Built-in profiles are read-only. Duplicate one to customize it." = "Built-in profiles are read-only. Duplicate one to customize it.";
+"Apply" = "Apply";
+"Duplicate" = "Duplicate";
+"Revert" = "Revert";
+"Save" = "Save";
+"Automatic" = "Automatic";
+"Constant" = "Constant";
+"Sensor-based" = "Sensor-based";
+"Controlled by the system" = "Controlled by the system";
+"Sensor" = "Sensor";
+"Unavailable sensor (%@)" = "Unavailable sensor (%@)";
+"Start Temperature" = "Start Temperature";
+"Maximum Temperature" = "Maximum Temperature";
+"Minimum speed at or below the start temperature, maximum speed at or above the maximum temperature." = "Minimum speed at or below the start temperature, maximum speed at or above the maximum temperature.";
+"Turn on Fan Control in the General tab to apply profiles." = "Turn on Fan Control in the General tab to apply profiles.";
+
+/* MARK: Built-in profile names (FanProfile.automatic/silent/maximum; "Automatic" is shared with the mode picker above) */
+"Silent" = "Silent";
+"Maximum" = "Maximum";
+
+/* MARK: Sensors tab (FanControlSensorsTabView) */
+"Key" = "Key";
+"Name" = "Name";
+"Temperature" = "Temperature";
+"SMC unavailable" = "SMC unavailable";
+"Last updated %@ ago" = "Last updated %@ ago";
+"Refresh" = "Refresh";
+
+/* MARK: Nook widget (FanControlWidgetView) and Live Activity (FanControlLiveActivity) */
+"Fan control disabled" = "Fan control disabled";
+"Temperatures" = "Temperatures";
+"Profile" = "Profile";
+"High temperature" = "High temperature";
+"Fan stopped" = "Fan stopped";

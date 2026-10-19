@@ -1,0 +1,121 @@
+/*
+  Localizable.strings (Japanese) — Fan Control integration for DynamicNotch.
+
+  Plain UTF-8 source. Merge these entries into DynamicNotch's ja.lproj/Localizable.strings.
+  NOTE: the .strings files shipped inside DynamicNotch.app are compiled (binary/UTF-16 plists);
+  edit the project's source .strings (or the String Catalog, if the project uses one)
+  and let Xcode compile them, do not edit the files inside the built app.
+  Keys are the English text used in SwiftUI literals (Text("…"), Button("…"), …).
+  Interpolated keys use SwiftUI's format specifiers: String -> %@.
+  Not localized on purpose: RPM, °C/°F, SMC keys, sensor names from SensorCatalog,
+  fan names reported by the SMC, and FanControlError messages (English, from FanControlCore).
+*/
+
+
+/* MARK: Navigation / names */
+"Fan Control" = "ファン制御";
+"Fan Alert" = "ファン警告";
+"General" = "一般";
+"Profiles" = "プロファイル";
+"Sensors" = "センサー";
+
+/* MARK: Widget settings (FanControlWidgetSettingsView) */
+"Layout" = "レイアウト";
+"Grid Size" = "グリッドサイズ";
+"2x1" = "2x1";
+"Double Wide" = "ダブルワイド";
+"Fans" = "ファン";
+"Show All Fans" = "すべてのファンを表示";
+"No fans detected" = "ファンが見つかりません";
+"Show 3 Hottest Sensors" = "最も高温の 3 センサーを表示";
+"No sensors found" = "センサーが見つかりません";
+"Display" = "表示";
+"Temperature Unit" = "温度の単位";
+"Celsius (°C)" = "摂氏 (°C)";
+"Fahrenheit (°F)" = "華氏 (°F)";
+"Show Profile Picker" = "プロファイル選択を表示";
+"Show Target RPM" = "目標回転数を表示";
+
+/* MARK: General tab (FanControlGeneralTabView) */
+"Enable Fan Control" = "ファン制御を有効にする";
+"Polling Interval" = "更新間隔";
+"1 second" = "1 秒";
+"2 seconds" = "2 秒";
+"5 seconds" = "5 秒";
+"10 seconds" = "10 秒";
+"Start Monitoring at Launch" = "起動時に監視を開始";
+"Pause When Nook Is Hidden" = "Nook が非表示のときは一時停止";
+"Re-apply Profile After Wake" = "スリープ解除後にプロファイルを再適用";
+"Alerts" = "警告";
+"High Temperature Alert" = "高温警告";
+"Fan Stopped Alert" = "ファン停止警告";
+"Helper" = "ヘルパー";
+"Privileged Helper" = "特権ヘルパー";
+"Connection" = "接続";
+"Not installed" = "未インストール";
+"Installed" = "インストール済み";
+"Waiting for approval" = "承認待ち";
+"Missing from app bundle" = "アプリバンドル内に見つかりません";
+"Unknown (%@)" = "不明 (%@)";
+"Disconnected" = "未接続";
+"Connecting…" = "接続中…";
+"Connected" = "接続済み";
+"Connected (controlling fans)" = "接続済み（ファンを制御中）";
+"Error: %@" = "エラー: %@";
+"Allow “DynamicNotch” in System Settings ▸ General ▸ Login Items & Extensions (macOS 15) / Login Items (macOS 14) to let it change fan speeds." = "ファンの回転数を変更できるようにするには、「システム設定」▸「一般」▸「ログイン項目と機能拡張」（macOS 15）/「ログイン項目」（macOS 14）で “DynamicNotch” を許可してください。";
+"Open Login Items" = "ログイン項目を開く";
+"Check Again" = "再確認";
+"Reading temperatures works without the helper. Changing fan speeds requires installing it (administrator approval is needed)." = "温度の読み取りはヘルパーなしで動作します。ファンの回転数を変更するにはヘルパーのインストールが必要です（管理者の承認が必要です）。";
+"Install Helper…" = "ヘルパーをインストール…";
+"Maintenance" = "メンテナンス";
+"Restore Automatic Control" = "自動制御に戻す";
+"Export SMC Dump…" = "SMC ダンプを書き出す…";
+"Export SMC Dump" = "SMC ダンプを書き出す";
+"Dismiss" = "閉じる";
+"Custom (%@ s)" = "カスタム（%@ 秒）";
+"The helper’s launchd plist is missing from DynamicNotch.app. Reinstall DynamicNotch to change fan speeds." = "ヘルパーの launchd plist が DynamicNotch.app 内にありません。ファンの回転数を変更するには DynamicNotch を再インストールしてください。";
+
+/* MARK: Profiles tab (FanControlProfilesTabView) */
+"Select a profile" = "プロファイルを選択してください";
+"New Profile" = "新規プロファイル";
+"%@ Copy" = "%@ のコピー";
+"Delete this profile?" = "このプロファイルを削除しますか？";
+"This cannot be undone." = "この操作は取り消せません。";
+"Delete" = "削除";
+"Cancel" = "キャンセル";
+"Profile Name" = "プロファイル名";
+"Active" = "使用中";
+"Built-in profiles are read-only. Duplicate one to customize it." = "組み込みプロファイルは編集できません。カスタマイズするには複製してください。";
+"Apply" = "適用";
+"Duplicate" = "複製";
+"Revert" = "元に戻す";
+"Save" = "保存";
+"Automatic" = "自動";
+"Constant" = "固定";
+"Sensor-based" = "センサー連動";
+"Controlled by the system" = "システムが制御します";
+"Sensor" = "センサー";
+"Unavailable sensor (%@)" = "利用できないセンサー (%@)";
+"Start Temperature" = "開始温度";
+"Maximum Temperature" = "最大温度";
+"Minimum speed at or below the start temperature, maximum speed at or above the maximum temperature." = "開始温度以下では最低回転数、最大温度以上では最大回転数で回ります。";
+"Turn on Fan Control in the General tab to apply profiles." = "「一般」タブでファン制御を有効にすると、プロファイルを適用できます。";
+
+/* MARK: Built-in profile names (FanProfile.automatic/silent/maximum; "Automatic" is shared with the mode picker above) */
+"Silent" = "静音";
+"Maximum" = "最大";
+
+/* MARK: Sensors tab (FanControlSensorsTabView) */
+"Key" = "キー";
+"Name" = "名前";
+"Temperature" = "温度";
+"SMC unavailable" = "SMC を利用できません";
+"Last updated %@ ago" = "%@前に更新";
+"Refresh" = "更新";
+
+/* MARK: Nook widget (FanControlWidgetView) and Live Activity (FanControlLiveActivity) */
+"Fan control disabled" = "ファン制御は無効です";
+"Temperatures" = "温度";
+"Profile" = "プロファイル";
+"High temperature" = "高温";
+"Fan stopped" = "ファン停止";
