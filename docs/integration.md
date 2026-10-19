@@ -116,9 +116,13 @@ DynamicNotch アプリターゲットで:
 1. `FanControl/DynamicNotchIntegration/*.swift`（8 ファイル）を DynamicNotch アプリターゲットに追加する。
    各ファイルは `#if os(macOS)` で囲まれ、`Defaults` / `Settings` / `FanControlCore` / `FanControlKit` を import する。
    **注意:** `import Settings`（sindresorhus/Settings）と `import SwiftUI` を同じファイルで使うと、`Settings` が SwiftUI の
-   `Settings` シーン（`struct Settings<Content>: Scene`）と衝突して `Settings.Container` / `Settings.Section` /
-   `Settings.Pane` が曖昧または誤解決になることがある。DynamicNotch の既存設定ビュー（`LiveActivitiesSettingsView` など）が
-   使っている書き方（モジュール修飾や typealias など）をそのまま `FanControlGeneralTabView.swift` と PATCHES.md (d) にも適用すること。
+   `Settings` シーン（`struct Settings<Content>: Scene`）と衝突する。実 SDK + Settings 3.1.2 での型検査では、
+   式の位置の `Settings.Container(…)` / `Settings.Section(…)` は解決できたが、型の位置（`extension Settings.PaneIdentifier`）は
+   「'Settings' is ambiguous」、`Settings.Pane(…)` は SwiftUI 側に誤解決されてエラーになった。そのため `Settings.*` を使う
+   ドロップインファイル（`FanControlGeneralTabView.swift` / `FanControlWidgetSettingsView.swift`）と PATCHES.md (d) では
+   `import enum Settings.Settings`（スコープ付き import。Settings パッケージ自身が推奨）を併記している。パッケージ提供の
+   `typealias AppSettings = Settings` を使う書き方でもよい。DynamicNotch の既存設定ビューが別の書き方をしていればそれに合わせてよい。
+   Swift 6 言語モードでは PATCHES.md (d) の `static let fanControl` のために `@preconcurrency import Settings` が要る（PATCHES.md (d)）。
 2. `PATCHES.md` の (a)〜(g) を既存ソースに適用する:
    (a) `NookWidget.fanControl`（tag 8）、(b) Nook グリッドの View 振り分け、(c) `WidgetsSettingsTabView`、
    (d) 設定ペイン登録、(e) `applicationDidFinishLaunching`、(f) `LiveActivity.fanAlert` と `LiveActivityView`、
@@ -127,7 +131,8 @@ DynamicNotch アプリターゲットで:
    `ja.lproj/Localizable.strings`（ソース側）にマージする。アプリ内に同梱されているのはコンパイル済み（バイナリ/UTF-16 plist）の
    `.strings` なので、ビルド成果物ではなくソースを編集する。String Catalog（`.xcstrings`）を使っている場合は
    ビルド後に自動抽出されたキーへ ja 訳を入力する（キーは英語文字列そのもの）。
-4. ビルドして警告/エラーを解消する（このリポジトリでは型検査できていない。§7 参照）。
+4. ビルドして警告/エラーを解消する。8 ファイルと PATCHES.md の断片は `Tools/IntegrationTypeCheck`（実 SDK + Defaults 8.2.0 +
+   Settings 3.1.2、DynamicNotch 側はスタブ）で警告・エラー 0 を確認済み（§7）。実プロジェクトで出る差分はスタブと実ソースの違いに起因する。
 
 ## 6. Mac での検証チェックリスト（Phase 1 → 5）
 
@@ -153,6 +158,14 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       `ioft` はリトルエンディアンだった（修正前はビッグエンディアン扱いで 9 個とも範囲外として落ちていた）。`readTemperatures` の再読取も 259/259。
 - [x] 型/コーデック: ファン・温度の経路は `flt `（LE Float32）と `ui8 ` のみで正しく復号。未対応だった `si64` を追加。`{jst`（4 キー、21 バイト構造体）は `.bytes` のまま。
 - [ ] センサー名: 多くのキーが `SensorCatalog` の名前に当てはまらない、または値が温度として不自然（下記「Mac14,9 の所見」）。
+      対応済み（パッケージ側）: Apple Silicon 向けに `TB1T`/`TB2T`（「Battery 1/2」）、`TaLP`/`TaRF`（「Airflow Left/Right」）、`TH0x`（「NAND (SSD)」）、`Ts1P`（「Palm Rest 2」）を追加。
+      `Ts` 接頭辞（「Skin/Palm Rest」）は `Ts0C` などが 45〜55 °C で掌置き温度に見えないため廃止し、`Ts0P`/`Ts1P` だけ完全一致で命名。
+      根拠のないキー（`TCMb`/`TCMz`/`TCDX`、`TVM*`、`TPD*`/`TRD*`、`Th0*`、`TD*`、`Tf*`、`TG*` ほか）は「Sensor XXXX」のまま。259 キーで名前が一意なことをテストで確認。
+      各名前の出典（コミュニティ／Mac14,9 で値が整合）は `SensorCatalog.swift` のコメント。DynamicNotch 上での見え方は組込後に確認。
+- [x] `Tp*` のちらつき対策: `TemperatureSampleFilter`（`FanControlCore`）を `FanControlManager` のポーリング経路に入れた。
+      `Tp/Te/Tg/TC` の 10 °C 未満の値は直前の採用値（連続 5 回まで）→ 同接頭辞グループのその回の最大値 → 生値の順に置き換える（kit.md「Temperature sample filter」）。
+      Mac14,9 のパターン（`0.00 / 6.70 / 8.43` など）はテストで再現済み。UI 上の表示とセンサー連動モードでの効き方は組込後に確認。
+- [x] 緊急判定の接頭辞: Apple Silicon では `TG` を除外（`SafetyPolicy.default(appleSilicon:)`、`FanControlPlatform.isAppleSilicon`）。Intel は従来どおり `TG` を含む。
 - [ ] 以下の UI 項目は未実施（Xcode.app が無いため DynamicNotch へ未組込）。
 
 **Mac14,9 の所見（ダンプから読み取れる範囲）**
@@ -169,11 +182,14 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
   - 負値で一定: `Tf02` −12.23、`Tf12` −12.80、`Tf22` −11.38（ほか `Tf00`/`Tf10` ≈ −0.1〜0.1）。
   - 一定値: `Tf06` 94.50、`Tf16`/`Tf26` 79.42、`Ta0D`/`Ta0H`/`Ta0L` 9.50、`Tf01`/`Tf11`/`Tf21` 5.7〜12.2。温度ではなく閾値等の可能性があるが未確認。
   - 常に 0.00: `TH1a`, `TH1b`, `TVMD`, `Ta0C/G/K/V`, `Tz11`〜`Tz18`, `Tz1j`。
-  - `Tp*`（P コア）は 3 つ組ごとに 50〜75 °C の実測値と `0.00 / 6.70 / 8.43`（または `0.00 / 4.63 / 5.32`）の固定パターンを読取ごとに行き来する。
-    最大値（緊急判定）には影響しないが、センサー連動モードで単一の `Tp*` キーを選ぶと 0 °C 付近を読むことがある。
-  - `TG*`（`ioft`、33 °C 前後、`TB0T` とほぼ同値）は Intel では GPU 用接頭辞として `emergencySensorPrefixes` に入っているが、この機種では GPU の値に見えない（GPU は `Tg*`）。
+  - `Tp*`（P コア）は 3 つ組ごとに 50〜75 °C の実測値と `0.00 / 6.70 / 8.43`（または `0.00 / 4.63 / 5.32`、`0.00 / 6.03 / 7.43`）の固定パターンを読取ごとに行き来する。
+    アイドル時の `--watch 1`（6 回）では片方のクラスタ（`Tp0*`、`Tp16`〜`Tp18`）がずっと固定パターンのままで、もう片方（`Tp1A` 以降）は実測値だった（クラスタの電源断と推測）。
+    最大値（緊急判定）には影響しないが、センサー連動モードで単一の `Tp*` キーを選ぶと 0 °C 付近を読むことがある → `TemperatureSampleFilter` で対策（上記）。
+  - `TCMz` は同時刻の `Tp*` 実測値の最大値と一致し（例 66.36 = `Tp1C`）、固定パターンの影響を受けなかった。`TCMb` も `Tp*` の値の一つと一致する。
+    センサー連動モードで CPU 温度を使うなら単一の `Tp*` より `TCMz` が適している可能性がある（1 機種・短時間の観察のみ。名前は付けていない）。
+  - `TG*`（`ioft`、33 °C 前後、`TB0T` とほぼ同値）は Intel では GPU 用接頭辞として `emergencySensorPrefixes` に入っているが、この機種では GPU の値に見えない（GPU は `Tg*`）→ Apple Silicon の既定から除外済み（上記）。
 - 名前が付かないが関連が深そうなキー（値の推移からの推測を含むため要確認）: `TCMb`/`TCMz`/`TCDX`（CPU 系 55〜75 °C）、`TPD*`・`TRD*`（44 °C / 48 °C 前後の群）、
-  `Th0*`（48 °C 前後）、`TVM0`/`TVm0`/`TVm1`（60〜67 °C）、`TD*`（29〜34 °C、`TDBP` 等）、`TB1T`/`TB2T` は「Battery 1T/2T」と表示される（`TB0T` と同値）。
+  `Th0*`（48 °C 前後）、`TVM0`/`TVm0`/`TVm1`（60〜67 °C）、`TD*`（29〜34 °C、`TDBP` 等）、`TB1T`/`TB2T` は「Battery 1T/2T」と表示されていた（`TB0T` と同値。「Battery 1/2」に変更済み）。
   `TH0a`/`TH0b`/`TH0x`（「Storage」、38 °C 前後）は SSD と思われるが未確認。
 
 **DynamicNotch UI（未実施）**
@@ -220,15 +236,29 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 
 ## 7. この Linux 環境で検証できなかったこと
 
-- **SwiftUI / Defaults / Settings を使う UI コードの型検査は未実施**。`swiftc -parse`（構文のみ）は全ファイル通過。
-  `FanControlWidgetSettings.swift` だけは Defaults のスタブと実 `FanControlCore` で型検査・実行（エンコード/デコード、既定値、表示センサー選択、温度整形）を確認した。
-  `FanControlKit` 側は macOS SDK のスタンドイン（シグネチャのスタブ）で型検査済み（`docs/kit.md` 末尾）。
+- **SwiftUI / Defaults / Settings を使う UI コードの型検査は Mac で実施済み（2026-10-19）**。作業用パッケージ
+  `Tools/IntegrationTypeCheck`（`README.md` 参照）で、`DynamicNotchIntegration/*.swift` の 8 ファイルを実 macOS 26 SDK
+  （SwiftUI / AppKit）、実 `FanControlCore` / `FanControlKit`、**Defaults 8.2.0** と **Settings 3.1.2**（いずれも当時の最新安定版）に対して
+  コンパイルし、Swift 5 言語モード・Swift 6 言語モード（`TYPECHECK_SWIFT6=1`）とも警告・エラー 0。8 ファイルは DynamicNotch 側の
+  シンボルを参照しないためスタブ無しで通る。PATCHES.md (a)〜(f) の断片も、ホストアプリに倣ったスタブ
+  （`NookWidget` / `NookGridSizeType` / `Preferences` / `WidgetPrefs` / `LiveActivity` / `ActiveLiveActivitiesManager` など）に対して型検査した。
+  見つかった問題と修正:
+  - PATCHES.md (d): `extension Settings.PaneIdentifier` が SwiftUI の `Settings` と曖昧、`Settings.Pane(…)` が SwiftUI 側に誤解決
+    → `import enum Settings.Settings` を追加（§5）。ドロップインの 2 ファイルにも予防的に同じ import を追加（変更前もコンパイルは通っていた）。
+  - PATCHES.md (d): グローバル `let FanControlSettingsPaneController: () -> SettingsPane = { … }` は Swift 6 モードで
+    非 Sendable のグローバル変数・main actor 隔離の初期値としてエラー → `@MainActor func FanControlSettingsPaneController() -> SettingsPane` に変更。
+    Swift 6 モードでは `PaneIdentifier` が非 Sendable のため `@preconcurrency import Settings` も必要。
+  - ドロップイン 8 ファイル本体の型エラーは無かった。
+  `FanControlKit` の macOS 依存部は実 SDK でビルド済み（README「検証状況」）。
 - UI が参照する Kit/Core の API（メンバー名、引数ラベル、`async`/`throws`、読み取り専用か否か、static か否か、
   `HelperInstallStatus` / `HelperConnectionState` の case）は実装と突き合わせ済み。`FanControlManager` は `@MainActor` ではない
   （`@unchecked Sendable`、状態はメインスレッドで更新）。UI はメインスレッドから呼び、async メソッドは `Task { @MainActor in … }` で待つ。
-- `Settings.Section(label:content:)` / `Settings.Container` / `Settings.Pane` のシグネチャは sindresorhus/Settings の公開 API に基づく推定。
-  DynamicNotch 内の実際の使い方（参照ソースでは `Section { … }`）と違えば合わせる。
-- `NookWidget` の View 振り分け箇所、`WidgetPrefs` / `Preferences` プロトコルの要件、`ActiveLiveActivitiesManager` インスタンスの保持場所はホスト側のソースから特定できていない（PATCHES.md 参照）。
+- `Settings.Section(label:content:)` / `Settings.Container(contentWidth:)` / `Settings.Pane(identifier:title:toolbarIcon:)` /
+  `Settings.PaneHostingController(pane:)` は Settings 3.1.2 の実 API で型検査済み。DynamicNotch が古い Settings（2.x）を
+  固定していれば差異がありうるので、実プロジェクトの Package.resolved を確認する（参照ソースでは `Section { … }`）。
+- `WidgetPrefs` / `Preferences` の実際の要件はスタブでの推定（`gridSizeType` のみ）。実プロジェクトで追加要件があれば
+  PATCHES.md (a) の `extension FanControlWidgetSettings: Preferences, WidgetPrefs` に足す。
+- `NookWidget` の View 振り分け箇所、`ActiveLiveActivitiesManager` インスタンスの保持場所はホスト側のソースから特定できていない（PATCHES.md 参照）。
 - SMC 読取はパッケージ単体で Mac14,9 / macOS 26 にて確認済み（§6 Phase 1）。SMC 書込、ヘルパー登録、署名要件は未検証。
 
 ## 8. 未決事項（設計書 §5 より）
@@ -237,8 +267,14 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 - **Mach サービス名**（§5.2）: `com.example.dynamicnotch.DynamicNotch.fanfi` で既存 FanFi と非競合。両方が同時に SMC を書くと互いに上書きし合うため、併用時の注意をユーザーに示すかは要判断。
 - **新しい Apple Silicon の `Ftst` キー**（§5.7, helper.md §4）: 一部機種では `F<n>Md` だけでは目標値が効かず `Ftst` アンロックが必要との報告がある。現状ヘルパーの書込許可リスト外。Phase 4 で実機確認後に追加を判断。
   Mac14,9（M2 Pro）/ macOS 26 には `Ftst` キー自体が存在しない（読取で keyNotFound、§6 Phase 1）。この機種では許可リストに足しても書けない。
-- **温度閾値**（§5.6）: 警告 90°C（ヒステリシス 5°C）、強制最大 95°C、対象センサー接頭辞 `Tp/Te/TC/Tg/TG` は暫定値（Mac14,9 では `TG*` は GPU ではなく 33 °C 前後の `ioft` キー。`Tf06` は 94.5 °C 一定だが接頭辞外。§6 Phase 1 の所見参照）。機種別に妥当性を確認し、設定 UI に出すか決める（現状 UI には出していない）。
-- **センサー名**（§5.7）: `SensorCatalog` の名称はコミュニティ情報で英語固定。機種別検証とローカライズ方針が未定。
+- **温度閾値**（§5.6）: 警告 90°C（ヒステリシス 5°C）、強制最大 95°C は暫定値。機種別に妥当性を確認し、設定 UI に出すか決める（現状 UI には出していない）。
+  対象センサー接頭辞は実装済み: Apple Silicon は `Tp/Te/TC/Tg`、Intel は `Tp/Te/TC/Tg/TG`（`SafetyPolicy.default(appleSilicon:)`。Mac14,9 では `TG*` は GPU ではなく 33 °C 前後の `ioft` キー）。
+  判定は `sysctl hw.optional.arm64`（Rosetta 下でも Apple Silicon と判定）。`Tf06` は 94.5 °C 一定だが接頭辞外（§6 Phase 1 の所見参照）。
+  要確認: 他の Apple Silicon 機種でも `TG*` が GPU でないか、`TC*`（`TCMz` 等）を対象に含めたままでよいか。
+  センサー値フィルタ（`TemperatureSampleFilter`、下限 10 °C・保持 5 回・グループ最大値へのフォールバック）も暫定値。急な下降は棄却しない方針（kit.md）。
+  要判断: センサー連動プロファイルの既定・推奨センサーを単一キーにするか（`TCMz` 等）、`Tp*` グループの最大値を仮想センサーとして提供するか。
+- **センサー名**（§5.7）: `SensorCatalog` の名称はコミュニティ情報で英語固定。Apple Silicon 向けに一部追加済み（§6 Phase 1）。
+  未決: `TCMz`/`TCMb`/`TCDX`、`TVM*`、`TPD*`/`TRD*`、`Th0*`、`TD*`、`Tf*` などの名称（根拠が見つからず「Sensor XXXX」のまま）、他機種での検証、`Tp*` の P/E コア区別（コミュニティ間で不一致）、ローカライズ方針。
 - **ポーリング間隔**（§5.4）: 1/2/5/10 秒の選択式。電源状態による自動切替は未実装。
 - **制御開始タイミング**（§5.5）: 既定は機能 OFF。ON かつ「起動時に監視を開始」で起動時に監視（読み取り）を開始、OFF の場合はウィジェット初表示時に開始。ファン書き込みはユーザーがプロファイルを適用したときのみ。
 - **ライセンス**（§5.8）: 法務確認。

@@ -42,9 +42,14 @@ Linux 上で確認済み:
 Mac（Apple Silicon, macOS 26, Swift 6.3.3 / Command Line Tools）で確認済み:
 
 - 実 macOS SDK に対して `swift build` が警告 0 で通る（Swift 5 言語モード。`-swift-version 6` でも診断 0）
-- `swift test` で 70 tests（14 suites）が通る
+- `swift test` で 87 tests（17 suites）が通る
 - 実機の SMC 読取（2026-10-19、Mac14,9 / M2 Pro）: `fanfi-probe` でファン 2 基（2317〜6800 RPM）と温度キー 259 個を取得。
   書込は未試行。結果と所見は `docs/integration.md` §6 Phase 1、生出力は `docs/verification/`
+- Mac14,9 のダンプに基づく Apple Silicon 対応（2026-10-19）: `TemperatureSampleFilter`（`Tp*` の 0 °C 付近の偽値を置換）、
+  Apple Silicon では `emergencySensorPrefixes` から `TG` を除外（`SafetyPolicy.default(appleSilicon:)` / `FanControlPlatform`）、
+  `SensorCatalog` に Apple Silicon の名前を追加。詳細は `docs/kit.md` と `docs/integration.md` §6/§8
+- `DynamicNotchIntegration/` の UI 8 ファイル（と PATCHES.md の断片）を実 SDK + Defaults 8.2.0 + Settings 3.1.2 で型検査:
+  `Tools/IntegrationTypeCheck` で `swift build`（Swift 5 / Swift 6 言語モードとも警告・エラー 0）。DynamicNotch 側はスタブ（`docs/integration.md` §7）
 
 テストは Swift Testing（`import Testing`）で書かれている。XCTest は Xcode.app にしか同梱されないため
 XCTest から移行した。Xcode.app があれば、または Linux の Swift 6 ツールチェーンでは、そのまま `swift test` で動く。
@@ -53,7 +58,7 @@ SMC の読取確認は `swift run fanfi-probe`（`--dump` で全キー、`--watc
 
 未確認:
 
-- SwiftUI / Defaults / Settings を使う UI コードの型検査（`DynamicNotchIntegration/` はパッケージ外）
+- DynamicNotch の実プロジェクト内での UI コードのコンパイル（型検査は DynamicNotch 側スタブに対してのみ）
 - DynamicNotch UI 上での読取表示、実機での SMC 書込、ヘルパー登録、署名要件
 
 ```
