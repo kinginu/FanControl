@@ -109,10 +109,17 @@ case .notFound: /* plist がバンドルに無い・配置ミス */ break
 **単一オーナーセッション（設計書 §5.3 (a)）**
 
 - セッションは開いた XPC 接続（pid + 接続 ID）に属する。他の接続からの `openSession` / `writeKey` / `closeSession` は `notSessionOwner`。
-- オーナー pid のプロセスが既に存在しない場合は次の `openSession` で自動回収。
+- オーナー pid のプロセスが既に存在しない場合は次の `openSession` で自動回収。同じ pid の**別の接続**から `openSession` が来た場合（クライアント側タイムアウトで旧接続を捨てた直後など）も、旧セッションを終了（復元）してから新しい接続に渡す。
 - 接続の invalidation / interruption（アプリ終了・クラッシュ）でセッションを解放。
 - セッション中に書いた各キーの **書込前の値** を初回書込の直前に記録する。記録（読み取り）に失敗した場合は書込自体を `6 smcError` で拒否する。
-- close / 解放 / ヘルパーの SIGTERM 時に、まず速度系キー（`F<n>Tg`, `F<n>Mn`）を記録値に戻し、その後モード系キーを**固定の自動値**に戻す: `F<n>Md` = 0、`FS! ` = 記録値からこのセッションが立てたビットを落とした値（記録値そのものには戻さない。前のセッションの手動状態を再現しないため）。モード系の復元に失敗したら 1 回だけ再試行し、成否にかかわらずセッションは解放する。これによりクライアントがクラッシュしてもファンが手動固定のまま残らない。
+- close / 解放 / ヘルパーの SIGTERM 時の復元（`HelperWritePolicy.restore`、書込前レビュー 2026-10-20 で順序を変更。`docs/verification/pre-write-review-2026-10-20.md`）:
+  1. `F<n>Mn` を記録値に戻す（現在は許可リスト外なので通常は記録されない）。
+  2. モード系キーを**固定の自動値**に戻す: `F<n>Md` = 0、`FS! ` = 記録値からこのセッションが立てたビットを落とした値（記録値そのものには戻さない。前のセッションの手動状態を再現しないため）。失敗したら 1 回だけ再試行する。
+  3. `F<n>Tg` は、このセッションでモード系キー（`F<n>Md` または `FS! ` のビット）を書いて**いない**ファン（target-only）だけ記録値に戻す。値はハードウェア `Mn`〜`Mx` にクランプする。
+  モードを自動に戻したファンの `F<n>Tg` は書かない（自動制御中は SMC が目標値を持つ）。Apple Silicon ではアイドル時の記録値が `Tg` = 0（`Mn` 未満）で、
+  旧実装のように `F<n>Md` = 1 のまま書き戻すとファン停止を指令することになり、続く `Md` = 0 が失敗すると手動 0 RPM のまま残る恐れがあった。
+  モードの復元に失敗したファンの `F<n>Tg` も書き戻さず、最後に検証済みの目標値（`Mn`〜`Mx` 内）のまま残す（ログに記録）。
+  復元の書込は値の検証（下表）を通さない。成否にかかわらずセッションは解放する。これによりクライアントがクラッシュしてもファンが手動固定のまま残らない。
 - AppleSMC 接続はセッション中のみ保持。セッション開始時に `FNum` と各ファンのハードウェア `F<n>Mn` / `F<n>Mx` を読み、書込値の検証に使う。
 
 **書込許可リスト**（`FanControlHelperConstants.allowedWriteKeyPatterns`）:
@@ -122,28 +129,32 @@ case .notFound: /* plist がバンドルに無い・配置ミス */ break
 | `^F[0-9]Tg$` | 目標回転数 |
 | `^F[0-9]Md$` | ファンモード（Apple Silicon） |
 | `^FS! $` | 強制モードビットマスク（Intel） |
-| `^F[0-9]Mn$` | 最小回転数（Intel の「最小値＝目標値」手法） |
+
+`F<n>Mn`（Intel の「最小値＝目標値」手法）は 2026-10-20 に許可リストから外した（アプリは書かない。Apple Silicon では読取専用 `0x84`）。`Ftst` などのアンロックキーも許可しない。
 
 加えて、キーは 4 文字 ASCII、ペイロードは 1〜32 バイト、かつ SMC が返す `dataSize` と一致しなければ拒否する。
+さらに SMC が返す属性に書込ビット `0x40`（`SMCKeyInfo.isWritable`）が無いキーは `7 badRequest` で拒否する。
 
-**値の検証**（ヘルパーが安全性の最終責任を持つ。ペイロードはキーの型で `SMCCodec.decode` して判定）:
+**値の検証**（ヘルパーが安全性の最終責任を持つ。ペイロードはキーの型で `SMCCodec.decode` して判定。実装は `FanControlXPC.HelperWritePolicy.validate` で単体テスト済み）:
 
 | キー | 条件 | 違反時 |
 |---|---|---|
 | `F<n>Md` | 0 または 1 | `7 badRequest` |
-| `F<n>Tg`, `F<n>Mn` | セッション開始時に読んだハードウェア `F<n>Mn`〜`F<n>Mx`（丸め誤差として ±1 RPM 許容） | `7 badRequest`（Mn/Mx が読めなかったファンは `6 smcError`） |
+| `F<n>Tg` | セッション開始時に読んだハードウェア `F<n>Mn`〜`F<n>Mx`（丸め誤差として ±1 RPM 許容） | `7 badRequest`（Mn/Mx が読めなかったファンは `6 smcError`） |
 | `FS! ` | `1 << FNum` 以上のビットを含まない | `7 badRequest`（`FNum` が読めなければ `6 smcError`） |
 
-アプリ側の `SafetyPolicy.enforceHardwareMinimum = false` はクライアント側の計画にしか効かず、最小値未満の目標値はヘルパーが拒否する。
+アプリ側の `SafetyPolicy.enforceHardwareMinimum = false` はクライアント側の計画にしか効かず、最小値未満の目標値はヘルパーが拒否する
+（アプリ側でも `FanWriteStrategy.writes(for:)` が書込列を作る前に `rpmOutOfRange` で拒否するので、`F<n>Md` = 1 だけ書かれて `F<n>Tg` で失敗する状態にはならない）。
 ヘルパー自身は書込頻度を制限しない。アプリ側（`FanControlManager`）がポーリング由来の書込を、目標値の変化が 25 RPM（`writeThresholdRPM`）以下なら省略する（docs/kit.md）。
 
 ### プラットフォーム別の書込手順
 
-- **Apple Silicon**: `F<n>Md` を `1` にしてから `F<n>Tg` を書かないと目標値が反映されない。`F<n>Md` = `0` で自動制御に戻る。
+- **Apple Silicon**: `F<n>Md` を `1` にしてから `F<n>Tg` を書く（自動モード中の `F<n>Tg` 書込は SMC に上書き／拒否される可能性があるため。実機では未確認）。`F<n>Md` = `0` で自動制御に戻る。
+  `F<n>Md` = 1 と `F<n>Tg` の間に失敗した場合はアプリが `F<n>Md` = 0 に戻す（kit.md「部分的な失敗」）。
   （一部の新しい機種では追加のアンロックキー `Ftst` が必要との報告があるが、現状は許可リスト外。実機で確認後に追加を検討。
   Mac14,9 / macOS 26 では `Ftst` は存在しない。同機種の属性は `F<n>Md` = `0xd0`（`ui8 `）、`F<n>Tg` = `0xd4`（`flt `）で書込ビット `0x40` あり、
   `F<n>Mn` = `0x84` は `0x40` なし（integration.md §6 Phase 1）。いずれも書込は未試行。）
-- **Intel**: `FS! `（ui16 ビットマスク、bit n = ファン n を強制）を立てて `F<n>Tg` を書く。または `F<n>Mn` を目標値に設定する手法。ビットを 0 に戻す／`Mn` を元に戻すと自動制御。
+- **Intel**: `FS! `（ui16 ビットマスク、bit n = ファン n を強制）を立てて `F<n>Tg` を書く。ビットを 0 に戻すと自動制御。（`F<n>Mn` を目標値に設定する手法は使わない。）
 - 値のエンコード（`fpe2`, `flt ` など）はアプリ側（`FanControlCore.SMCCodec`）の責務。ヘルパーは上記の検証を通ったバイト列をそのまま書く。
 
 ## 5. Mac での手動テスト
@@ -168,6 +179,7 @@ codesign -d -r- DynamicNotch.app
 4. 別プロセス（署名済み 2 つ目のビルド）から `openSession` → `1 notSessionOwner`。
 5. 手動制御中にアプリを `kill -9` → ログに "went away; releasing session"、ファンが自動制御に戻る。
    ヘルパーを `sudo launchctl kill SIGTERM system/com.example.dynamicnotch.DynamicNotch.fanfi` で止めても同様に自動制御に戻る（ログに "SIGTERM received"）。
-   範囲外の目標値（`F0Mn` 未満など）や `F0Md` = 2 は `7 badRequest`。
+   範囲外の目標値（`F0Mn` 未満など）や `F0Md` = 2、`F0Mn` への書込（Apple Silicon は `0x40` なし、かつ許可リスト外）は `7 badRequest` / `4 keyNotAllowed`。
+   復元後、`fanfi-probe` で `F0Md` = 0 であること、および `F0Tg` が記録値（アイドル時 0）に**書き戻されていない**（SMC が自分で決めた値になる）ことをログ（"Failed to restore" が出ていないこと）と合わせて確認する。
 6. 未署名・別 Team ID のクライアントは接続が即座に無効化される。
 7. `SMAppService.daemon(plistName:).unregister()` 後、`launchctl print` でサービスが消える。

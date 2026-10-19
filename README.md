@@ -42,12 +42,14 @@ Linux 上で確認済み:
 Mac（Apple Silicon, macOS 26, Swift 6.3.3 / Command Line Tools）で確認済み:
 
 - 実 macOS SDK に対して `swift build` が警告 0 で通る（Swift 5 言語モード。`-swift-version 6` でも診断 0）
-- `swift test` で 87 tests（17 suites）が通る
+- `swift test` で 113 tests（19 suites）が通る
 - 実機の SMC 読取（2026-10-19、Mac14,9 / M2 Pro）: `fanfi-probe` でファン 2 基（2317〜6800 RPM）と温度キー 259 個を取得。
   書込は未試行。結果と所見は `docs/integration.md` §6 Phase 1、生出力は `docs/verification/`
 - Mac14,9 のダンプに基づく Apple Silicon 対応（2026-10-19）: `TemperatureSampleFilter`（`Tp*` の 0 °C 付近の偽値を置換）、
   Apple Silicon では `emergencySensorPrefixes` から `TG` を除外（`SafetyPolicy.default(appleSilicon:)` / `FanControlPlatform`）、
   `SensorCatalog` に Apple Silicon の名前を追加。詳細は `docs/kit.md` と `docs/integration.md` §6/§8
+- 集約センサー（2026-10-20）: `SensorAggregator` が `agg:cpu` / `agg:cpu.p` / `agg:cpu.e` / `agg:gpu`（グループ最大値）を合成し、センサー連動プロファイルが単一キーに依存しないようにした（`docs/kit.md`）
+- 書込前コードレビュー（2026-10-20、`docs/verification/pre-write-review-2026-10-20.md`）: 復元順序（`Md`=0 を先に、`Tg`=0 は書き戻さない）、部分失敗時のロールバック、ヘルパーの書込ポリシー（`F<n>Mn` を許可リストから除外、0x40 書込ビット必須）を修正。初回書込の手順チェックリストも同文書
 - `DynamicNotchIntegration/` の UI 8 ファイル（と PATCHES.md の断片）を実 SDK + Defaults 8.2.0 + Settings 3.1.2 で型検査:
   `Tools/IntegrationTypeCheck` で `swift build`（Swift 5 / Swift 6 言語モードとも警告・エラー 0）。DynamicNotch 側はスタブ（`docs/integration.md` §7）
 

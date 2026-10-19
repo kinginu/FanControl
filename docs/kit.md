@@ -46,7 +46,7 @@ Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (intern
 ## Polling and control
 
 Every poll reads `F<i>Ac`, `F<i>Tg` and the cached temperature keys, passes the temperatures
-through the `TemperatureSampleFilter` (below), runs `AlertEvaluator` (high temperature with hysteresis; emergency latch with hysteresis; 0 RPM with
+through the `TemperatureSampleFilter` (below), appends the aggregate sensors (below), runs `AlertEvaluator` (high temperature with hysteresis; emergency latch with hysteresis; 0 RPM with
 target > 0 for 3 polls = anomaly), and publishes. If (and only if) a write session is open, it
 also computes `FanControlEngine.plan(profile:fans:sensors:policy:isEmergency:)` and writes the
 result.
@@ -67,8 +67,21 @@ override never opens one). The latch resets when the SMC reader is reopened.
 or its target moved by more than `FanControlManager.writeThresholdRPM` (25 RPM) from the last
 successfully written value. A fan that we never forced is never "returned" to automatic by the
 poll loop. User actions (`setFanRPM`, `setFanControlMode`, `applyProfile`, wake re-apply,
-`restoreDefaultControl`) bypass the throttle. A failed write keeps the old baseline, so the next
-poll retries. At most one poll-driven write batch is in flight.
+`restoreDefaultControl`) bypass the throttle. At most one poll-driven write batch is in flight.
+
+**Partial failure of a write list** (pre-write review 2026-10-20): a list such as
+`[F0Md ← 1, F0Tg ← rpm]` can fail after its first write (helper rejection, timeout), which would
+leave the fan forced at a stale target (at idle `F0Tg` = 0, i.e. stopped). Two defences:
+- `FanWriteStrategy.writes(for:)` reads each fan's hardware `F<i>Mn...F<i>Mx` at init and throws
+  `.rpmOutOfRange` for a manual target outside it (± 1 RPM) *before* producing any write, so the
+  helper's range check can no longer reject `F<i>Tg` after `F<i>Md` was accepted.
+- On any failure the manager drops the baseline of every fan in the failed list, marks them
+  "unsettled" (the next poll writes their planned state regardless of the throttle) and, if the
+  session is still open, immediately writes `FanWriteStrategy.rollbackWrites(afterFailureOf:)`
+  (`F<i>Md ← 0` / `FS! ` bits cleared for the fans that were being forced). If that rollback
+  succeeds those fans get an `.automatic` baseline and are no longer unsettled. The original
+  error is rethrown / stored in `lastError`. A timeout invalidates the connection, so the helper
+  restores instead (the rollback is skipped because the session is gone).
 
 **Apply generation (no poll can undo a user apply):** `applyProfile` / `setFanControlMode` /
 `setFanRPM` first store (user profiles, `upsert`) and select the profile on main, *then* bump the
@@ -78,7 +91,14 @@ and record the generation when they plan a batch; when that batch reaches the fr
 the selection changes before the bump and `pollQueue` is FIFO, every poll planned from the old
 profile carries an old generation. If the apply's writes fail, the previous selection and the
 previously stored version of the profile are restored (a newly created profile is removed).
-`restoreDefaultControl` and `closeSMCSession` bump the generation too.
+`restoreDefaultControl`, `closeSMCSession` and the termination restore bump the generation too.
+`restoreDefaultControl` writes automatic through the `WriteSerializer` *after* every batch already
+queued and closes the session afterwards, and a batch planned before the bump is dropped, so no
+stale manual target can be written after "Return to automatic". If no session is open but the SMC
+reports a fan in manual mode (`FanDiscovery.fanControlModes`: e.g. the helper was killed mid-session
+and could not restore, or another tool forced it), `restoreDefaultControl` opens a session just to
+write automatic and closes it again (it is an explicit user action, so the install/approval flow
+may run).
 
 **Helper session rules:** the session is opened only by user actions (`setFanRPM`,
 `setFanControlMode`, `applyProfile` with manual modes, `openSMCSession`); internally
@@ -121,8 +141,10 @@ below).
 
 **Termination:** on `NSApplication.willTerminateNotification` (observers are registered on the
 first `startMonitoring` or `openSMCSession`), all fans are set to automatic and the session is
-closed, waiting at most 2 s on the main thread. Independently, the helper restores the original value of every key
-written during the session when the client connection goes away.
+closed (both through the `WriteSerializer`, after bumping the apply generation), waiting at most 2 s
+on the main thread. Independently, the helper hands the fans back to the SMC when the client
+connection goes away (`docs/helper.md` §4: mode keys to automatic; `F<i>Tg` is written back only for
+target-only fans, clamped into `Mn...Mx`).
 
 **Temperature sample filter** (`FanControlCore.TemperatureSampleFilter`): on Mac14,9 the `Tp*`
 (P-core) keys read either their real value or a fixed near-zero pattern (`0.00 / 6.70 / 8.43`,
@@ -139,6 +161,36 @@ rejected (real core temperatures fall 10-20 °C per poll when load stops). The k
 the latest poll are published as `substitutedSensorKeys` (e.g. to dim them). The filter is reset
 when sensors are rediscovered (SMC reader reopened). Defaults are the static `default*`
 constants; the manager does not expose the configuration.
+
+**Aggregate sensors** (`FanControlCore.SensorAggregator`): Apple Silicon has no single CPU
+temperature key (Mac14,9: ~20 `Tp*`, `Te*`, `Tg*` keys), so a sensor-linked profile bound to one
+key follows one core. After filtering, every batch (discovery, each poll, the fresh read of a user
+apply) gets synthetic `SensorReading`s appended, computed from the **filtered** values, so
+`sensorReadings` and `plan` see the same aggregates. Each value is the maximum of the finite member
+readings; an aggregate without any finite member is omitted (Intel/fanless machines simply lack
+it, and a profile bound to a missing aggregate fails hot like any missing sensor).
+`sensorType` is the existing case `.greatest` (no new `SensorType` case, so persisted data and
+exhaustive switches are unaffected); `SensorReading.isAggregate` / `SensorAggregator.isAggregate(_:)`
+test for the `agg:` id prefix, which cannot collide with a 4-character SMC key.
+
+| id | name | members (Apple Silicon) | members (Intel) | overview |
+|---|---|---|---|---|
+| `agg:cpu` | CPU (max) | `Tp` `Te` `TC` | `Tp` `Te` `TC` | yes |
+| `agg:cpu.p` | CPU Performance Cores (max) | `Tp` | `Tp` | no |
+| `agg:cpu.e` | CPU Efficiency Cores (max) | `Te` | `Te` | no |
+| `agg:gpu` | GPU (max) | `Tg` | `Tg` `TG` | yes |
+
+Members are the table's prefixes filtered by `SafetyPolicy.defaultEmergencySensorPrefixes(appleSilicon:)`,
+so `TG*` (battery-area `ioft` keys on Mac14,9) is excluded on Apple Silicon exactly as for the
+emergency check. The table is `SensorAggregator.definitions(appleSilicon:)`; the manager uses
+`FanControlPlatform.sensorAggregateDefinitions` (also `manager.sensorAggregateDefinitions`).
+`FanControlEngine.plan` needs no change: `.sensor(sensorKey: "agg:cpu", …)` is looked up by id.
+Aggregate ids do not match any emergency prefix, so the emergency maximum and alerts are unchanged
+(an aggregate's value is always one member's value). `SensorCatalog.displayName(for:)` returns the
+aggregate name for `agg:` ids. `SensorAggregator.overview(_:definitions:)` keeps the overview
+aggregates (CPU, GPU) plus the readings they do not cover; the widget uses it for its default
+"3 hottest" list so a core is not listed twice. `fanfi-probe` prints the aggregates of the filtered
+samples after each temperature readout.
 
 **Safety policy selection:** `safetyPolicy` starts as `FanControlPlatform.defaultSafetyPolicy`
 = `SafetyPolicy.default(appleSilicon: FanControlPlatform.isAppleSilicon)`. On Apple Silicon the
@@ -212,11 +264,13 @@ These are the hooks for Live Activities (design doc §4.2).
 ## Helper-side checks (see `docs/helper.md` §4)
 
 The helper is the safety authority. Independently of the kit's planning it rejects writes to
-keys outside the allowlist (`F<n>Tg`, `F<n>Md`, `FS! `, `F<n>Mn`), payloads that are not 1 to 32
-bytes or do not match the key's `dataSize`, `F<n>Md` values other than 0/1, `F<n>Tg`/`F<n>Mn`
-values outside the hardware `F<n>Mn...F<n>Mx` read at session open (with a ±1 RPM rounding
-tolerance), and `FS! ` bits at or above `1 << FNum`. `safetyPolicy.enforceHardwareMinimum = false`
-therefore only affects client planning; sub-minimum targets fail at the helper.
+keys outside the allowlist (`F<n>Tg`, `F<n>Md`, `FS! `; `F<n>Mn` and `Ftst` are not allowed), keys
+whose SMC attributes lack the write bit `0x40`, payloads that are not 1 to 32 bytes or do not match
+the key's `dataSize`, `F<n>Md` values other than 0/1, `F<n>Tg` values outside the hardware
+`F<n>Mn...F<n>Mx` read at session open (with a ±1 RPM rounding tolerance), and `FS! ` bits at or
+above `1 << FNum` (`FanControlXPC.HelperWritePolicy.validate`). `safetyPolicy.enforceHardwareMinimum = false`
+therefore only affects client planning; sub-minimum targets are refused by `FanWriteStrategy`
+(`.rpmOutOfRange`, nothing written) and by the helper.
 
 ## Write sequences (`FanWriteStrategy`)
 
@@ -227,6 +281,13 @@ Detected per fan from key presence and `keyInfo`, not from the CPU architecture:
 | `.modeKey` (Apple Silicon) | `F<i>Md` exists | `F<i>Md ← 1`, then `F<i>Tg ← rpm` (`flt `) | `F<i>Md ← 0` |
 | `.forceBits` (Intel) | `FS! ` exists | `FS! ← mask \| 1<<i` (current mask read first), then `F<i>Tg ← rpm` (`fpe2`) | `FS! ← mask & ~(1<<i)` |
 | `.targetOnly` | neither | `F<i>Tg ← rpm` | nothing (the helper restores values on session close) |
+
+Mac14,9 / macOS 26: `FS! ` and `Ftst` are absent, so both fans are `.modeKey`; `F<i>Md` is `ui8 `
+(1 byte, `01` / `00`) and `F<i>Tg` little-endian `flt ` (2317 RPM = `00 d0 10 45`, the same bytes
+the read path decodes from `F<i>Mn`). `F<i>Mn` is never written. Manual targets outside the
+fan's `F<i>Mn...F<i>Mx` throw `.rpmOutOfRange` before any write is produced (`FanWriteInfo.rpmLimits`).
+`rollbackWrites(afterFailureOf:)` returns the writes that hand the fans of a failed manual list
+back to automatic.
 
 Mode writes always come before target writes. Batches write `FS! ` once with all bits merged.
 
