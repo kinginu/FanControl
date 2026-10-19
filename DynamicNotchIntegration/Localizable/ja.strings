@@ -9,6 +9,7 @@
   Interpolated keys use SwiftUI's format specifiers: String -> %@.
   Not localized on purpose: RPM, °C/°F, SMC keys, sensor names from SensorCatalog,
   fan names reported by the SMC, and FanControlError messages (English, from FanControlCore).
+  Aggregate sensor names (SensorAggregator, e.g. "CPU (max)") are localized below.
 */
 
 
@@ -96,6 +97,8 @@
 "Controlled by the system" = "システムが制御します";
 "Sensor" = "センサー";
 "Unavailable sensor (%@)" = "利用できないセンサー (%@)";
+"Aggregate" = "集約";
+"Individual Sensors" = "個別センサー";
 "Start Temperature" = "開始温度";
 "Maximum Temperature" = "最大温度";
 "Minimum speed at or below the start temperature, maximum speed at or above the maximum temperature." = "開始温度以下では最低回転数、最大温度以上では最大回転数で回ります。";
@@ -104,6 +107,12 @@
 /* MARK: Built-in profile names (FanProfile.automatic/silent/maximum; "Automatic" is shared with the mode picker above) */
 "Silent" = "静音";
 "Maximum" = "最大";
+
+/* MARK: Aggregate sensor names (SensorAggregator; FanControlFormatting.sensorName) */
+"CPU (max)" = "CPU（最大）";
+"CPU Performance Cores (max)" = "CPU 高性能コア（最大）";
+"CPU Efficiency Cores (max)" = "CPU 高効率コア（最大）";
+"GPU (max)" = "GPU（最大）";
 
 /* MARK: Sensors tab (FanControlSensorsTabView) */
 "Key" = "キー";

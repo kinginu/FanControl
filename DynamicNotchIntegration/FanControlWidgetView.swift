@@ -117,7 +117,7 @@ struct FanControlWidgetView: View {
             }
             ForEach(settings.visibleSensors(from: manager.sensorReadings).prefix(isCompact ? 2 : 4)) { sensor in
                 HStack(spacing: 4) {
-                    Text(verbatim: sensor.name)
+                    Text(verbatim: FanControlFormatting.sensorName(sensor))
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 2)

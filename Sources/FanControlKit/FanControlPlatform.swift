@@ -36,4 +36,10 @@ public enum FanControlPlatform {
     public static var defaultSafetyPolicy: SafetyPolicy {
         .default(appleSilicon: isAppleSilicon)
     }
+
+    /// `SensorAggregator.definitions(appleSilicon: isAppleSilicon)`: the
+    /// aggregate sensors `FanControlManager` appends to `sensorReadings`.
+    public static var sensorAggregateDefinitions: [SensorAggregateDefinition] {
+        SensorAggregator.definitions(appleSilicon: isAppleSilicon)
+    }
 }

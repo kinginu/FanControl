@@ -4,6 +4,8 @@
 // "Sensors" tab of the Fan Control settings pane: every discovered sensor
 // with its SMC key, name and temperature (replaces the earlier sensor table,
 // design doc §4.4). Sensor names are community-sourced (`SensorCatalog`).
+// Aggregate sensors ("CPU (max)", …; `SensorAggregator`) are listed first,
+// whatever the sort order, with a "sum" icon in the key column.
 
 import SwiftUI
 import Defaults
@@ -19,20 +21,27 @@ struct FanControlSensorsTabView: View {
     private var manager: FanControlManager { FanControlManager.shared }
 
     private var rows: [SensorReading] {
-        manager.sensorReadings.sorted(using: sortOrder)
+        FanControlFormatting.aggregatesFirst(manager.sensorReadings.sorted(using: sortOrder))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Table(rows, sortOrder: $sortOrder) {
                 TableColumn("Key", value: \.id) { sensor in
-                    Text(verbatim: sensor.id)
-                        .font(.body.monospaced())
+                    HStack(spacing: 4) {
+                        if sensor.isAggregate {
+                            Image(systemName: "sum")
+                                .foregroundStyle(.secondary)
+                                .help(Text("Aggregate"))
+                        }
+                        Text(verbatim: sensor.id)
+                            .font(.body.monospaced())
+                    }
                 }
-                .width(min: 50, ideal: 60, max: 80)
+                .width(min: 50, ideal: 70, max: 110)
 
                 TableColumn("Name", value: \.name) { sensor in
-                    Text(verbatim: sensor.name)
+                    Text(verbatim: FanControlFormatting.sensorName(sensor))
                 }
 
                 TableColumn("Temperature", value: \.temperature) { sensor in

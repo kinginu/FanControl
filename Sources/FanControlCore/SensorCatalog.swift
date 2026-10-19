@@ -85,11 +85,16 @@ public enum SensorCatalog {
     ]
 
     /// Display name for an SMC temperature key: exact `knownNames` match, then
-    /// prefix patterns, then `"Sensor <key>"`. Deterministic; distinct 4-character
+    /// prefix patterns, then `"Sensor <key>"`. Aggregate ids (`"agg:…"`,
+    /// `SensorAggregator`) return the aggregate's name (unknown aggregate ids:
+    /// `"Sensor <id>"`). Deterministic; distinct 4-character
     /// keys get distinct names (prefix names keep the key's remaining
     /// characters, and no exact name equals a name a prefix produces for a
     /// 4-character key; tested against every key seen on Mac14,9).
     public static func displayName(for key: String) -> String {
+        if SensorAggregator.isAggregate(key) {
+            return SensorAggregator.knownNames[key] ?? "Sensor \(key)"
+        }
         if let known = knownNames[key] { return known }
         for entry in prefixNames where key.hasPrefix(entry.prefix) {
             let suffix = key.dropFirst(entry.prefix.count).trimmingCharacters(in: .whitespaces)

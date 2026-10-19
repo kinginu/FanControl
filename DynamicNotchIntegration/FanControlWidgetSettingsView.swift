@@ -40,7 +40,8 @@ struct FanControlWidgetSettingsView: View {
             }
 
             Settings.Section(label: { Text("Sensors") }) {
-                SensorSelectionList(settings: $settings, sensors: manager.sensorReadings)
+                SensorSelectionList(settings: $settings,
+                                    sensors: FanControlFormatting.aggregatesFirst(manager.sensorReadings))
             }
 
             Settings.Section(label: { Text("Display") }) {
@@ -156,7 +157,7 @@ private struct SensorSelectionList: View {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(sensors) { sensor in
                             HStack {
-                                Text(sensor.name)
+                                Text(verbatim: FanControlFormatting.sensorName(sensor))
                                     .lineLimit(1)
                                 Text(verbatim: sensor.id)
                                     .font(.caption.monospaced())

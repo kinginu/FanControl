@@ -10,6 +10,7 @@
 import Foundation
 import Defaults
 import FanControlCore
+import FanControlKit
 
 // MARK: - Widget settings
 
@@ -30,7 +31,9 @@ struct FanControlWidgetSettings: Defaults.Serializable, Codable, Equatable, Hash
     var gridSize: GridSizeChoice = .medium
     /// Fan ids to show (`FanDevice.id`); `nil` shows every fan.
     var visibleFanIDs: [Int]? = nil
-    /// Sensor keys to show (`SensorReading.id`); `nil` shows the 3 hottest sensors.
+    /// Sensor keys to show (`SensorReading.id`, aggregate ids such as
+    /// `"agg:cpu"` included); `nil` shows the 3 hottest overview sensors
+    /// (see `visibleSensors(from:aggregateDefinitions:)`).
     var visibleSensorKeys: [String]? = nil
     /// Unit used for temperatures in the widget, the alert and the settings pane.
     var temperatureUnit: TemperatureUnit = .celsius
@@ -74,11 +77,18 @@ struct FanControlWidgetSettings: Defaults.Serializable, Codable, Equatable, Hash
         return fans.filter { ids.contains($0.id) }
     }
 
-    /// The sensors to display: the user's selection in selection order, or the
-    /// 3 hottest finite readings when nothing is selected.
-    func visibleSensors(from readings: [SensorReading]) -> [SensorReading] {
+    /// The sensors to display: the user's selection in selection order, or,
+    /// when nothing is selected, the 3 hottest finite readings of
+    /// `SensorAggregator.overview` — the CPU (max) / GPU (max) aggregates stand
+    /// in for their individual core keys (so the hottest core is not listed
+    /// twice), other sensors (battery, storage, …) compete as before. Without
+    /// aggregates (e.g. an older kit or no CPU/GPU keys) this is the plain
+    /// 3 hottest sensors.
+    func visibleSensors(from readings: [SensorReading],
+                        aggregateDefinitions: [SensorAggregateDefinition] = FanControlPlatform.sensorAggregateDefinitions)
+        -> [SensorReading] {
         guard let keys = visibleSensorKeys else {
-            return Array(readings
+            return Array(SensorAggregator.overview(readings, definitions: aggregateDefinitions)
                 .filter { $0.temperature.isFinite }
                 .sorted { $0.temperature > $1.temperature }
                 .prefix(3))
@@ -179,10 +189,29 @@ enum FanControlFormatting {
     /// Whether `sensor` is shown in red: the same rule as the high-temperature
     /// alert (`AlertEvaluator.evaluateHighTemperature`), i.e. only CPU/GPU sensors
     /// (`policy.emergencySensorPrefixes`) at or above `policy.highTemperatureAlert`.
+    /// An aggregate counts as CPU/GPU when one of its member prefixes is an
+    /// emergency prefix (its value is then that of an emergency sensor).
     static func isAlertTemperature(_ sensor: SensorReading, policy: SafetyPolicy) -> Bool {
-        sensor.temperature.isFinite
-            && sensor.temperature >= policy.highTemperatureAlert
-            && policy.emergencySensorPrefixes.contains { sensor.id.hasPrefix($0) }
+        guard sensor.temperature.isFinite, sensor.temperature >= policy.highTemperatureAlert else { return false }
+        if sensor.isAggregate {
+            let members = FanControlPlatform.sensorAggregateDefinitions
+                .first { $0.id == sensor.id }?.memberPrefixes ?? []
+            return members.contains { policy.emergencySensorPrefixes.contains($0) }
+        }
+        return policy.emergencySensorPrefixes.contains { sensor.id.hasPrefix($0) }
+    }
+
+    /// Display name for a reading: aggregate names ("CPU (max)", …, our own
+    /// labels) go through Localizable.strings; SMC sensor names from
+    /// `SensorCatalog` stay verbatim (community-sourced, not localized).
+    static func sensorName(_ sensor: SensorReading) -> String {
+        guard sensor.isAggregate else { return sensor.name }
+        return NSLocalizedString(sensor.name, comment: "Aggregate sensor name")
+    }
+
+    /// `readings` with the aggregates moved to the front (each part keeps its order).
+    static func aggregatesFirst(_ readings: [SensorReading]) -> [SensorReading] {
+        readings.filter(\.isAggregate) + readings.filter { !$0.isAggregate }
     }
 
     /// Localized display name for a profile: built-in names ("Automatic",

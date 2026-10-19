@@ -343,9 +343,15 @@ private struct FanModeEditor: View {
                     if !sensors.contains(where: { $0.id == key }) {
                         Text("Unavailable sensor (\(key))").tag(key)
                     }
-                    ForEach(sensors) { sensor in
-                        Text(verbatim: "\(sensor.name) (\(sensor.id)) · \(FanControlFormatting.temperature(sensor, unit: unit))")
-                            .tag(sensor.id)
+                    if aggregateSensors.isEmpty {
+                        sensorRows(individualSensors)
+                    } else {
+                        Section("Aggregate") {
+                            sensorRows(aggregateSensors)
+                        }
+                        Section("Individual Sensors") {
+                            sensorRows(individualSensors)
+                        }
                     }
                 }
                 .labelsHidden()
@@ -371,6 +377,17 @@ private struct FanModeEditor: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Aggregate sensors ("CPU (max)", …; `SensorAggregator`), listed first.
+    private var aggregateSensors: [SensorReading] { sensors.filter(\.isAggregate) }
+    private var individualSensors: [SensorReading] { sensors.filter { !$0.isAggregate } }
+
+    private func sensorRows(_ rows: [SensorReading]) -> some View {
+        ForEach(rows) { sensor in
+            Text(verbatim: "\(FanControlFormatting.sensorName(sensor)) (\(sensor.id)) · \(FanControlFormatting.temperature(sensor, unit: unit))")
+                .tag(sensor.id)
         }
     }
 
@@ -437,9 +454,11 @@ private struct FanModeEditor: View {
         )
     }
 
-    /// Hottest CPU/GPU sensor, else the first sensor, else empty.
+    /// The CPU (max) aggregate when present, else the hottest CPU/GPU sensor,
+    /// else the first sensor, else empty.
     private var defaultSensorKey: String {
-        FanControlEngine.hottestEmergencySensor(sensors, policy: .default)?.id ?? sensors.first?.id ?? ""
+        if sensors.contains(where: { $0.id == SensorAggregator.ID.cpu }) { return SensorAggregator.ID.cpu }
+        return FanControlEngine.hottestEmergencySensor(sensors, policy: .default)?.id ?? sensors.first?.id ?? ""
     }
 }
 #endif

@@ -116,6 +116,14 @@ print("plausible temperature keys found: \(sensors.count)")
 let sensorKeys = sensors.map(\.id)
 print("")
 
+// Aggregates are computed from filtered samples, as in FanControlManager.
+var sampleFilter = TemperatureSampleFilter()
+#if arch(arm64)
+let aggregateDefinitions = SensorAggregator.definitions(appleSilicon: true)
+#else
+let aggregateDefinitions = SensorAggregator.definitions(appleSilicon: false)
+#endif
+
 func readout() {
     let current = FanDiscovery.readCurrentRPMs(fans: fans, using: client)
     let target = FanDiscovery.readTargetRPMs(fans: fans, using: client)
@@ -131,6 +139,12 @@ func readout() {
     for reading in temps {
         let type = (SMCKey(reading.id).flatMap { try? client.keyInfo($0) })?.dataType.name ?? "?"
         print("  \(pad(reading.id, 4))  [\(type)]  \(lpad(String(format: "%.2f", reading.temperature), 7)) °C  \(reading.name)")
+    }
+    let filtered = sampleFilter.filter(temps)
+    let aggregates = SensorAggregator.aggregates(of: filtered, definitions: aggregateDefinitions)
+    print("== Aggregates (from filtered samples; \(sampleFilter.substitutedKeys.count) substituted) ==")
+    for reading in aggregates {
+        print("  \(pad(reading.id, 9))  \(lpad(String(format: "%.2f", reading.temperature), 7)) °C  \(reading.name)")
     }
 }
 
