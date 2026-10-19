@@ -27,11 +27,17 @@ public enum SMCValue: Equatable, Sendable {
 /// - `spXY`: big-endian `Int16` (two's complement), value = raw / 2^Y
 ///   (`sp78` → /256).
 /// - `ui8 `/`ui16`/`ui32`/`ui64`: big-endian unsigned integers;
-///   `si8 `/`si16`/`si32`: big-endian signed integers.
+///   `si8 `/`si16`/`si32`/`si64`: big-endian signed integers.
+///   Caveat (Mac14,9 / macOS 26 dump, `docs/verification/`): `#KEY`, `FOFC`,
+///   `F<n>Fc` are big-endian, but many other integer keys (battery `B*`, all
+///   observed `ui64`/`si64`) look little-endian. Endianness of integer keys is
+///   therefore per key; only rely on integer decoding for keys verified on
+///   hardware (the fan/temperature path uses `flt ` and `ui8 ` only).
 /// - `flag`: 1 byte, non-zero = `true`.
 /// - `ch8*`: ASCII text, terminated by the first NUL, whitespace-trimmed.
-/// - `ioft`: 8-byte big-endian unsigned fixed point with 16 fractional bits
-///   (value = raw / 65536).
+/// - `ioft`: 8-byte **little-endian** unsigned fixed point with 16 fractional
+///   bits (value = raw / 65536). Verified on Mac14,9 / macOS 26: `TG0B` =
+///   `66 e6 20 00 00 00 00 00` → 32.9 °C, matching `TB0T` (`flt `) = 32.9 °C.
 /// - `hex_` and unknown types: returned as raw `.bytes`.
 ///
 /// Fixed-size types require the buffer to have exactly the type's width;
@@ -49,7 +55,7 @@ public enum SMCCodec {
         case .ui8, .ui16, .ui32, .ui64:
             guard bytes.count == width(of: type) else { return nil }
             return .number(Double(bigEndian(bytes)))
-        case .si8, .si16, .si32:
+        case .si8, .si16, .si32, .si64:
             guard let width = width(of: type), bytes.count == width else { return nil }
             let raw = bigEndian(bytes)
             let shift = UInt64(64 - width * 8)
@@ -65,7 +71,7 @@ public enum SMCCodec {
                 .trimmingCharacters(in: .whitespacesAndNewlines))
         case .ioft:
             guard bytes.count == 8 else { return nil }
-            return .number(Double(bigEndian(bytes)) / 65536.0)
+            return .number(Double(littleEndian(bytes)) / 65536.0)
         case .hex:
             return .bytes(bytes)
         default:
@@ -98,19 +104,16 @@ public enum SMCCodec {
         case .ui8, .ui16, .ui32, .ui64:
             guard let width = width(of: type), size == width else { return nil }
             return toBigEndian(clampUnsigned(value.rounded(), bits: width * 8), width: width)
-        case .si8, .si16, .si32:
+        case .si8, .si16, .si32, .si64:
             guard let width = width(of: type), size == width else { return nil }
-            let bits = width * 8
-            let lo = -Double(Int64(1) << (bits - 1))
-            let hi = Double((Int64(1) << (bits - 1)) - 1)
-            let raw = Int64(min(max(value.rounded(), lo), hi))
+            let raw = clampSigned(value.rounded(), bits: width * 8)
             return toBigEndian(UInt64(bitPattern: raw), width: width)
         case .flag:
             guard size == 1 else { return nil }
             return [value != 0 ? 1 : 0]
         case .ioft:
             guard size == 8 else { return nil }
-            return toBigEndian(clampUnsigned((value * 65536.0).rounded(), bits: 64), width: 8)
+            return toLittleEndian(clampUnsigned((value * 65536.0).rounded(), bits: 64), width: 8)
         case .ch8, .hex:
             return nil
         default:
@@ -133,7 +136,7 @@ public enum SMCCodec {
         case .ui8, .si8, .flag: return 1
         case .ui16, .si16: return 2
         case .ui32, .si32, .flt: return 4
-        case .ui64, .ioft: return 8
+        case .ui64, .si64, .ioft: return 8
         default: return type.fixedPointLayout != nil ? 2 : nil
         }
     }
@@ -145,6 +148,15 @@ public enum SMCCodec {
         // 2^64 is exactly representable as a Double; anything >= it saturates.
         if value >= 18_446_744_073_709_551_616.0 { return limit }
         return min(UInt64(value), limit)
+    }
+
+    /// Clamps a rounded double into the signed `bits`-wide range without trapping
+    /// (`Double(Int64.max)` rounds up to 2^63, so 64-bit saturates explicitly).
+    private static func clampSigned(_ value: Double, bits: Int) -> Int64 {
+        let bound = Double(sign: .plus, exponent: bits - 1, significand: 1) // 2^(bits-1)
+        if value >= bound { return bits == 64 ? Int64.max : (Int64(1) << Int64(bits - 1)) - 1 }
+        if value <= -bound { return bits == 64 ? Int64.min : -(Int64(1) << Int64(bits - 1)) }
+        return Int64(value)
     }
 
     private static func bigEndian(_ bytes: [UInt8]) -> UInt64 {

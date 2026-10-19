@@ -12,7 +12,7 @@ public enum SMCDataType: Hashable, Sendable {
     case fpe2, fp1f, fp4c, fp5b, fp6a, fp79, fp88, fpa6, fpc4
     case sp78, sp5a, sp69, sp87, sp96, spb4, spf0
     case ui8, ui16, ui32, ui64
-    case si8, si16, si32
+    case si8, si16, si32, si64
     case flag
     case ch8
     case hex
@@ -26,7 +26,7 @@ public enum SMCDataType: Hashable, Sendable {
         (.sp78, "sp78"), (.sp5a, "sp5a"), (.sp69, "sp69"), (.sp87, "sp87"), (.sp96, "sp96"),
         (.spb4, "spb4"), (.spf0, "spf0"),
         (.ui8, "ui8 "), (.ui16, "ui16"), (.ui32, "ui32"), (.ui64, "ui64"),
-        (.si8, "si8 "), (.si16, "si16"), (.si32, "si32"),
+        (.si8, "si8 "), (.si16, "si16"), (.si32, "si32"), (.si64, "si64"),
         (.flag, "flag"), (.ch8, "ch8*"), (.hex, "hex_"), (.ioft, "ioft"),
     ]
 
@@ -71,7 +71,7 @@ public enum SMCDataType: Hashable, Sendable {
     /// `ioft`). `flag`, `ch8*`, `hex_` and unknown non-fixed-point types are not numeric.
     public var isNumeric: Bool {
         switch self {
-        case .flt, .ui8, .ui16, .ui32, .ui64, .si8, .si16, .si32, .ioft:
+        case .flt, .ui8, .ui16, .ui32, .ui64, .si8, .si16, .si32, .si64, .ioft:
             return true
         case .flag, .ch8, .hex:
             return false

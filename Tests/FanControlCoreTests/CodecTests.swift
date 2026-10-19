@@ -57,13 +57,14 @@ struct SMCDataTypeTests {
         #expect(SMCDataType(name: "ch8*") == .ch8)
         #expect(SMCDataType(name: "hex_") == .hex)
         #expect(SMCDataType(name: "ioft") == .ioft)
+        #expect(SMCDataType(name: "si64") == .si64)
         #expect(SMCDataType(name: "{fds") == .unknown("{fds"))
         #expect(SMCDataType(fourCC: 0x7370_3738) == .sp78)
         #expect(SMCDataType(fourCC: 0x666C_7420) == .flt)
     }
 
     @Test func testNameRoundtrip() {
-        for type: SMCDataType in [.flt, .fpe2, .fp1f, .sp78, .sp5a, .ui8, .ui64, .si32, .flag, .ch8, .hex, .ioft] {
+        for type: SMCDataType in [.flt, .fpe2, .fp1f, .sp78, .sp5a, .ui8, .ui64, .si32, .si64, .flag, .ch8, .hex, .ioft] {
             #expect(SMCDataType(name: type.name) == type)
             #expect(type.name.count == 4)
         }
@@ -86,6 +87,7 @@ struct SMCDataTypeTests {
         #expect(SMCDataType.sp78.isNumeric)
         #expect(SMCDataType.ui32.isNumeric)
         #expect(SMCDataType.ioft.isNumeric)
+        #expect(SMCDataType.si64.isNumeric)
         #expect(!SMCDataType.flag.isNumeric)
         #expect(!SMCDataType.ch8.isNumeric)
         #expect(!SMCDataType.hex.isNumeric)
@@ -147,8 +149,31 @@ struct SMCCodecTests {
     }
 
     @Test func testIoft() {
-        #expect(SMCCodec.decode([0, 0, 0, 0, 0, 0x01, 0x80, 0x00], as: .ioft) == .number(1.5))
-        #expect(SMCCodec.encode(1.5, as: .ioft, size: 8) == [0, 0, 0, 0, 0, 0x01, 0x80, 0x00])
+        // Little-endian 16.16 fixed point.
+        #expect(SMCCodec.decode([0x00, 0x80, 0x01, 0, 0, 0, 0, 0], as: .ioft) == .number(1.5))
+        #expect(SMCCodec.encode(1.5, as: .ioft, size: 8) == [0x00, 0x80, 0x01, 0, 0, 0, 0, 0])
+        #expect(SMCCodec.decode([0x00, 0x80, 0x01], as: .ioft) == nil)
+    }
+
+    /// Raw `ioft` temperature keys from the Mac14,9 / macOS 26 dump.
+    @Test func testIoftRealDump() throws {
+        let tg0b = try #require(SMCCodec.decode([0x66, 0xE6, 0x20, 0, 0, 0, 0, 0], as: .ioft)?.doubleValue)
+        #expect(abs(tg0b - 32.9) < 0.001)   // TB0T (flt) read 32.90 °C at the same time
+        let tr0z = try #require(SMCCodec.decode([0x9A, 0xD9, 0x33, 0, 0, 0, 0, 0], as: .ioft)?.doubleValue)
+        #expect(abs(tr0z - 51.85) < 0.001)
+        #expect(SMCCodec.decode([0, 0, 0x20, 0, 0, 0, 0, 0], as: .ioft) == .number(32))  // TG0C
+    }
+
+    @Test func testSi64() {
+        #expect(SMCCodec.decode([0, 0, 0, 0, 0, 0, 0x01, 0x00], as: .si64) == .number(256))
+        #expect(SMCCodec.decode([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE], as: .si64) == .number(-2))
+        #expect(SMCCodec.decode([0, 0, 0, 0], as: .si64) == nil)
+        #expect(SMCCodec.encode(-2, as: .si64, size: 8) == [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE])
+        // Saturates instead of trapping at the 64-bit bounds.
+        #expect(SMCCodec.encode(1e30, as: .si64, size: 8) == [0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+        #expect(SMCCodec.encode(-1e30, as: .si64, size: 8) == [0x80, 0, 0, 0, 0, 0, 0, 0])
+        #expect(SMCCodec.encode(1e9, as: .si16, size: 2) == [0x7F, 0xFF])
+        #expect(SMCCodec.encode(-1e9, as: .si16, size: 2) == [0x80, 0x00])
     }
 
     @Test func testDoubleValue() {
