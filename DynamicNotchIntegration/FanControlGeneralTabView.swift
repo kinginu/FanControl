@@ -8,10 +8,11 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import Defaults
-// `Settings` (sindresorhus/Settings) can clash with SwiftUI's `Settings` scene;
-// qualify `Settings.Container` / `Settings.Section` the same way DynamicNotch's
-// existing settings views do (see PATCHES.md (d)).
+// `Settings` (sindresorhus/Settings) clashes with SwiftUI's `Settings` scene.
+// The scoped `import enum` makes `Settings.Container` / `Settings.Section`
+// resolve to the package's namespace in this file (see PATCHES.md (d)).
 import Settings
+import enum Settings.Settings
 import FanControlCore
 import FanControlKit
 

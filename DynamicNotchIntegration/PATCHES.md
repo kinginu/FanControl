@@ -106,19 +106,33 @@ settings: { widget in
 
 ## (d) 設定ウィンドウに「Fan Control」ペインを登録
 
-**`Settings` の名前衝突に注意:** sindresorhus/Settings の `Settings` モジュールは、SwiftUI と一緒に import すると SwiftUI の
-`Settings` シーン型と衝突し、`Settings.PaneIdentifier` / `Settings.Pane` / `Settings.Container` / `Settings.Section` が曖昧・誤解決に
-なることがある。DynamicNotch の既存設定ビューと設定ペイン登録箇所が使っている修飾（モジュール修飾や typealias など）を確認し、
-下の断片と `FanControlGeneralTabView.swift` にも同じ書き方を使うこと。
+**`Settings` の名前衝突に注意:** sindresorhus/Settings の `Settings` 名前空間（`enum Settings`）は、SwiftUI と一緒に import すると
+SwiftUI の `Settings` シーン型（`struct Settings<Content>: Scene`）と衝突する。実 SDK + Settings 3.1.2 での型検査
+（`Tools/IntegrationTypeCheck`）では、`extension Settings.PaneIdentifier` は「'Settings' is ambiguous for type lookup」、
+`Settings.Pane(…)` は SwiftUI 側に誤解決されて「type 'Settings<Content>' has no member 'Pane'」になった。
+このファイルの先頭で `import enum Settings.Settings`（スコープ付き import。パッケージ自身が推奨している書き方）を追加すれば
+`Settings.*` が sindresorhus/Settings に解決される。代わりにパッケージ提供の `typealias AppSettings = Settings` を使い
+`AppSettings.Pane` などと書いてもよい。DynamicNotch の既存ペイン登録箇所が既にどちらかを使っていればそれに合わせる。
 
 `Settings.PaneIdentifier` の定義と、`SettingsWindowController(panes:)`（または `Settings { … }` シーン）に渡している配列に追加する:
 
+Swift 6 言語モードでビルドしている場合は `import Settings` を `@preconcurrency import Settings` にする
+（Settings 3.1.2 の `PaneIdentifier` は `Sendable` でないため、`static let fanControl` が
+「not concurrency-safe because non-'Sendable' type 'Settings.PaneIdentifier'」になる）。Swift 5 モードでは不要。
+
 ```swift
+import SwiftUI
+import Settings                 // Swift 6 モードでは @preconcurrency import Settings
+import enum Settings.Settings   // `Settings.*` を sindresorhus/Settings に解決させる
+
 extension Settings.PaneIdentifier {
     static let fanControl = Self("fanControl")
 }
 
-let FanControlSettingsPaneController: () -> SettingsPane = {
+// NSHostingController を生成するので @MainActor（Swift 6 言語モードでは必須。
+// グローバルな `let …: () -> SettingsPane = { … }` は Swift 6 で非 Sendable のグローバル変数としてエラーになる）。
+@MainActor
+func FanControlSettingsPaneController() -> SettingsPane {
     let pane = Settings.Pane(
         identifier: .fanControl,
         title: String(localized: "Fan Control"),

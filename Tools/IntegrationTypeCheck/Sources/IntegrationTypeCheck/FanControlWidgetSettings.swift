@@ -1,0 +1,1 @@
+../../../../DynamicNotchIntegration/FanControlWidgetSettings.swift

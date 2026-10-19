@@ -7,6 +7,8 @@
 import SwiftUI
 import Defaults
 import Settings
+// Resolve `Settings.*` to sindresorhus/Settings, not SwiftUI's `Settings` scene (PATCHES.md (d)).
+import enum Settings.Settings
 import FanControlCore
 import FanControlKit
 
