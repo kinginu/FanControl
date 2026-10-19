@@ -19,9 +19,17 @@ public struct SMCKeyInfo: Hashable, Sendable {
         self.rawType = rawType
     }
 
-    /// Whether the key is writable. `0x80` is the commonly cited write bit in
-    /// community SMC tooling; it is not officially documented by Apple.
-    public var isWritable: Bool { attributes & 0x80 != 0 }
+    /// Whether the key is readable (`0x80`). Not documented by Apple; on the
+    /// Mac14,9 / macOS 26 dump every key that read successfully had `0x80` set and
+    /// every key without it failed to read (`docs/verification/`).
+    public var isReadable: Bool { attributes & 0x80 != 0 }
+
+    /// Whether the key is writable (`0x40`). Not documented by Apple. `0x80` is
+    /// the read bit, not the write bit: read-only keys such as `#KEY`, `FNum`
+    /// and `F<n>Mn` report `0x80`/`0x84`, while `F<n>Tg` (`0xd4`) and `F<n>Md`
+    /// (`0xd0`) also carry `0x40`. Inferred from attributes only; no write has
+    /// been attempted to confirm it.
+    public var isWritable: Bool { attributes & 0x40 != 0 }
 }
 
 /// Read-only access to the SMC. Implemented by the IOKit-backed reader on

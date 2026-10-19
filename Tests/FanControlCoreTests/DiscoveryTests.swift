@@ -52,8 +52,13 @@ struct FanDiscoveryTests {
         #expect(throws: FanControlError.unsupportedDataType("ch8*")) {
             try reader.readNumber("TZZZ")
         }
-        #expect(SMCKeyInfo(dataSize: 2, dataType: .fpe2, attributes: 0xD4).isWritable)
-        #expect(!SMCKeyInfo(dataSize: 2, dataType: .fpe2, attributes: 0x40).isWritable)
+        // Attributes as reported on Mac14,9 / macOS 26: F0Tg 0xd4, F0Md 0xd0, F0Mn 0x84, FNum 0x80.
+        #expect(SMCKeyInfo(dataSize: 4, dataType: .flt, attributes: 0xD4).isWritable)
+        #expect(SMCKeyInfo(dataSize: 1, dataType: .ui8, attributes: 0xD0).isWritable)
+        #expect(!SMCKeyInfo(dataSize: 4, dataType: .flt, attributes: 0x84).isWritable)
+        #expect(!SMCKeyInfo(dataSize: 1, dataType: .ui8, attributes: 0x80).isWritable)
+        #expect(SMCKeyInfo(dataSize: 1, dataType: .ui8, attributes: 0x80).isReadable)
+        #expect(!SMCKeyInfo(dataSize: 1, dataType: .flag, attributes: 0x50).isReadable)
     }
 }
 
