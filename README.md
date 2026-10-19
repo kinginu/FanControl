@@ -54,7 +54,7 @@ Mac（Apple Silicon, macOS 26, Swift 6.3.3 / Command Line Tools）で確認済�
   `Tools/IntegrationTypeCheck` で `swift build`（Swift 5 / Swift 6 言語モードとも警告・エラー 0）。DynamicNotch 側はスタブ（`docs/integration.md` §7）
 
 テストは Swift Testing（`import Testing`）で書かれている。XCTest は Xcode.app にしか同梱されないため
-XCTest から移行した。Xcode.app があれば、または Linux の Swift 6 ツールチェーンでは、そのまま `swift test` で動く。
+XCTest から移行した。Xcode.app があれば（確認済み: Xcode 26.6 で `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` → 113 tests 通過）、または Linux の Swift 6 ツールチェーンでは、そのまま `swift test` で動く。
 Command Line Tools だけの環境では Testing.framework の検索パスを自分で渡す必要がある（下記）。
 SMC の読取確認は `swift run fanfi-probe`（`--dump` で全キー、`--watch N` で繰返し）。読み取り専用で sudo も不要。
 
