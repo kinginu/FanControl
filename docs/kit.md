@@ -159,7 +159,7 @@ the DynamicNotch drop-in UI this is `FanControlAlertCoordinator.syncManagerSetti
 (fallback for the helper and default of `clientTeamID`), and optionally
 `FanControlManager.shared.clientTeamID` at launch (what the *app* requires of the helper:
 `FanControlHelperConstants.helperCodeSigningRequirement(teamID:)` =
-`anchor apple generic and identifier "com.example.dynamicnotch.DynamicNotch.fancontrol" and certificate leaf[subject.OU] = "<teamID>"`).
+`anchor apple generic and identifier "com.example.dynamicnotch.DynamicNotch.fanfi" and certificate leaf[subject.OU] = "<teamID>"`).
 Replacing the constant makes the runtime assignment unnecessary.
 
 ## Errors

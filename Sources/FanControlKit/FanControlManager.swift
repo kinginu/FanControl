@@ -179,7 +179,7 @@ public final class FanControlManager: @unchecked Sendable {
     @ObservationIgnored private let helperClient: HelperClient
     @ObservationIgnored private let installer: HelperInstaller
     @ObservationIgnored private let serializer = WriteSerializer()
-    @ObservationIgnored private let pollQueue = DispatchQueue(label: "com.example.dynamicnotch.DynamicNotch.fancontrol.poll",
+    @ObservationIgnored private let pollQueue = DispatchQueue(label: "com.example.dynamicnotch.DynamicNotch.fanfi.poll",
                                                               qos: .utility)
     @ObservationIgnored private let defaults: UserDefaults
 

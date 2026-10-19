@@ -11,7 +11,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>com.example.dynamicnotch.DynamicNotch.fancontrol</string>
+	<string>com.example.dynamicnotch.DynamicNotch.fanfi</string>
 	<key>CFBundleName</key>
 	<string>FanControlHelper</string>
 	<key>CFBundleInfoDictionaryVersion</key>

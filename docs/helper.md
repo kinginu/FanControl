@@ -11,7 +11,7 @@ DynamicNotch のファン制御で SMC に書き込むための root 権限 laun
 | `Sources/FanControlXPC/FanControlHelperProtocol.swift` | `@objc` XPC プロトコル、エラーコード、`makeHelperInterface()` |
 | `Sources/FanControlSMC/` | IOKit AppleSMC アクセス（`SMCConnection`, `SMCClient`） |
 | `Sources/FanControlHelper/` | デーモン本体（`main.swift`, `HelperListenerDelegate`, `HelperService`, `SessionRegistry`） |
-| `Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fancontrol.plist` | launchd plist（唯一の正本） |
+| `Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` | launchd plist（唯一の正本） |
 | `Support/Helper-Info.plist` | ヘルパー実行ファイルに埋め込む Info.plist テンプレート |
 
 ## 1. バンドル配置
@@ -20,7 +20,7 @@ DynamicNotch のファン制御で SMC に書き込むための root 権限 laun
 DynamicNotch.app/Contents/
   MacOS/DynamicNotch
   MacOS/FanControlHelper                                  ← ヘルパー実行ファイル
-  Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fancontrol.plist
+  Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist
 ```
 
 Xcode での設定:
@@ -31,12 +31,12 @@ Xcode での設定:
    `-sectcreate __TEXT __info_plist $(SRCROOT)/FanControl/Support/Helper-Info.plist`
    （素の実行ファイルなので Info.plist を Mach-O に埋め込む。`Bundle.main.infoDictionary` から `FanControlClientTeamID` と `CFBundleVersion` を読む。）
    この手動方式に統一し、`GENERATE_INFOPLIST_FILE = NO`、`CREATE_INFOPLIST_SECTION_IN_BINARY = NO`、`INFOPLIST_FILE` は空にする
-   （Xcode 側でもセクションを作ると重複する）。`PRODUCT_BUNDLE_IDENTIFIER = com.example.dynamicnotch.DynamicNotch.fancontrol`
+   （Xcode 側でもセクションを作ると重複する）。`PRODUCT_BUNDLE_IDENTIFIER = com.example.dynamicnotch.DynamicNotch.fanfi`
    （署名 identifier。アプリはヘルパーにこの identifier を要求する。§2）。
 3. DynamicNotch アプリターゲットに **Copy Files** フェーズを 2 つ追加:
    - Destination `Executables`（= `Contents/MacOS`）: `FanControlHelper`
-   - Destination `Wrapper`, Subpath `Contents/Library/LaunchDaemons`: `com.example.dynamicnotch.DynamicNotch.fancontrol.plist`
-   launchd plist の正本は `Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fancontrol.plist` のみ（SwiftPM ターゲット内にはコピーを置かない）。plist の配置は Xcode の Copy Files が担う。
+   - Destination `Wrapper`, Subpath `Contents/Library/LaunchDaemons`: `com.example.dynamicnotch.DynamicNotch.fanfi.plist`
+   launchd plist の正本は `Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` のみ（SwiftPM ターゲット内にはコピーを置かない）。plist の配置は Xcode の Copy Files が担う。
 4. アプリターゲットの Target Dependencies に `FanControlHelper` を追加。
 
 ## 2. 署名
@@ -49,14 +49,14 @@ Xcode での設定:
 - `<TeamID>` は `Helper-Info.plist` の `FanControlClientTeamID`。未設定時は `FanControlHelperConstants.teamIdentifierPlaceholder`（`TEAMID0000`）にフォールバックし警告ログを出す（＝実質すべてのクライアントを拒否）。**出荷前に `Support/Helper-Info.plist` と `teamIdentifierPlaceholder` の 2 か所を実 Team ID に置換**（設計書 §5.1）。
 - 逆方向にアプリもヘルパーを検証する: `HelperClient` は新しい接続ごとに `setCodeSigningRequirement` で
   ```
-  anchor apple generic and identifier "com.example.dynamicnotch.DynamicNotch.fancontrol" and certificate leaf[subject.OU] = "<TeamID>"
+  anchor apple generic and identifier "com.example.dynamicnotch.DynamicNotch.fanfi" and certificate leaf[subject.OU] = "<TeamID>"
   ```
   （`FanControlHelperConstants.helperCodeSigningRequirement(teamID:)`）を課す。`<TeamID>` は `FanControlManager.shared.clientTeamID`
   （既定値 `teamIdentifierPlaceholder`）。定数を実 Team ID に置換するか、起動時に `clientTeamID` を設定する。
 - **App Sandbox:** ヘルパーは root の launchd デーモンで、**サンドボックス化しない**（App Sandbox entitlement を付けない。
   IOKit の AppleSMC 書込と XPC リスナーに必要）。DynamicNotch 本体も非サンドボックスが前提。サンドボックス化する場合は
   アプリに `com.apple.security.temporary-exception.iokit-user-client-class` = `AppleSMCClient`（アプリ内での SMC 読み取り用）と
-  `com.apple.security.temporary-exception.mach-lookup.global-name` = `com.example.dynamicnotch.DynamicNotch.fancontrol`（ヘルパーへの接続用）が必須
+  `com.apple.security.temporary-exception.mach-lookup.global-name` = `com.example.dynamicnotch.DynamicNotch.fanfi`（ヘルパーへの接続用）が必須
   （docs/integration.md §4）。
 - 開発中（Apple Development 署名）は `anchor apple generic` を満たすので、Team ID を開発チームのものにすれば動作する。
 
@@ -151,7 +151,7 @@ case .notFound: /* plist がバンドルに無い・配置ミス */ break
 ```sh
 # 1. ビルド・署名済みの DynamicNotch.app を /Applications に置き、アプリから register() → 設定で承認
 # 2. launchd の状態
-sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fancontrol
+sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi
 # 3. ログ
 log stream --level debug --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'
 # 4. 埋め込み Info.plist / 署名の確認
@@ -167,7 +167,7 @@ codesign -d -r- DynamicNotch.app
 3. 許可外キー（例 `TC0P`）は `4 keyNotAllowed`、サイズ不一致は `7 badRequest`。
 4. 別プロセス（署名済み 2 つ目のビルド）から `openSession` → `1 notSessionOwner`。
 5. 手動制御中にアプリを `kill -9` → ログに "went away; releasing session"、ファンが自動制御に戻る。
-   ヘルパーを `sudo launchctl kill SIGTERM system/com.example.dynamicnotch.DynamicNotch.fancontrol` で止めても同様に自動制御に戻る（ログに "SIGTERM received"）。
+   ヘルパーを `sudo launchctl kill SIGTERM system/com.example.dynamicnotch.DynamicNotch.fanfi` で止めても同様に自動制御に戻る（ログに "SIGTERM received"）。
    範囲外の目標値（`F0Mn` 未満など）や `F0Md` = 2 は `7 badRequest`。
 6. 未署名・別 Team ID のクライアントは接続が即座に無効化される。
 7. `SMAppService.daemon(plistName:).unregister()` 後、`launchctl print` でサービスが消える。

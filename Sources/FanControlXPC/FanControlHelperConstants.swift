@@ -6,12 +6,12 @@ import Foundation
 /// unit-tested on any platform.
 public enum FanControlHelperConstants {
     /// Mach service name vended by the helper (launchd `MachServices` key).
-    public static let machServiceName = "com.example.dynamicnotch.DynamicNotch.fancontrol"
+    public static let machServiceName = "com.example.dynamicnotch.DynamicNotch.fanfi"
     /// launchd label. Must match `Label` in the LaunchDaemon plist.
     public static let launchdLabel = machServiceName
     /// File name of the LaunchDaemon plist inside `DynamicNotch.app/Contents/Library/LaunchDaemons/`.
     /// Pass this to `SMAppService.daemon(plistName:)`.
-    public static let plistName = "com.example.dynamicnotch.DynamicNotch.fancontrol.plist"
+    public static let plistName = "com.example.dynamicnotch.DynamicNotch.fanfi.plist"
     /// Executable name inside `DynamicNotch.app/Contents/MacOS/`.
     public static let helperExecutableName = "FanControlHelper"
     /// Bump whenever `FanControlHelperProtocol` changes incompatibly. The app compares

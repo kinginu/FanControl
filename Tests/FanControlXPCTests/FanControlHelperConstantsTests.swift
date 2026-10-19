@@ -34,7 +34,7 @@ struct FanControlHelperConstantsTests {
 extension FanControlHelperConstantsTests {
     @Test func testHelperRequirement() {
         let req = FanControlHelperConstants.helperCodeSigningRequirement(teamID: "ABCDE12345")
-        #expect(req == "anchor apple generic and identifier \"com.example.dynamicnotch.DynamicNotch.fancontrol\" and certificate leaf[subject.OU] = \"ABCDE12345\"")
+        #expect(req == "anchor apple generic and identifier \"com.example.dynamicnotch.DynamicNotch.fanfi\" and certificate leaf[subject.OU] = \"ABCDE12345\"")
         #expect(FanControlHelperConstants.helperIdentifier == FanControlHelperConstants.machServiceName)
     }
 }

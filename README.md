@@ -2,7 +2,7 @@
 
 統合設計書（`docs/integration-design.md`）の案C（全 Swift 実装 + SMAppService 方式の特権ヘルパー）の実装である。
 SMC の読取（温度・RPM）はアプリ内で IOKit を直接呼び、書込だけを root の launchd ヘルパーに XPC 経由で依頼する。
-Mach サービス名は `com.example.dynamicnotch.DynamicNotch.fancontrol`（既存の Macs Fan Control と競合しない）。
+Mach サービス名は `com.example.dynamicnotch.DynamicNotch.fanfi`（既存の FanFi と競合しない）。
 ホストアプリのプロジェクトに依存せずビルド・テストできるよう、
 本実装は DynamicNotch 本体から切り離した独立 SwiftPM パッケージとして作成し、Xcode プロジェクトへローカルパッケージとして組み込む方針にしている。
 

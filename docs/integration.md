@@ -10,7 +10,7 @@
 |---|---|
 | `FanControl/Package.swift` | SwiftPM パッケージ（ライブラリ `FanControlCore` / `FanControlSMC` / `FanControlXPC` / `FanControlKit`、および Linux/CI 確認専用の実行ファイル `FanControlHelper`。後者は同梱しない。§2 参照） |
 | `FanControl/Support/Helper-Info.plist` | ヘルパーに埋め込む Info.plist（`FanControlClientTeamID` を含む） |
-| `FanControl/Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fancontrol.plist` | launchd plist（唯一の正本。パッケージ内の他の場所にコピーは無い） |
+| `FanControl/Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` | launchd plist（唯一の正本。パッケージ内の他の場所にコピーは無い） |
 | `FanControl/DynamicNotchIntegration/*.swift` | DynamicNotch ターゲットにコピーするドロップイン UI ファイル（下表） |
 | `FanControl/DynamicNotchIntegration/PATCHES.md` | 既存ソースへの手作業パッチ (a)〜(g) |
 | `FanControl/DynamicNotchIntegration/Localizable/{en,ja}.strings` | 追加文字列（UTF-8 ソース） |
@@ -48,8 +48,8 @@ Mach-O に埋め込まないため、ヘルパーが Team ID をプレースホ�
 3. ターゲットの Frameworks に `FanControlCore` / `FanControlSMC` / `FanControlXPC` を追加。
 4. Build Settings（Info.plist の埋め込みは **手動 `-sectcreate` 方式に統一** する）:
    - `PRODUCT_NAME = FanControlHelper`
-   - `PRODUCT_BUNDLE_IDENTIFIER = com.example.dynamicnotch.DynamicNotch.fancontrol`（署名 identifier になる。アプリはヘルパーに
-     `identifier "com.example.dynamicnotch.DynamicNotch.fancontrol"` を要求する: `FanControlHelperConstants.helperCodeSigningRequirement`）
+   - `PRODUCT_BUNDLE_IDENTIFIER = com.example.dynamicnotch.DynamicNotch.fanfi`（署名 identifier になる。アプリはヘルパーに
+     `identifier "com.example.dynamicnotch.DynamicNotch.fanfi"` を要求する: `FanControlHelperConstants.helperCodeSigningRequirement`）
    - `OTHER_LDFLAGS = -sectcreate __TEXT __info_plist $(SRCROOT)/FanControl/Support/Helper-Info.plist`
    - `GENERATE_INFOPLIST_FILE = NO` と `CREATE_INFOPLIST_SECTION_IN_BINARY = NO`（どちらかが YES だと Xcode も
      `__info_plist` セクションを作り、手動 `-sectcreate` と重複してリンクエラーになるか、生成側の Info.plist に
@@ -68,11 +68,11 @@ DynamicNotch アプリターゲットで:
 1. **Build Phases ▸ Target Dependencies** に `FanControlHelper` を追加。
 2. **Copy Files** フェーズを 2 つ追加:
    - Destination **Executables**（= `Contents/MacOS`）: `FanControlHelper`（Code Sign On Copy にチェック）
-   - Destination **Wrapper**, Subpath `Contents/Library/LaunchDaemons`: `FanControl/Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fancontrol.plist`
+   - Destination **Wrapper**, Subpath `Contents/Library/LaunchDaemons`: `FanControl/Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist`
 3. ビルド後の配置を確認:
    ```
    DynamicNotch.app/Contents/MacOS/FanControlHelper
-   DynamicNotch.app/Contents/Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fancontrol.plist
+   DynamicNotch.app/Contents/Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist
    ```
 
 ## 4. 署名と Team ID
@@ -101,7 +101,7 @@ DynamicNotch アプリターゲットで:
 | キー | 値 |
 |---|---|
 | `com.apple.security.temporary-exception.iokit-user-client-class` | `AppleSMCClient`（配列で指定） |
-| `com.apple.security.temporary-exception.mach-lookup.global-name` | `com.example.dynamicnotch.DynamicNotch.fancontrol`（配列で指定） |
+| `com.apple.security.temporary-exception.mach-lookup.global-name` | `com.example.dynamicnotch.DynamicNotch.fanfi`（配列で指定） |
 
 一時例外は Mac App Store 審査で拒否されうるため、Developer ID 配布（非サンドボックス）を前提とする。
 ヘルパー（`FanControlHelper`）自体は root の launchd デーモンであり、**サンドボックス化しない**（App Sandbox entitlement を付けない）。
@@ -189,7 +189,7 @@ swift run fancontrol-probe --watch 2  # ファン・温度を 2 秒ごとに再�
 - [ ] 一般タブのヘルパー状態が「未インストール」→「ヘルパーをインストール…」→「承認待ち」になり、案内文と「ログイン項目を開く」が表示される。
 - [ ] システム設定 ▸ 一般 ▸ ログイン項目と機能拡張（macOS 15）/ ログイン項目（macOS 14）で DynamicNotch を許可 →「再確認」で「インストール済み」。
 - [ ] `.notFound`（plist 配置ミス）では「アプリバンドル内に見つかりません」と案内のみ表示され、インストールボタンは出ない。
-- [ ] `sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fancontrol` でサービスが見える。
+- [ ] `sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi` でサービスが見える。
 - [ ] `log stream --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'` に接続ログ。
 
 ### Phase 4: 書き込み・プロファイル
@@ -234,7 +234,7 @@ swift run fancontrol-probe --watch 2  # ファン・温度を 2 秒ごとに再�
 ## 8. 未決事項（設計書 §5 より）
 
 - **Team ID**（§5.1）: `Helper-Info.plist` と `teamIdentifierPlaceholder` の実値。出荷前に必須。
-- **Mach サービス名**（§5.2）: `com.example.dynamicnotch.DynamicNotch.fancontrol` で既存 Macs Fan Control と非競合。両方が同時に SMC を書くと互いに上書きし合うため、併用時の注意をユーザーに示すかは要判断。
+- **Mach サービス名**（§5.2）: `com.example.dynamicnotch.DynamicNotch.fanfi` で既存 FanFi と非競合。両方が同時に SMC を書くと互いに上書きし合うため、併用時の注意をユーザーに示すかは要判断。
 - **新しい Apple Silicon の `Ftst` キー**（§5.7, helper.md §4）: 一部機種では `F<n>Md` だけでは目標値が効かず `Ftst` アンロックが必要との報告がある。現状ヘルパーの書込許可リスト外。Phase 4 で実機確認後に追加を判断。
   Mac14,9（M2 Pro）/ macOS 26 には `Ftst` キー自体が存在しない（読取で keyNotFound、§6 Phase 1）。この機種では許可リストに足しても書けない。
 - **温度閾値**（§5.6）: 警告 90°C（ヒステリシス 5°C）、強制最大 95°C、対象センサー接頭辞 `Tp/Te/TC/Tg/TG` は暫定値（Mac14,9 では `TG*` は GPU ではなく 33 °C 前後の `ioft` キー。`Tf06` は 94.5 °C 一定だが接頭辞外。§6 Phase 1 の所見参照）。機種別に妥当性を確認し、設定 UI に出すか決める（現状 UI には出していない）。
