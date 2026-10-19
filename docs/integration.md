@@ -46,17 +46,23 @@ Mach-O に埋め込まないため、ヘルパーが Team ID をプレースホ�
 1. **File ▸ New ▸ Target ▸ macOS ▸ Command Line Tool**、名前 `FanControlHelper`、言語 Swift。
 2. 自動生成された `main.swift` を削除し、`FanControl/Sources/FanControlHelper/*.swift` を追加（ファイル参照のみ、コピー不要）。
 3. ターゲットの Frameworks に `FanControlCore` / `FanControlSMC` / `FanControlXPC` を追加。
-4. Build Settings（Info.plist の埋め込みは **手動 `-sectcreate` 方式に統一** する）:
+4. Build Settings（Info.plist の埋め込みは **手動 `-sectcreate` 方式に統一** する。以下は `Tools/HelperSmokeApp` で Xcode 26.6 により実ビルド確認済みの値）:
    - `PRODUCT_NAME = FanControlHelper`
    - `PRODUCT_BUNDLE_IDENTIFIER = com.example.dynamicnotch.DynamicNotch.fanfi`（署名 identifier になる。アプリはヘルパーに
      `identifier "com.example.dynamicnotch.DynamicNotch.fanfi"` を要求する: `FanControlHelperConstants.helperCodeSigningRequirement`）
-   - `OTHER_LDFLAGS = -sectcreate __TEXT __info_plist $(SRCROOT)/FanControl/Support/Helper-Info.plist`
-   - `GENERATE_INFOPLIST_FILE = NO` と `CREATE_INFOPLIST_SECTION_IN_BINARY = NO`（どちらかが YES だと Xcode も
-     `__info_plist` セクションを作り、手動 `-sectcreate` と重複してリンクエラーになるか、生成側の Info.plist に
-     `FanControlClientTeamID` が入らない）。`INFOPLIST_FILE` は空のままにする。
+   - `OTHER_LDFLAGS = $(inherited) -sectcreate __TEXT __info_plist "$(SRCROOT)/FanControl/Support/Helper-Info.plist"`
+     （パスに空白が入りうるので引用符で囲む）
+   - `GENERATE_INFOPLIST_FILE = NO`、`CREATE_INFOPLIST_SECTION_IN_BINARY = NO`、`INFOPLIST_FILE` は空。
+     Xcode 26.6 での実測（2026-10-20）: `GENERATE_INFOPLIST_FILE = YES` だけなら生成 Info.plist はバイナリに入らず無害。
+     `CREATE_INFOPLIST_SECTION_IN_BINARY = YES` + `INFOPLIST_FILE` を併用すると Xcode が 2 つ目の `-sectcreate __TEXT __info_plist`
+     （`Processed-Info.plist`）を渡す。リンクエラーにはならずセクションは 1 個だったが、どちらが採用されるかは保証が無いので二重指定はしない。
    - `ENABLE_HARDENED_RUNTIME = YES`
    - `SKIP_INSTALL = YES`
    - `MACOSX_DEPLOYMENT_TARGET = 14.6`（アプリと揃える）
+   - 署名はアプリと同じ（`CODE_SIGN_STYLE`、`DEVELOPMENT_TEAM`、`CODE_SIGN_IDENTITY`）。
+
+   ヘルパーのソース 6 ファイルは Xcode ターゲットで直接コンパイルされ、Core / SMC / XPC は静的リンクされる（`otool -L` にパッケージ由来の
+   dylib は出ない）。パッケージの executable product `FanControlHelper` はアプリが参照しない限りビルドされない（名前が同じでも衝突しない）。
 
 結果として Xcode プロジェクトに必要なターゲットは、既存の DynamicNotch アプリターゲットと新規の `FanControlHelper`
 （Command Line Tool）の 2 つだけ。Core / SMC / XPC / Kit はローカル SwiftPM パッケージのライブラリ product としてリンクする。
@@ -67,13 +73,16 @@ DynamicNotch アプリターゲットで:
 
 1. **Build Phases ▸ Target Dependencies** に `FanControlHelper` を追加。
 2. **Copy Files** フェーズを 2 つ追加:
-   - Destination **Executables**（= `Contents/MacOS`）: `FanControlHelper`（Code Sign On Copy にチェック）
+   - Destination **Executables**（= `Contents/MacOS`）: `FanControlHelper`（Code Sign On Copy にチェック。コピー時に
+     `--preserve-metadata=identifier,entitlements,flags` で再署名され、identifier と runtime フラグは保たれる）
    - Destination **Wrapper**, Subpath `Contents/Library/LaunchDaemons`: `FanControl/Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist`
 3. ビルド後の配置を確認:
    ```
    DynamicNotch.app/Contents/MacOS/FanControlHelper
    DynamicNotch.app/Contents/Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist
    ```
+   plist のファイル名は `FanControlHelperConstants.plistName` と一致していなければならない（違うと `SMAppService` の状態が `.notFound`）。
+   launchd plist の `BundleProgram` は `Contents/MacOS/FanControlHelper`（バンドルルートからの相対パス）。
 
 ## 4. 署名と Team ID
 
@@ -90,10 +99,24 @@ DynamicNotch アプリターゲットで:
 3. アプリとヘルパーを **同じ Team ID** で署名し、両方 **Hardened Runtime** を有効にする。配布時はアプリ全体を公証する。
 4. 確認:
    ```sh
-   codesign -dvvv DynamicNotch.app/Contents/MacOS/FanControlHelper   # TeamIdentifier, flags=0x10000(runtime)
-   otool -s __TEXT __info_plist DynamicNotch.app/Contents/MacOS/FanControlHelper | head
+   codesign -dvvv --entitlements - DynamicNotch.app/Contents/MacOS/FanControlHelper   # Identifier, TeamIdentifier, flags に runtime(0x10000)
+   launchctl plist __TEXT,__info_plist DynamicNotch.app/Contents/MacOS/FanControlHelper   # 埋め込み Info.plist（FanControlClientTeamID）
    codesign -d -r- DynamicNotch.app
+   codesign --verify --deep --strict -v DynamicNotch.app
    ```
+   `otool -s __TEXT __info_plist` は 16 進ダンプしか出さず、arm64 では `otool -X … | xxd -r -p` でも 32 ビットワードのバイト順が崩れて
+   plist に戻らない。`launchctl plist` か `segedit <bin> -extract __TEXT __info_plist out.plist` を使う。
+   - **アドホック署名（`CODE_SIGN_IDENTITY = -`）での注意**: Xcode 26.6 は `ENABLE_HARDENED_RUNTIME = YES` でもアドホック署名時に
+     `-o runtime` を付けない（`flags=0x2(adhoc)` になる）。アドホックで確認するときは `OTHER_CODE_SIGN_FLAGS = $(inherited) --options=runtime`
+     を足す（`Tools/HelperSmokeApp/project.yml`）。実 ID での署名では不要（付けても無害）。
+   - **実署名後に確認**: Xcode は Command Line Tool ターゲットに `com.apple.application-identifier` entitlement を自動で注入する
+     （アドホックでは値 = bundle ID。`CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO` でも消えない）。Developer ID 署名でプロビジョニングプロファイル無しに
+     これが残ると launchd 起動時に拒否される恐れがあるので、Team ID 付きビルドで `codesign -d --entitlements -` を確認する（未確認）。
+
+**最小アプリでの検証（2026-10-20）**: §1〜§4 のレシピを XcodeGen の最小アプリ `Tools/HelperSmokeApp`（`README.md`）で再現し、
+Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・アドホック署名・識別子の一致を確認した（ビルドのみ。登録・起動・書込はしていない）。
+証跡と見つかった不一致（launchd plist のファイル名がコードと不一致だったのを修正、ほか）は
+[`verification/helper-bundle-smoke-2026-10-20.md`](verification/helper-bundle-smoke-2026-10-20.md)。
 
 **App Sandbox:** DynamicNotch は **サンドボックス化してはいけない**（推奨）。どうしてもサンドボックスを有効にする場合は、
 アプリの entitlements に次の 2 つの一時例外が必須（無いとアプリ内での SMC 読み取りとヘルパーへの XPC 接続がどちらも失敗する）:

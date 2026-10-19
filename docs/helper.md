@@ -28,10 +28,11 @@ Xcode での設定:
 1. **Xcode の Command Line Tool ターゲット** `FanControlHelper` を追加し（**必須**）、`Sources/FanControlHelper/*.swift` をソースに含め、依存モジュール（Core / SMC / XPC）は SwiftPM パッケージをローカル依存として追加してライブラリ product をリンクする。
    **SwiftPM の executable product `FanControlHelper` をそのまま同梱してはいけない。** SwiftPM のビルドは `Helper-Info.plist` を Mach-O に埋め込まない（`Package.swift` に `unsafeFlags` は入れない方針）ため、`Bundle.main.infoDictionary` に `FanControlClientTeamID` が無く、`HelperConfiguration.teamID` がプレースホルダ `TEAMID0000` にフォールバックして**すべてのクライアントを拒否する**。SwiftPM の executable product は Linux/CI での構文・ビルド確認用にすぎない。
 2. ヘルパーの Other Linker Flags:
-   `-sectcreate __TEXT __info_plist $(SRCROOT)/FanControl/Support/Helper-Info.plist`
+   `$(inherited) -sectcreate __TEXT __info_plist "$(SRCROOT)/FanControl/Support/Helper-Info.plist"`
    （素の実行ファイルなので Info.plist を Mach-O に埋め込む。`Bundle.main.infoDictionary` から `FanControlClientTeamID` と `CFBundleVersion` を読む。）
    この手動方式に統一し、`GENERATE_INFOPLIST_FILE = NO`、`CREATE_INFOPLIST_SECTION_IN_BINARY = NO`、`INFOPLIST_FILE` は空にする
-   （Xcode 側でもセクションを作ると重複する）。`PRODUCT_BUNDLE_IDENTIFIER = com.example.dynamicnotch.DynamicNotch.fanfi`
+   （Xcode 側でもセクションを作ると `-sectcreate __TEXT __info_plist` が二重に渡る。Xcode 26.6 ではエラーにならないがどちらが残るか保証が無い）。
+   設定値の全体と実ビルドでの確認結果は integration.md §2〜§4 と `docs/verification/helper-bundle-smoke-2026-10-20.md`（最小アプリ `Tools/HelperSmokeApp`）。`PRODUCT_BUNDLE_IDENTIFIER = com.example.dynamicnotch.DynamicNotch.fanfi`
    （署名 identifier。アプリはヘルパーにこの identifier を要求する。§2）。
 3. DynamicNotch アプリターゲットに **Copy Files** フェーズを 2 つ追加:
    - Destination `Executables`（= `Contents/MacOS`）: `FanControlHelper`
@@ -166,7 +167,7 @@ sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi
 # 3. ログ
 log stream --level debug --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'
 # 4. 埋め込み Info.plist / 署名の確認
-otool -s __TEXT __info_plist DynamicNotch.app/Contents/MacOS/FanControlHelper | head
+launchctl plist __TEXT,__info_plist DynamicNotch.app/Contents/MacOS/FanControlHelper
 codesign -dvvv --entitlements - DynamicNotch.app/Contents/MacOS/FanControlHelper
 codesign -d -r- DynamicNotch.app
 ```

@@ -1,0 +1,83 @@
+# XcodeGen spec for a minimal app that validates the FanControlHelper embedding recipe
+# (docs/integration.md §1–§4, docs/helper.md §1–§2). See README.md.
+#
+# Signing: ad-hoc by default. Once a Team ID exists, build with
+#   xcodebuild ... DEVELOPMENT_TEAM=<TeamID> CODE_SIGN_IDENTITY="Apple Development"   (or "Developer ID Application")
+# or set DEVELOPMENT_TEAM under settings.base below.
+name: FanControlSmoke
+options:
+  bundleIdPrefix: com.example.dynamicnotch
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+packages:
+  FanControl:
+    path: ../..
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: YES
+    # Xcode 26 ignores ENABLE_HARDENED_RUNTIME when signing ad-hoc ("-"): it never passes
+    # `-o runtime`, so the signature lacks flag 0x10000. Pass it explicitly. With a real
+    # identity Xcode adds `-o runtime` itself; the duplicate is harmless (codesign ORs the flags).
+    OTHER_CODE_SIGN_FLAGS: "$(inherited) --options=runtime"
+targets:
+  FanControlHelper:
+    type: tool
+    platform: macOS
+    sources:
+      - path: ../../Sources/FanControlHelper
+    dependencies:
+      - package: FanControl
+        product: FanControlCore
+      - package: FanControl
+        product: FanControlSMC
+      - package: FanControl
+        product: FanControlXPC
+    settings:
+      base:
+        PRODUCT_NAME: FanControlHelper
+        # Code-signing identifier; must equal FanControlHelperConstants.helperIdentifier.
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.dynamicnotch.DynamicNotch.fanfi
+        GENERATE_INFOPLIST_FILE: NO
+        CREATE_INFOPLIST_SECTION_IN_BINARY: NO
+        INFOPLIST_FILE: ""
+        OTHER_LDFLAGS: "$(inherited) -sectcreate __TEXT __info_plist $(SRCROOT)/../../Support/Helper-Info.plist"
+        ENABLE_HARDENED_RUNTIME: YES
+        SKIP_INSTALL: YES
+  FanControlSmoke:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+      - path: ../../Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchDaemons
+    dependencies:
+      - target: FanControlHelper
+        embed: true
+        codeSign: true
+        copy:
+          destination: executables
+      - package: FanControl
+        product: FanControlCore
+      - package: FanControl
+        product: FanControlKit
+    settings:
+      base:
+        PRODUCT_NAME: FanControlSmoke
+        # Must equal FanControlHelperConstants.appBundleIdentifier and the launchd plist's
+        # AssociatedBundleIdentifiers, otherwise the helper rejects the client.
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.dynamicnotch.DynamicNotch
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_CFBundleDisplayName: FanControlSmoke
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: ""
