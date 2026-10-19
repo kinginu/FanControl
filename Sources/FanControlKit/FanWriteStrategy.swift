@@ -31,10 +31,12 @@ public enum FanTarget: Hashable, Sendable {
 /// it is unit-tested on Linux with a mock reader. It is not thread-safe; use it
 /// from the same queue that owns the reader.
 ///
-/// Unverified on hardware (no Mac available while writing this): some
-/// Apple Silicon models are reported to additionally need an unlock key
-/// (`Ftst`) before `F<i>Md` sticks. That key is not in the helper's write
-/// allowlist; add it there and here if real-device testing shows it is needed.
+/// Mac14,9 / macOS 26 (dump in `docs/verification/`): `FS! ` and `Ftst` are
+/// absent, `F<i>Md` is `ui8 ` (attr 0xd0) and `F<i>Tg` is little-endian `flt `
+/// (attr 0xd4), so every fan is `.modeKey`. Some newer Apple Silicon models are
+/// reported to additionally need an unlock key (`Ftst`) before `F<i>Md`
+/// sticks; that key is not in the helper's write allowlist. No write has been
+/// attempted on hardware yet (`docs/verification/pre-write-review-2026-10-20.md`).
 public struct FanWriteStrategy {
 
     /// How a fan is switched into manual mode.
@@ -57,7 +59,15 @@ public struct FanWriteStrategy {
         public let target: SMCKeyInfo
         /// `keyInfo(F<i>Md)` for `.modeKey` fans.
         public let mode: SMCKeyInfo?
+        /// Hardware `F<i>Mn...F<i>Mx` read at init (`nil` if unreadable). Manual
+        /// targets outside it (± `rpmTolerance`) are refused by `writes(for:)`
+        /// before any write is produced, because the helper would reject the
+        /// `F<i>Tg` write *after* the mode write had already forced the fan.
+        public var rpmLimits: ClosedRange<Double>? = nil
     }
+
+    /// Same slack as the helper (`HelperWritePolicy.rpmTolerance`).
+    public static let rpmTolerance: Double = 1
 
     /// Metadata per fan index. Fans whose `F<i>Tg` has no key info are absent
     /// (they cannot be controlled).
@@ -77,7 +87,12 @@ public struct FanWriteStrategy {
             guard let target = try? reader.keyInfo(.fanTarget(index)) else { continue }
             let mode = try? reader.keyInfo(.fanMode(index))
             let style: ControlStyle = mode != nil ? .modeKey : (forceInfo != nil ? .forceBits : .targetOnly)
-            fans[index] = FanWriteInfo(fan: index, style: style, target: target, mode: mode)
+            var limits: ClosedRange<Double>?
+            if let lo = try? reader.readNumber(.fanMin(index)), let hi = try? reader.readNumber(.fanMax(index)),
+               lo.isFinite, hi.isFinite, lo <= hi {
+                limits = lo...hi
+            }
+            fans[index] = FanWriteInfo(fan: index, style: style, target: target, mode: mode, rpmLimits: limits)
         }
         self.fans = fans
     }
@@ -113,8 +128,11 @@ public struct FanWriteStrategy {
     ///    once and every requested bit applied, so fans do not clobber each other),
     /// 3. `F<i>Tg` writes for manual fans (ascending fan index).
     ///
-    /// Throws `.keyNotFound("F<i>Tg")` for an unknown/uncontrollable fan and
-    /// `.unsupportedDataType` if a value cannot be encoded as the key's type.
+    /// Throws `.keyNotFound("F<i>Tg")` for an unknown/uncontrollable fan,
+    /// `.rpmOutOfRange` for a manual target outside the fan's hardware
+    /// `F<i>Mn...F<i>Mx` (when known), and `.unsupportedDataType` if a value
+    /// cannot be encoded as the key's type. Nothing is returned on a throw, so a
+    /// list is never started that the helper would reject half-way.
     public func writes(for targets: [Int: FanTarget]) throws -> [(SMCKey, [UInt8])] {
         var modeWrites: [(SMCKey, [UInt8])] = []
         var targetWrites: [(SMCKey, [UInt8])] = []
@@ -139,6 +157,12 @@ public struct FanWriteStrategy {
             }
 
             if case .manual(let rpm) = target {
+                if let limits = info.rpmLimits,
+                   Double(rpm) < limits.lowerBound - Self.rpmTolerance
+                    || Double(rpm) > limits.upperBound + Self.rpmTolerance {
+                    let allowed = Int(limits.lowerBound.rounded(.up))...Int(limits.upperBound.rounded(.down))
+                    throw FanControlError.rpmOutOfRange(fan: fan, rpm: rpm, allowed: allowed)
+                }
                 targetWrites.append((.fanTarget(fan), try Self.encode(Double(rpm), as: info.target, key: .fanTarget(fan))))
             }
         }
@@ -152,6 +176,20 @@ public struct FanWriteStrategy {
             modeWrites.append((.forceBits, try Self.encode(Double(mask), as: forceInfo, key: .forceBits)))
         }
         return modeWrites + targetWrites
+    }
+
+    /// Writes that undo a write list for `pending` that failed part-way: every
+    /// fan that was to be forced (`.manual`) is returned to automatic
+    /// (`[F<i>Md ← 0]` / one `FS! ` write with those bits cleared). Fans that were
+    /// to become automatic and target-only fans need nothing. Uncontrollable fans
+    /// are skipped instead of throwing, so a partial rollback is still produced.
+    public func rollbackWrites(afterFailureOf pending: [Int: FanTarget]) throws -> [(SMCKey, [UInt8])] {
+        var targets: [Int: FanTarget] = [:]
+        for (fan, target) in pending where fans[fan] != nil && fans[fan]?.style != .targetOnly {
+            if case .manual = target { targets[fan] = .automatic }
+        }
+        guard !targets.isEmpty else { return [] }
+        return try writes(for: targets)
     }
 
     // MARK: - Helpers

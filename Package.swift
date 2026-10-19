@@ -14,14 +14,14 @@ let package = Package(
     ],
     targets: [
         .target(name: "FanControlCore"),
-        .target(name: "FanControlXPC"),
+        .target(name: "FanControlXPC", dependencies: ["FanControlCore"]),
         .target(name: "FanControlSMC", dependencies: ["FanControlCore"]),
         .target(name: "FanControlKit", dependencies: ["FanControlCore", "FanControlSMC", "FanControlXPC"]),
         .executableTarget(name: "FanControlHelper", dependencies: ["FanControlCore", "FanControlSMC", "FanControlXPC"]),
         .executableTarget(name: "FanControlProbe", dependencies: ["FanControlCore", "FanControlSMC"]),
         .testTarget(name: "FanControlCoreTests", dependencies: ["FanControlCore"]),
         .testTarget(name: "FanControlSMCTests", dependencies: ["FanControlSMC", "FanControlCore"]),
-        .testTarget(name: "FanControlXPCTests", dependencies: ["FanControlXPC"]),
+        .testTarget(name: "FanControlXPCTests", dependencies: ["FanControlXPC", "FanControlCore"]),
         .testTarget(name: "FanControlKitTests", dependencies: ["FanControlKit", "FanControlCore"]),
     ]
 )

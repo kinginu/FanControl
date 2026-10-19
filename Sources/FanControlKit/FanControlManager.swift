@@ -71,7 +71,10 @@ public final class FanControlManager: @unchecked Sendable {
     public private(set) var currentRPMs: [Int: Int] = [:]
     public private(set) var targetRPMs: [Int: Int] = [:]
     /// Filtered by `TemperatureSampleFilter` (implausible near-zero CPU/GPU
-    /// samples replaced); the same values are fed to `FanControlEngine.plan`.
+    /// samples replaced), followed by the aggregate sensors
+    /// (`SensorAggregator`, ids `"agg:…"`, `sensorType == .greatest`) computed
+    /// from the filtered values; the same array is fed to `FanControlEngine.plan`,
+    /// so a profile may bind to an aggregate id such as `"agg:cpu"`.
     public private(set) var sensorReadings: [SensorReading] = []
     /// Keys whose value in `sensorReadings` was substituted by the
     /// `TemperatureSampleFilter` in the latest poll (e.g. to dim them in the UI).
@@ -170,6 +173,10 @@ public final class FanControlManager: @unchecked Sendable {
         resolvedActiveProfile
     }
 
+    /// The aggregate sensors appended to `sensorReadings`
+    /// (`FanControlPlatform.sensorAggregateDefinitions`). Fixed for the process.
+    public var sensorAggregateDefinitions: [SensorAggregateDefinition] { aggregateDefinitions }
+
     /// Hottest CPU/GPU sensor (per `safetyPolicy.emergencySensorPrefixes`),
     /// falling back to the hottest sensor overall.
     public var hottestSensor: SensorReading? {
@@ -202,8 +209,14 @@ public final class FanControlManager: @unchecked Sendable {
     /// Applied to every sensor batch before alerts, planning and publishing;
     /// reset whenever sensors are rediscovered.
     @ObservationIgnored private var sampleFilter = TemperatureSampleFilter()
+    /// Immutable, so it may be read from any queue.
+    @ObservationIgnored private let aggregateDefinitions = FanControlPlatform.sensorAggregateDefinitions
     /// Last successfully written state per fan (throttle baseline).
     @ObservationIgnored private var appliedTargets: [Int: FanTarget] = [:]
+    /// Fans whose SMC state is unknown after a failed write list (e.g. `F<i>Md`
+    /// accepted, `F<i>Tg` rejected) and whose rollback did not succeed: the next
+    /// planned state is written for them regardless of the throttle.
+    @ObservationIgnored private var unsettledFans: Set<Int> = []
     @ObservationIgnored private var pollWriteInFlight = false
     /// Bumped by every user apply / restore / session close before it writes;
     /// poll batches planned at an older generation are dropped.
@@ -399,7 +412,10 @@ public final class FanControlManager: @unchecked Sendable {
                 }
             }
             try await self.helperClient.openSession()
-            await self.onPollQueue { self.appliedTargets = [:] }
+            await self.onPollQueue {
+                self.appliedTargets = [:]
+                self.unsettledFans = []
+            }
             await MainActor.run {
                 // Termination restore and wake handling must work even if
                 // monitoring was never started (idempotent).
@@ -417,7 +433,10 @@ public final class FanControlManager: @unchecked Sendable {
         _ = try? await serializer.run { [helperClient] in
             await helperClient.closeSession()
         }
-        await onPollQueue { self.appliedTargets = [:] }
+        await onPollQueue {
+            self.appliedTargets = [:]
+            self.unsettledFans = []
+        }
         await MainActor.run { self.syncSessionFlag() }
     }
 
@@ -465,11 +484,25 @@ public final class FanControlManager: @unchecked Sendable {
     }
 
     /// Activates the Automatic profile, returns every fan to automatic and closes the session.
+    ///
+    /// If no session is open but the SMC reports a fan in manual mode (e.g. the
+    /// helper crashed or was killed mid-session, so it could not restore; or
+    /// another tool forced the fan), this explicit user action opens a session
+    /// just to write automatic and closes it again.
     public func restoreDefaultControl() async throws {
         try await recordingErrors {
             await MainActor.run { self.profileStore.activeProfileID = FanProfile.BuiltInID.automatic }
             // Drop poll batches planned from the previous profile.
             await self.onPollQueue { _ = self.applyGate.advance() }
+            if !self.helperClient.isSessionOpen {
+                let orphaned = try await self.onPollQueue { () throws -> Bool in
+                    try self.prepareReaderOnQueue()
+                    guard let reader = self.reader else { return false }
+                    return FanDiscovery.fanControlModes(fans: self.polledFans, using: reader)
+                        .values.contains { $0.isManual }
+                }
+                if orphaned { try await self.openSMCSession() }
+            }
             if self.helperClient.isSessionOpen {
                 do {
                     let fans = try await self.discoveredFans()
@@ -633,22 +666,64 @@ public final class FanControlManager: @unchecked Sendable {
                 guard !pending.isEmpty else { return ([], [:]) }
                 return (try strategy.writes(for: pending).map { SMCWrite(key: $0.0, bytes: $0.1) }, pending)
             }
-            for write in writes {
-                try await helperClient.write(key: write.key, bytes: write.bytes)
+            do {
+                for write in writes {
+                    try await helperClient.write(key: write.key, bytes: write.bytes)
+                }
+            } catch {
+                await rollBackFailedWrites(pending)
+                throw error
             }
             if !pending.isEmpty {
-                await onPollQueue { self.appliedTargets.merge(pending) { _, new in new } }
+                await onPollQueue {
+                    self.appliedTargets.merge(pending) { _, new in new }
+                    self.unsettledFans.subtract(pending.keys)
+                }
+            }
+        }
+    }
+
+    /// Inside `serializer.run` only. A write list failed part-way (e.g. the
+    /// helper accepted `F<i>Md` = 1 and then rejected or timed out on `F<i>Tg`,
+    /// leaving the fan forced at a stale target, at idle 0 RPM). Best effort:
+    /// returns the fans that were to be forced to automatic
+    /// (`FanWriteStrategy.rollbackWrites`). On success their baseline becomes
+    /// `.automatic`; otherwise they are marked unsettled so the next poll writes
+    /// their planned state unconditionally. Errors here are not reported (the
+    /// original error is).
+    private func rollBackFailedWrites(_ pending: [Int: FanTarget]) async {
+        guard !pending.isEmpty else { return }
+        let rollback = (try? await onPollQueue { () -> [SMCWrite] in
+            for fan in pending.keys { self.appliedTargets[fan] = nil }
+            self.unsettledFans.formUnion(pending.keys)
+            let writes = (try? self.strategy?.rollbackWrites(afterFailureOf: pending)) ?? []
+            return writes.map { SMCWrite(key: $0.0, bytes: $0.1) }
+        }) ?? []
+        guard !rollback.isEmpty, helperClient.isSessionOpen else { return }
+        for write in rollback {
+            do {
+                try await helperClient.write(key: write.key, bytes: write.bytes)
+            } catch {
+                return
+            }
+        }
+        let rolledBack = pending.filter { if case .manual = $0.value { return true } else { return false } }.keys
+        await onPollQueue {
+            for fan in rolledBack {
+                self.appliedTargets[fan] = .automatic
+                self.unsettledFans.remove(fan)
             }
         }
     }
 
     /// pollQueue only. Filters `desired` down to controllable fans whose state
-    /// differs from `appliedTargets` by a mode change or more than `writeThresholdRPM`.
+    /// differs from `appliedTargets` by a mode change or more than
+    /// `writeThresholdRPM` (always included: `force`, or the fan is unsettled).
     private func changedTargetsOnQueue(_ desired: [Int: FanTarget], force: Bool) -> [Int: FanTarget] {
         let controllable = strategy?.fans ?? [:]
         var result: [Int: FanTarget] = [:]
         for (fan, target) in desired where controllable[fan] != nil {
-            if force {
+            if force || unsettledFans.contains(fan) {
                 result[fan] = target
                 continue
             }
@@ -701,7 +776,8 @@ public final class FanControlManager: @unchecked Sendable {
         sensorKeys = discovered.map(\.id)
         alertEvaluator = AlertEvaluator()
         sampleFilter.reset()
-        let sensors = sampleFilter.filter(discovered)
+        let sensors = SensorAggregator.appendingAggregates(to: sampleFilter.filter(discovered),
+                                                           definitions: aggregateDefinitions)
         let substituted = sampleFilter.substitutedKeys
         strategy = nil
         discoverFansOnQueue(using: client)
@@ -712,9 +788,12 @@ public final class FanControlManager: @unchecked Sendable {
         }
     }
 
-    /// pollQueue only. Re-reads `sensorKeys` and runs them through `sampleFilter`.
+    /// pollQueue only. Re-reads `sensorKeys`, runs them through `sampleFilter`
+    /// and appends the aggregates computed from the filtered values.
     private func readFilteredTemperaturesOnQueue(using reader: SMCReader) -> [SensorReading] {
-        sampleFilter.filter(SensorCatalog.readTemperatures(keys: sensorKeys, using: reader))
+        SensorAggregator.appendingAggregates(
+            to: sampleFilter.filter(SensorCatalog.readTemperatures(keys: sensorKeys, using: reader)),
+            definitions: aggregateDefinitions)
     }
 
     /// pollQueue only. Runs `FanDiscovery.discoverFans`; a failure is published
@@ -897,8 +976,11 @@ public final class FanControlManager: @unchecked Sendable {
         let fans = self.fans
         let helperClient = self.helperClient
         Task.detached {
+            // Drop queued poll batches (pollQueue is not blocked here), then close
+            // through the serializer so no batch can slip in between.
+            await self.onPollQueue { _ = self.applyGate.advance() }
             try? await self.applyTargets(Self.allAutomatic(fans), force: true)
-            await helperClient.closeSession()
+            _ = try? await self.serializer.run { await helperClient.closeSession() }
             semaphore.signal()
         }
         _ = semaphore.wait(timeout: .now() + 2)

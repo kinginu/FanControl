@@ -43,12 +43,15 @@ public enum FanControlHelperConstants {
     /// - `F<n>Tg`: fan target speed
     /// - `F<n>Md`: fan mode (Apple Silicon: 1 = forced/manual, 0 = automatic)
     /// - `FS! `:  Intel forced-fan bitmask
-    /// - `F<n>Mn`: fan minimum speed (Intel "set min to desired" technique)
+    ///
+    /// `F<n>Mn` (the Intel "set min to desired" technique) is deliberately **not**
+    /// allowed: `FanWriteStrategy` never writes it, and on Apple Silicon it is
+    /// read-only (attribute `0x84` on Mac14,9). Unlock keys such as `Ftst` are not
+    /// allowed either (pre-write review 2026-10-20).
     public static let allowedWriteKeyPatterns: [String] = [
         "^F[0-9]Tg$",
         "^F[0-9]Md$",
         "^FS! $",
-        "^F[0-9]Mn$",
     ]
 
     /// Compiled `allowedWriteKeyPatterns` (built once; the patterns are constants).

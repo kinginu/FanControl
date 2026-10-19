@@ -1,5 +1,18 @@
-#if os(macOS)
 import Foundation
+
+/// Return codes used in helper replies.
+public enum FanControlHelperErrorCode: Int, Sendable {
+    case ok = 0
+    case notSessionOwner = 1
+    case sessionNotOpen = 2
+    case invalidKey = 3
+    case keyNotAllowed = 4
+    case smcUnavailable = 5
+    case smcError = 6
+    case badRequest = 7
+}
+
+#if os(macOS)
 
 /// XPC interface vended by FanControlHelper.
 ///
@@ -16,18 +29,6 @@ import Foundation
     func closeSession(reply: @escaping (Int, String) -> Void)
     /// Replies with (rc, dataSize, dataType FourCC, attributes, message).
     func readKeyInfo(_ key: String, reply: @escaping (Int, Int, UInt32, UInt8, String) -> Void)
-}
-
-/// Return codes used in helper replies.
-public enum FanControlHelperErrorCode: Int, Sendable {
-    case ok = 0
-    case notSessionOwner = 1
-    case sessionNotOpen = 2
-    case invalidKey = 3
-    case keyNotAllowed = 4
-    case smcUnavailable = 5
-    case smcError = 6
-    case badRequest = 7
 }
 
 /// Builds the `NSXPCInterface` used on both sides of the connection.

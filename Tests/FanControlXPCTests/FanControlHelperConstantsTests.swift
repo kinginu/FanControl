@@ -4,13 +4,15 @@ import Testing
 
 struct FanControlHelperConstantsTests {
     @Test func testAllowedKeys() {
-        for key in ["F0Tg", "F9Md", "FS! ", "F3Mn"] {
+        for key in ["F0Tg", "F9Md", "FS! "] {
             #expect(FanControlHelperConstants.isWriteAllowed(key: key), Comment(rawValue: key))
         }
     }
 
     @Test func testRejectedKeys() {
-        for key in ["F0Tg\n", "f0Tg", "F10T", "FS!", "F0Ac", "TC0P", "", "F0Mx", "FS!\u{0}", "F0T\u{E9}"] {
+        for key in ["F0Tg\n", "f0Tg", "F10T", "FS!", "F0Ac", "TC0P", "", "F0Mx", "FS!\u{0}", "F0T\u{E9}",
+                    // Pre-write review 2026-10-20: never written (read-only on Apple Silicon / unlock key).
+                    "F0Mn", "F3Mn", "Ftst", "F0St", "F0Dc"] {
             #expect(!FanControlHelperConstants.isWriteAllowed(key: key), Comment(rawValue: key.debugDescription))
         }
     }

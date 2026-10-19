@@ -104,6 +104,59 @@ struct FanWriteStrategyTests {
         }
     }
 
+    // MARK: Pre-write review 2026-10-20 (Mac14,9 key layout)
+
+    /// Mac14,9 idle state: Md = 0, Tg = 0 (below Mn), Mn 2317, Mx 6800, no FS!.
+    private func mac14_9() -> MockSMCReader {
+        var list: [(String, SMCDataType, [UInt8])] = [("FNum", .ui8, [2])]
+        for i in 0..<2 {
+            list += [("F\(i)Ac", .flt, Bytes.flt(0)), ("F\(i)Md", .ui8, [0]),
+                     ("F\(i)Mn", .flt, [0x00, 0xd0, 0x10, 0x45]), ("F\(i)Mx", .flt, [0x00, 0x80, 0xd4, 0x45]),
+                     ("F\(i)Tg", .flt, Bytes.flt(0))]
+        }
+        return MockSMCReader(list)
+    }
+
+    @Test func testMac14_9UsesModeKeyAndReadsLimits() throws {
+        let strategy = FanWriteStrategy(reader: mac14_9(), fanIndices: [0, 1])
+        #expect(strategy.forceBits == nil)
+        #expect(strategy.style(for: 0) == .modeKey)
+        #expect(strategy.fans[1]?.rpmLimits == 2317...6800)
+        let writes = try strategy.writes(for: [0: .manual(rpm: 2317), 1: .manual(rpm: 6800)])
+        #expect(names(writes) == ["F0Md", "F1Md", "F0Tg", "F1Tg"])
+        // ui8 1 and little-endian flt, byte-identical to the dump's F<n>Mn / F<n>Mx.
+        #expect(bytes(writes) == [[1], [1], [0x00, 0xd0, 0x10, 0x45], [0x00, 0x80, 0xd4, 0x45]])
+        // Never Mn, Ftst or FS!.
+        #expect(!names(writes).contains { $0.hasSuffix("Mn") || $0 == "Ftst" || $0 == "FS! " })
+    }
+
+    @Test func testTargetOutsideHardwareRangeThrowsBeforeAnyWrite() {
+        let strategy = FanWriteStrategy(reader: mac14_9(), fanIndices: [0, 1])
+        // Sub-minimum (e.g. enforceHardwareMinimum = false) and the idle value 0.
+        for rpm in [0, 1000, 2315, 6802] {
+            #expect(throws: FanControlError.rpmOutOfRange(fan: 1, rpm: rpm, allowed: 2317...6800)) {
+                try strategy.writes(for: [0: .manual(rpm: 3000), 1: .manual(rpm: rpm)])
+            }
+        }
+        #expect((try? strategy.setManual(fan: 0, rpm: 2316)) != nil) // within ±1 slack
+    }
+
+    @Test func testRollbackWritesReturnForcedFansToAutomatic() throws {
+        let strategy = FanWriteStrategy(reader: mac14_9(), fanIndices: [0, 1])
+        let rollback = try strategy.rollbackWrites(afterFailureOf: [0: .manual(rpm: 3000), 1: .automatic, 7: .manual(rpm: 1)])
+        #expect(names(rollback) == ["F0Md"])
+        #expect(bytes(rollback) == [[0]])
+        #expect(try strategy.rollbackWrites(afterFailureOf: [1: .automatic]).isEmpty)
+
+        let intelStrategy = FanWriteStrategy(reader: intel(mask: [0x00, 0x03]), fanIndices: [0, 1])
+        let intelRollback = try intelStrategy.rollbackWrites(afterFailureOf: [0: .manual(rpm: 2000)])
+        #expect(names(intelRollback) == ["FS! "])
+        #expect(bytes(intelRollback) == [[0x00, 0x02]])
+
+        let bare = FanWriteStrategy(reader: MockSMCReader([("F0Tg", .fpe2, Bytes.fpe2(1000))]), fanIndices: [0])
+        #expect(try bare.rollbackWrites(afterFailureOf: [0: .manual(rpm: 1800)]).isEmpty)
+    }
+
     @Test func testKitInfo() {
         #expect(FanControlKitInfo.version == "0.1.0")
     }
