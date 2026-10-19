@@ -2,10 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   README: Info.plist template for the bare FanControlHelper executable. It is embedded into the
-  Mach-O (there is no bundle) via the helper target's linker flags:
-      OTHER_LDFLAGS = -sectcreate __TEXT __info_plist "$(SRCROOT)/FanControl/Support/Helper-Info.plist"
-  (or set INFOPLIST_FILE + CREATE_INFOPLIST_SECTION_IN_BINARY = YES). Bundle.main.infoDictionary
-  then returns these values at runtime.
+  Mach-O (there is no bundle) via the helper target's linker flags only:
+      OTHER_LDFLAGS = $(inherited) -sectcreate __TEXT __info_plist "$(SRCROOT)/FanControl/Support/Helper-Info.plist"
+  with GENERATE_INFOPLIST_FILE = NO, CREATE_INFOPLIST_SECTION_IN_BINARY = NO and INFOPLIST_FILE empty
+  (docs/integration.md §2). Bundle.main.infoDictionary then returns these values at runtime.
+  Check with: launchctl plist __TEXT,__info_plist <path>/FanControlHelper
   Replace FanControlClientTeamID with DynamicNotch's real Team ID before shipping (design doc §5.1).
 -->
 <plist version="1.0">
