@@ -23,7 +23,7 @@ public final class SMCConnection: @unchecked Sendable {
         defer { IOObjectRelease(service) }
 
         var conn: io_connect_t = 0
-        let openResult = IOServiceOpen(service, mach_task_self(), 0, &conn)
+        let openResult = IOServiceOpen(service, mach_task_self_, 0, &conn)
         guard openResult == KERN_SUCCESS, conn != 0 else { throw FanControlError.smcUnavailable }
         connection = conn
     }
