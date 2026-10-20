@@ -120,6 +120,14 @@ final class HelperCoordinator {
     /// (re-registering a stale helper once) and opens the write session. Does not
     /// record errors itself (`FanController.openSession()` does).
     func openSession() async throws {
+        try await prepareHelper()  // F1: split out (also used by ChargeLimitController)
+        try await client.openSession()
+    }
+
+    /// The helper half of `openSession()` without opening the session: install if
+    /// needed and check the protocol version (re-registering a stale helper once).
+    /// F1: also the "requires helper" path of `ChargeLimitController`.
+    func prepareHelper() async throws {
         let status = installer.status()
         helperStatus = status
         // A manual installation pinned to another build is not "installed" for this
@@ -147,7 +155,6 @@ final class HelperCoordinator {
                     message: "Helper protocol version \(version) does not match the app's \(FanControlHelperConstants.protocolVersion).")
             }
         }
-        try await client.openSession()
     }
 
     /// `FanControlManager.retryHelperConnection()`: forgets a sticky rejection,

@@ -324,6 +324,9 @@ public final class FanControlManager {
     @ObservationIgnored let helper: HelperCoordinator
     /// Sleep / wake re-apply.
     @ObservationIgnored let wake: WakeCoordinator
+    // F1: charge limit (CHWA); not part of the fan session (docs/kit.md "Charge limit").
+    /// "Limit charging to 80 %" (`ChargeLimitController`, itself `@Observable`).
+    @ObservationIgnored public let chargeLimit: ChargeLimitController
     /// `setTemperatureHistoryKeys` requests per holder.
     @ObservationIgnored private var historyKeyRequests: [String: Set<String>] = [:]
     @ObservationIgnored private nonisolated let helperClient: HelperClient
@@ -356,6 +359,7 @@ public final class FanControlManager {
         self.monitoring = monitoring
         self.wake = WakeCoordinator()
         self.controller = FanController(poller: poller, helper: helper)
+        self.chargeLimit = ChargeLimitController(helper: helper)  // F1
         if let data = defaults.data(forKey: Self.profileStoreDefaultsKey),
            let store = try? ProfileStore.decodeJSON(data) {
             self.profileStore = store

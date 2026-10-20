@@ -466,6 +466,22 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
         }
         return SMCKeyInfo(dataSize: size, dataType: SMCDataType(fourCC: type), attributes: attributes)
     }
+
+    // F1: charge limit (docs/helper.md "Charge limit (CHWA)").
+    /// Asks the helper to write `CHWA` (`ChargeLimitPolicy`). Needs **no** write
+    /// session and does not touch it. Returns the helper's read-back value (0, 1, or
+    /// `ChargeLimitPolicy.unknownValue`); a non-zero rc throws `.helperRejected`.
+    public func setChargeLimitEnabled(_ enabled: Bool) async throws -> Int {
+        let (code, value, message): (Int, Int, String) = try await call { helper, box in
+            helper.setChargeLimitEnabled(enabled) { code, value, message in
+                box.resume(returning: (code, value, message))
+            }
+        }
+        guard code == FanControlHelperErrorCode.ok.rawValue else {
+            throw FanControlError.helperRejected(code: code, message: message)
+        }
+        return value
+    }
 }
 
 /// Transport-level failure of one call, classified for `HelperConnectionGate`

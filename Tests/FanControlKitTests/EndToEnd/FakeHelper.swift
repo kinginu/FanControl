@@ -335,5 +335,12 @@ private final class FakeHelperService: NSObject, FanControlHelperProtocol, @unch
         }
         reply(FanControlHelperErrorCode.ok.rawValue, info.dataSize, SMCKey(info.dataType.name)?.code ?? 0, info.attributes, "ok")
     }
+
+    // F1: charge limit (mirrors ChargeLimitService: no session, nothing restored).
+    func setChargeLimitEnabled(_ enabled: Bool, reply: @escaping (Int, Int, String) -> Void) {
+        guard admit("setChargeLimitEnabled"), let helper else { return }
+        let outcome = helper.setChargeLimit(enabled)
+        reply(outcome.code.rawValue, outcome.value, outcome.message)
+    }
 }
 #endif
