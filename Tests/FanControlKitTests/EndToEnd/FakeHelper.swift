@@ -63,6 +63,9 @@ final class FakeHelper: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
     }
 
     let smc: FakeSMC
+    // F2: Low Power Mode request, the real handler over a fake pmset.
+    let pmset: FakePmsetRunner
+    let lowPowerMode: LowPowerModeRequestHandler
     private let listener: NSXPCListener
     private let config: Mutex<Config>
     private let session = Mutex(Session())
@@ -72,6 +75,9 @@ final class FakeHelper: NSObject, NSXPCListenerDelegate, @unchecked Sendable {
 
     init(smc: FakeSMC = .mac14_9(), config: Config = Config()) {
         self.smc = smc
+        let pmset = FakePmsetRunner()  // F2
+        self.pmset = pmset
+        self.lowPowerMode = LowPowerModeRequestHandler(runner: pmset)
         self.config = Mutex(config)
         self.listener = NSXPCListener.anonymous()
         super.init()
@@ -341,6 +347,13 @@ private final class FakeHelperService: NSObject, FanControlHelperProtocol, @unch
         guard admit("setChargeLimitEnabled"), let helper else { return }
         let outcome = helper.setChargeLimit(enabled)
         reply(outcome.code.rawValue, outcome.value, outcome.message)
+    }
+
+    // F2: Low Power Mode request (mirrors Sources/FanControlHelper/LowPowerModeService.swift).
+    func setLowPowerMode(_ enabled: Bool, reply: @escaping (Int, String) -> Void) {
+        guard admit("setLowPowerMode"), let helper else { return }
+        let (code, message) = helper.lowPowerMode.handle(enabled: enabled, requester: "pid \(owner.pid)")
+        reply(code.rawValue, message)
     }
 }
 #endif

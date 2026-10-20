@@ -34,8 +34,11 @@ public enum FanControlHelperConstants {
     /// The app compares it with the value returned by `version(reply:)` and
     /// re-registers (SMAppService) or asks for `install.sh` to be re-run (manual
     /// install) on mismatch. History and bump rules: `FanControlHelperProtocol`.
-    // F1: 2 = adds `setChargeLimitEnabled(_:reply:)` (charge limit, CHWA).
+    /// 2 = adds `setChargeLimitEnabled(_:reply:)` (F1, charge limit `CHWA`) and
+    /// `setLowPowerMode(_:reply:)` (F2, codes 8 / 9).
     public static let protocolVersion = 2
+    /// First protocol version with `setLowPowerMode` (F2).
+    public static let lowPowerModeProtocolVersion = 2
     /// Bundle identifier of the only client allowed to connect
     /// (Info.plist `FanControlClientBundleIdentifier`).
     public static var appBundleIdentifier: String { identifiers.clientBundleIdentifier }

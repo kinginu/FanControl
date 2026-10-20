@@ -23,6 +23,11 @@ public enum FanControlHelperErrorCode: Int, CaseIterable, Sendable, CustomString
     case smcError = 6
     /// The payload was rejected (`HelperWritePolicy.validate`: size, value, range, attribute).
     case badRequest = 7
+    // F2: Low Power Mode request (`setLowPowerMode`).
+    /// An external command (pmset) failed or its read-back disagreed.
+    case commandFailed = 8
+    /// Too many requests in a short time (Low Power Mode: `LowPowerModeRequestHandler`).
+    case rateLimited = 9
 
     public var description: String {
         switch self {
@@ -34,6 +39,8 @@ public enum FanControlHelperErrorCode: Int, CaseIterable, Sendable, CustomString
         case .smcUnavailable: return "smcUnavailable"
         case .smcError: return "smcError"
         case .badRequest: return "badRequest"
+        case .commandFailed: return "commandFailed"  // F2
+        case .rateLimited: return "rateLimited"  // F2
         }
     }
 }
@@ -64,7 +71,7 @@ public enum FanControlHelperErrorCode: Int, CaseIterable, Sendable, CustomString
 /// | Version | Change |
 /// |---|---|
 /// | 1 | Initial contract: `version`, `openSession`, `writeKey`, `closeSession`, `readKeyInfo`; allowlist `F<n>Tg`, `F<n>Md` |
-/// | 2 | F1: `setChargeLimitEnabled(_:reply:)` (`CHWA` only, values 0/1, no session, never restored; `ChargeLimitPolicy`) |
+/// | 2 | F1: `setChargeLimitEnabled(_:reply:)` (`CHWA` only, values 0/1, no session, never restored; `ChargeLimitPolicy`). F2: `setLowPowerMode(_:reply:)` (fixed-argv pmset, no session); codes `8 commandFailed`, `9 rateLimited` |
 ///
 /// The ObjC selectors (`versionWithReply:`, `openSessionWithReply:`,
 /// `writeKey:bytes:reply:`, `closeSessionWithReply:`, `readKeyInfo:reply:`) are
@@ -93,6 +100,12 @@ public enum FanControlHelperErrorCode: Int, CaseIterable, Sendable, CustomString
     /// Writes `CHWA` = 1 (`enabled`, hold at 80 %) or 0 (`ChargeLimitPolicy.apply`) and
     /// replies with (rc, read-back value 0/1 or -1, message).
     func setChargeLimitEnabled(_ enabled: Bool, reply: @escaping (Int, Int, String) -> Void)
+
+    // F2: Low Power Mode (protocol version 2). Runs `/usr/bin/pmset -a lowpowermode 0|1` with a
+    // fixed argv and reads the state back (`LowPowerModeRequestHandler`). No session required:
+    // it changes a system setting, not a fan; the connection is already code-signing checked.
+    /// Sets Low Power Mode on or off. Replies (rc, message).
+    func setLowPowerMode(_ enabled: Bool, reply: @escaping (Int, String) -> Void)
 }
 
 /// Builds the `NSXPCInterface` used on both sides of the connection.

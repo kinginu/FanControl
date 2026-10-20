@@ -178,23 +178,25 @@ struct CodeSigningRequirementTests {
     #endif
 }
 
-/// The XPC wire contract (`FanControlHelperProtocol`, protocol version 2; F1: charge limit).
+/// The XPC wire contract (`FanControlHelperProtocol`, protocol version 2: F1 charge limit, F2 Low Power Mode).
 struct HelperWireContractTests {
     @Test func protocolVersion() {
         // Bumping it requires updating the history table in FanControlHelperProtocol.swift.
-        #expect(C.protocolVersion == 2)  // F1: v2 adds setChargeLimitEnabled
+        #expect(C.protocolVersion == 2)  // v2 adds setChargeLimitEnabled (F1) and setLowPowerMode (F2)
+        #expect(C.lowPowerModeProtocolVersion == 2)
     }
 
     @Test func errorCodeRawValuesAreStable() {
         let expected: [FanControlHelperErrorCode: Int] = [
             .ok: 0, .notSessionOwner: 1, .sessionNotOpen: 2, .invalidKey: 3,
             .keyNotAllowed: 4, .smcUnavailable: 5, .smcError: 6, .badRequest: 7,
+            .commandFailed: 8, .rateLimited: 9,  // F2
         ]
         #expect(FanControlHelperErrorCode.allCases.count == expected.count)
         for code in FanControlHelperErrorCode.allCases {
             #expect(code.rawValue == expected[code], Comment(rawValue: code.description))
         }
-        #expect(FanControlHelperErrorCode(rawValue: 8) == nil)
+        #expect(FanControlHelperErrorCode(rawValue: 10) == nil)  // F2: 8 and 9 are taken
         #expect(FanControlHelperErrorCode(rawValue: -1) == nil)
         #expect(FanControlHelperErrorCode.badRequest.description == "badRequest")
     }
@@ -204,7 +206,8 @@ struct HelperWireContractTests {
         let proto: Protocol = FanControlHelperProtocol.self
         let selectors = ["versionWithReply:", "openSessionWithReply:", "writeKey:bytes:reply:",
                          "closeSessionWithReply:", "readKeyInfo:reply:",
-                         "setChargeLimitEnabled:reply:"]  // F1: protocol v2
+                         "setChargeLimitEnabled:reply:",  // F1 (protocol 2)
+                         "setLowPowerMode:reply:"]  // F2 (protocol 2)
         for name in selectors {
             let method = protocol_getMethodDescription(proto, NSSelectorFromString(name), true, true)
             #expect(method.name != nil, Comment(rawValue: name))

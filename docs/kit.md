@@ -533,6 +533,55 @@ provisional.
   as Custom 1 and drops the other user profiles. Schema 2 → 3 adds Max and upgrades an unchanged
   old Custom 1 to the Boost curve. Nothing is re-applied by a migration.
 
+## Power profiles and profile precedence
+
+<!-- F2 (DynamicNotchApp/docs/power-profiles.md). -->
+
+- **Rules** (`FanControlCore/PowerProfileRules.swift`): `PowerProfileRule` = conditions (power
+  source any / AC / battery, lid any / open / closed, optional daily `PowerTimeWindow` with
+  weekdays, wrapping past midnight) → actions (fan profile id or none, Low Power Mode
+  unchanged / on / off). `PowerProfileConfiguration.firstMatch` returns the first **enabled**
+  rule whose conditions all hold (nothing while the configuration is off). Decoding is
+  tolerant (unknown values fall back to defaults). macOS Focus is not a condition (no public API).
+- **Precedence** (`FanControlCore/ProfileArbitration.swift`): `manual > emergency > workload >
+  power > default`. Automatic features claim a layer (`.power`: power profiles, `.workload`:
+  per-app profiles, `.emergency`: reserved). A profile change the arbiter did not make is a
+  manual selection: it wins until the automatic winner changes to another profile (the next
+  transition) or `resumeAutomation()`, and becomes the new default (baseline). The
+  manager's 95 °C emergency override is independent of this and always forces every fan to maximum.
+- **`FanProfileArbiter`** (Kit, `@MainActor @Observable`, `.shared`): applies the decision
+  through `FanProfileHosting` (`FanControlManager` conforms: `applyProfile(profile.resolved(for: fans))`)
+  only when it differs from the active profile; a failed decision is not retried until it
+  changes or `retry()`; `isApplyAllowed` gates applying (the app: Fan Control enabled). It
+  observes `activeFanProfileID` (`withObservationTracking`) to detect manual picks.
+- **Other observers of `activeFanProfileID`** (F3's `WorkloadProfileCoordinator`): the arbiter is
+  the single classifier of automatic vs manual changes. Either subscribe to
+  `FanProfileArbiter.manualSelectionNotification` (posted when a change the arbiter did not make is
+  classified as the user's pick; `userInfo["profileID"]`), or ignore a change while
+  `arbiter.isApplying` is `true` or when the new id equals `arbiter.lastAutomaticApplyID` (set
+  *before* `applyFanProfile` is called, so observers running during the apply already see it;
+  cleared by the next manual pick). `automaticApplyNotification` is posted after every successful
+  automatic switch (`userInfo`: `profileID`, `layer` raw value, `reason`). Workload profiles should
+  claim `.workload` (`setClaim(_:for: .workload)`) instead of calling `applyProfile` themselves.
+- **`PowerProfileEngine`** (Kit, `@MainActor @Observable`, `.shared`): persists the configuration
+  (`fanControl.powerProfiles`), evaluates on every `PowerContextProviding` change
+  (`SystemPowerContextProvider`: IOPS power source, `AppleClamshellState` of `IOPMrootDomain`,
+  wake, `NSProcessInfoPowerStateDidChange`, a 30 s tick for time windows), chains evaluations
+  (never concurrent), claims the matched rule's fan profile on `.power` and drives Low Power
+  Mode on **transitions** only. Low Power Mode is given back to the user's value once no rule
+  asks for one, unless the user changed it meanwhile (`LowPowerModeMemory`, persisted under
+  `fanControl.powerProfiles.lowPowerModeMemory` so a relaunch does not lose it).
+- **Low Power Mode**: `FanControlManager.setLowPowerMode(_:)` → `HelperClient.setLowPowerMode(_:)`
+  → the helper's dedicated request ([helper.md "Low Power Mode request"](helper.md#low-power-mode-request)).
+  It never registers the helper and needs no write session. Reads: `LowPowerModeReader`
+  (`ProcessInfo.isLowPowerModeEnabled`, `pmset -g`).
+- UI (`FanControlUI/PowerProfiles/`): `FanControlPowerProfilesSettingsView` (rules editor),
+  `FanControlPowerProfileStatusLine` (one line for a widget), `FanControlPowerProfiles.start()`
+  (host start-up hook; gates fan switching on `FanControlSettingKey.general.isEnabled`).
+- Tests: `PowerProfileRulesTests` / `ProfileArbitrationTests` (Core), `PowerProfileEngineTests`
+  (Kit, injected context + fake Low Power Mode + fake fan host), `LowPowerModeCommandTests`
+  (XPC, fake pmset), `LowPowerModeEndToEndTests` (real XPC, `FakeHelper`).
+
 ## Settings owned by the app
 
 The kit does not depend on the app's settings store. The app copies its settings into these
@@ -562,6 +611,7 @@ manager, for hosts that want the stock settings and editors:
 | Settings pane | `FanControlSettingsView` (fixed `contentSize` 740×600; General / Profiles / Sensors as a segmented control), and each tab on its own: `FanControlGeneralTabView(actionError:)`, `FanControlProfilesTabView(actionError:initialSelection:)`, `FanControlSensorsTabView()` |
 | Curves and charts | `FanCurveView` (read-only curve of a profile, live operating point), `FanCurveEditorView` (multi-point editor, `hasErrors` / `messages` validation), `FanCurveLegend`, `FanControlTemperatureChart` + `FanControlTemperatureSeries` (history chart), `FanControlKeyTemperaturesView`, `FanControlSelectionPill` |
 | Alerts | `FanControlAlertCoordinator.shared` (`currentAlert`, `onAlertChange`, `transientNotificationName`); it also mirrors the stored general settings and thresholds into the manager ("Settings owned by the app") |
+| Power profiles (F2) | `FanControlPowerProfilesSettingsView` (rules editor pane), `FanControlPowerProfileStatusLine(isCompact:)`, `FanControlPowerProfiles.start()` ("Power profiles and profile precedence") |
 | Errors | `FanControlErrorFooter`, `fanControlPerform`, `fanControlErrorMessage`, `fanControlRejectionHelp` |
 | Formatting | `FanControlFormatting`, `FanControlSensorNames`, `FanControlProfiles` (the seven fixed profiles, `apply`) |
 | Stored settings | `FanControlWidgetSettings`, `FanControlGeneralSettings`, `FanControlThresholdSettings`, `FanControlTemperatureWidgetSettings`; keys `FanControlSettingKey` (`.widget`, `.general`, `.thresholds`, `.temperatureWidget`: `value`, `updates()`, `name`) and the property wrapper `@FanControlSetting(.widget)` |
