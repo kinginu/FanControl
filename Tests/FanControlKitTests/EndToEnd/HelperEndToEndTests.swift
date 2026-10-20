@@ -8,48 +8,22 @@ import FanControlXPC
 /// End-to-end tests of the app ↔ helper contract over a real `NSXPCConnection`
 /// (anonymous listener, in-process `FakeHelper`, `FakeSMC`): `HelperClient` +
 /// `FanWriteStrategy` on the app side, `HelperWritePolicy` / `PowerTransitionPolicy`
-/// on the helper side. No root, no launchd, no SMC hardware.
+/// on the helper side. No root, no launchd, no Mach service, no SMC hardware: every
+/// client comes from `FakeHelper.makeClient` (`HelperClient(connectionFactory:)`).
 ///
 /// `FanControlManager` / `FanControlPoller` are not driven (their reader is the IOKit
-/// `SMCClient`); `applyAndRollBack` reproduces `FanControlPoller.applyTargets` +
-/// `rollBackFailedWrites` with the same strategy calls.
-@Suite("Helper end-to-end (in-process XPC)", .serialized)
+/// `SMCClient`); `E2E.applyAndRollBack` reproduces `FanControlPoller.applyTargets` +
+/// `rollBackFailedWrites` with the same strategy calls. Code-signing rejection and
+/// backoff: `HelperEndToEndRejectionTests`.
+@Suite("Helper end-to-end: sessions and writes", .serialized, .tags(.endToEnd, .helper))
 struct HelperEndToEndTests {
-
-    // MARK: Helpers
-
-    /// Mirrors `FanControlPoller.applyTargets` (writes in order; on failure, rolls the
-    /// pending manual fans back to automatic best-effort and rethrows).
-    private func applyAndRollBack(_ targets: [Int: FanTarget], strategy: FanWriteStrategy,
-                                  client: HelperClient) async throws {
-        let writes = try strategy.writes(for: targets)
-        do {
-            for (key, bytes) in writes { try await client.write(key: key, bytes: bytes) }
-        } catch {
-            if client.isSessionOpen {
-                for (key, bytes) in (try? strategy.rollbackWrites(afterFailureOf: targets)) ?? [] {
-                    do { try await client.write(key: key, bytes: bytes) } catch { break }
-                }
-            }
-            throw error
-        }
-    }
-
-    private func helperCode(_ error: any Error) -> Int? {
-        if case FanControlError.helperRejected(let code, _) = error { return code }
-        return nil
-    }
-
-    private func strategy(_ helper: FakeHelper) -> FanWriteStrategy {
-        FanWriteStrategy(reader: helper.smc, fanIndices: [0, 1])
-    }
 
     // MARK: Session + writes
 
     @Test func versionHandshakeAndOpenSession() async throws {
         let helper = FakeHelper()
         let client = helper.makeClient()
-        #expect(client.connectionState == .disconnected)
+        #expect(client.connectionState == .disconnected, "the client never connects on its own")
 
         let (version, _) = try await client.version()
         #expect(version == FanControlHelperConstants.protocolVersion)
@@ -58,9 +32,8 @@ struct HelperEndToEndTests {
         try await client.openSession()
         #expect(client.isSessionOpen)
         #expect(helper.owner?.pid == getpid())
-        // Idempotent for the same connection.
         try await client.openSession()
-        #expect(helper.acceptedConnections == 1)
+        #expect(helper.acceptedConnections == 1, "openSession is idempotent on the same connection")
         await client.closeSession()
         #expect(helper.owner == nil)
     }
@@ -70,11 +43,11 @@ struct HelperEndToEndTests {
         let client = helper.makeClient()
         try await client.openSession()
 
-        try await applyAndRollBack([0: .manual(rpm: 3000)], strategy: strategy(helper), client: client)
+        try await E2E.applyAndRollBack([0: .manual(rpm: 3000)], helper: helper, client: client)
         #expect(helper.smc.writeLog == ["F0Md=1", "F0Tg=3000"])
         #expect(helper.smc.number("F0Md") == 1)
         #expect(helper.smc.number("F0Tg") == 3000)
-        #expect(helper.smc.number("F1Md") == 0)  // other fan untouched
+        #expect(helper.smc.number("F1Md") == 0, "the other fan is untouched")
         await client.closeSession()
     }
 
@@ -84,7 +57,7 @@ struct HelperEndToEndTests {
         await #expect(throws: FanControlError.sessionNotOpen) {
             try await client.write(key: .fanMode(0), bytes: [1])
         }
-        #expect(helper.receivedMessages == 0)
+        #expect(helper.receivedMessages == 0, "refused before anything is sent")
         #expect(helper.smc.writeLog.isEmpty)
     }
 
@@ -93,30 +66,17 @@ struct HelperEndToEndTests {
         let client = helper.makeClient()
         try await client.openSession()
 
-        // Below the hardware minimum (bypassing FanWriteStrategy's own check).
-        do {
+        await E2E.expectHelperRejection(.badRequest, "below the hardware minimum (bypassing FanWriteStrategy)") {
             try await client.write(key: .fanTarget(0), bytes: FakeSMC.flt(1000))
-            Issue.record("expected a rejection")
-        } catch {
-            #expect(helperCode(error) == FanControlHelperErrorCode.badRequest.rawValue)
         }
-        // Not in the allowlist (F<n>Mn is read-only on Apple Silicon).
-        do {
+        await E2E.expectHelperRejection(.keyNotAllowed, "F<n>Mn is read-only on Apple Silicon") {
             try await client.write(key: .fanMin(0), bytes: FakeSMC.flt(1000))
-            Issue.record("expected a rejection")
-        } catch {
-            #expect(helperCode(error) == FanControlHelperErrorCode.keyNotAllowed.rawValue)
         }
-        // Mode must be 0 or 1.
-        do {
+        await E2E.expectHelperRejection(.badRequest, "mode must be 0 or 1") {
             try await client.write(key: .fanMode(0), bytes: [2])
-            Issue.record("expected a rejection")
-        } catch {
-            #expect(helperCode(error) == FanControlHelperErrorCode.badRequest.rawValue)
         }
         #expect(helper.smc.writeLog.isEmpty)
-        // A rejected value does not end the session.
-        #expect(client.isSessionOpen)
+        #expect(client.isSessionOpen, "a rejected value does not end the session")
         await client.closeSession()
     }
 
@@ -126,11 +86,8 @@ struct HelperEndToEndTests {
         try await client.openSession()
         helper.smc.failWrites(to: "F0Tg")
 
-        do {
-            try await applyAndRollBack([0: .manual(rpm: 3000)], strategy: strategy(helper), client: client)
-            Issue.record("expected the F0Tg write to fail")
-        } catch {
-            #expect(helperCode(error) == FanControlHelperErrorCode.smcError.rawValue)
+        await E2E.expectHelperRejection(.smcError, "the F0Tg write fails at the SMC") {
+            try await E2E.applyAndRollBack([0: .manual(rpm: 3000)], helper: helper, client: client)
         }
         // Md=1 was accepted, Tg failed, the rollback handed the fan back.
         #expect(helper.smc.writeLog == ["F0Md=1", "F0Md=0"])
@@ -144,16 +101,15 @@ struct HelperEndToEndTests {
         let helper = FakeHelper()
         let client = helper.makeClient()
         try await client.openSession()
-        try await applyAndRollBack([0: .manual(rpm: 3000), 1: .manual(rpm: 4000)],
-                                   strategy: strategy(helper), client: client)
+        try await E2E.applyAndRollBack([0: .manual(rpm: 3000), 1: .manual(rpm: 4000)], helper: helper, client: client)
         #expect(helper.smc.writeLog == ["F0Md=1", "F1Md=1", "F0Tg=3000", "F1Tg=4000"])
         helper.smc.clearWriteLog()
 
         await client.closeSession()
         #expect(!client.isSessionOpen)
         #expect(helper.owner == nil)
-        // Md=0 only: the idle snapshot Tg=0 is never written back (pre-write review HIGH 1).
-        #expect(helper.smc.writeLog == ["F0Md=0", "F1Md=0"])
+        #expect(helper.smc.writeLog == ["F0Md=0", "F1Md=0"],
+                "Md=0 only: the idle snapshot Tg=0 is never written back (pre-write review HIGH 1)")
         #expect(helper.smc.number("F0Tg") == 3000)
     }
 
@@ -161,18 +117,17 @@ struct HelperEndToEndTests {
         let helper = FakeHelper()
         let client = helper.makeClient()
         try await client.openSession()
-        try await applyAndRollBack([0: .manual(rpm: 3000)], strategy: strategy(helper), client: client)
+        try await E2E.applyAndRollBack([0: .manual(rpm: 3000)], helper: helper, client: client)
         helper.smc.clearWriteLog()
 
         client.invalidate()
         #expect(!client.isSessionOpen)
         #expect(client.connectionState == .disconnected)
-        #expect(await eventually { helper.owner == nil })
+        #expect(await eventually { helper.owner == nil }, "the helper releases the session of a lost connection")
         #expect(helper.released.count == 1)
         #expect(helper.smc.writeLog == ["F0Md=0"])
 
-        // The next call reconnects and needs a new session.
-        await #expect(throws: FanControlError.sessionNotOpen) {
+        await #expect(throws: FanControlError.sessionNotOpen, "the next call reconnects and needs a new session") {
             try await client.write(key: .fanMode(0), bytes: [1])
         }
         try await client.openSession()
@@ -187,32 +142,29 @@ struct HelperEndToEndTests {
             try await client.openSession()
             try await client.write(key: .fanMode(0), bytes: [1])
         }
-        #expect(await eventually { helper.owner == nil })
+        #expect(await eventually { helper.owner == nil }, "deinit invalidates the connection")
         #expect(helper.smc.number("F0Md") == 0)
     }
 
     @Test func hungHelperTimesOutAndSessionIsReleased() async throws {
         let helper = FakeHelper()
-        let client = helper.makeClient(timeout: 0.3)
+        let client = helper.makeClient()
         try await client.openSession()
         try await client.write(key: .fanMode(0), bytes: [1])
+        // Short timeout only for the hung call (setup keeps the default 5 s, so a busy machine cannot fail it).
+        client.callTimeout = 0.3
         helper.updateConfig { $0.hangingMethods = ["writeKey"] }
 
-        let started = Date()
-        do {
+        let clock = ContinuousClock()
+        let started = clock.now
+        await #expect(throws: FanControlError.helperConnectionFailed("timeout")) {
             try await client.write(key: .fanTarget(0), bytes: FakeSMC.flt(3000))
-            Issue.record("expected a timeout")
-        } catch FanControlError.helperConnectionFailed(let reason) {
-            #expect(reason == "timeout")
         }
-        #expect(Date().timeIntervalSince(started) < 3)
+        #expect(clock.now - started < .seconds(3), "the call timeout, not the XPC default, ended the call")
         #expect(!client.isSessionOpen)
-        // The client invalidated the connection, so the helper hands the fan back.
-        #expect(await eventually { helper.owner == nil })
-        #expect(helper.smc.number("F0Md") == 0)
-        if case .error = client.connectionState {} else if client.connectionState == .disconnected {} else {
-            Issue.record("unexpected state \(client.connectionState)")
-        }
+        #expect(await eventually { helper.owner == nil }, "the client invalidated the connection")
+        #expect(helper.smc.number("F0Md") == 0, "the helper handed the fan back")
+        #expect(E2E.isErrorOrDisconnected(client.connectionState), "state \(client.connectionState)")
     }
 
     @Test func protocolVersionMismatchIsReported() async throws {
@@ -224,7 +176,6 @@ struct HelperEndToEndTests {
         // FanControlManager.openSMCSession refuses to open a session on this
         // (manual install) or re-registers once (SMAppService); the client itself
         // stays connected and opened nothing.
-        #expect(version != FanControlHelperConstants.protocolVersion)
         #expect(!client.isSessionOpen)
         #expect(helper.owner == nil)
     }
@@ -235,12 +186,7 @@ struct HelperEndToEndTests {
         let second = helper.makeClient()
         try await first.openSession()
 
-        do {
-            try await second.openSession()
-            Issue.record("expected notSessionOwner")
-        } catch {
-            #expect(helperCode(error) == FanControlHelperErrorCode.notSessionOwner.rawValue)
-        }
+        await E2E.expectHelperRejection(.notSessionOwner) { try await second.openSession() }
         #expect(!second.isSessionOpen)
         #expect(first.isSessionOpen)
         await first.closeSession()
@@ -257,17 +203,12 @@ struct HelperEndToEndTests {
 
         let fresh = helper.makeClient()
         try await fresh.openSession()
-        // The stale connection's fans were handed back before the new session started.
-        #expect(helper.smc.writeLog == ["F0Md=0"])
+        #expect(helper.smc.writeLog == ["F0Md=0"], "the stale connection's fans are handed back first")
         #expect(helper.owner?.connectionID == 2)
-        // The stale client's next write is refused by the helper and drops its flag.
-        do {
+        await E2E.expectHelperRejection(.notSessionOwner, "the stale client is refused") {
             try await stale.write(key: .fanMode(0), bytes: [1])
-            Issue.record("expected notSessionOwner")
-        } catch {
-            #expect(helperCode(error) == FanControlHelperErrorCode.notSessionOwner.rawValue)
         }
-        #expect(!stale.isSessionOpen)
+        #expect(!stale.isSessionOpen, "the refusal drops the stale client's session flag")
         await fresh.closeSession()
     }
 
@@ -275,24 +216,20 @@ struct HelperEndToEndTests {
         let helper = FakeHelper()
         let client = helper.makeClient()
         try await client.openSession()
-        try await applyAndRollBack([1: .manual(rpm: 5000)], strategy: strategy(helper), client: client)
+        try await E2E.applyAndRollBack([1: .manual(rpm: 5000)], helper: helper, client: client)
         helper.smc.clearWriteLog()
         helper.shutdown()  // SIGTERM path
         #expect(helper.smc.writeLog == ["F1Md=0"])
-        do {
-            try await client.write(key: .fanMode(1), bytes: [1])
-            Issue.record("expected sessionNotOpen from the helper")
-        } catch {
-            #expect(helperCode(error) == FanControlHelperErrorCode.sessionNotOpen.rawValue)
-        }
+        await E2E.expectHelperRejection(.sessionNotOpen) { try await client.write(key: .fanMode(1), bytes: [1]) }
         #expect(!client.isSessionOpen)
     }
 
-    @Test func sleepHandsBackAndWakeReapplies() async throws {
+    @Test(.tags(.power))
+    func sleepHandsBackAndWakeReapplies() async throws {
         let helper = FakeHelper()
         let client = helper.makeClient()
         try await client.openSession()
-        try await applyAndRollBack([0: .manual(rpm: 3000)], strategy: strategy(helper), client: client)
+        try await E2E.applyAndRollBack([0: .manual(rpm: 3000)], helper: helper, client: client)
         helper.smc.clearWriteLog()
 
         helper.prepareForSleep()
@@ -320,107 +257,7 @@ struct HelperEndToEndTests {
         #expect(info.dataSize == 4)
         #expect(info.dataType == .flt)
         #expect(info.isWritable)
-        do {
-            _ = try await client.keyInfo("ZZZZ")
-            Issue.record("expected invalidKey")
-        } catch {
-            #expect(helperCode(error) == FanControlHelperErrorCode.invalidKey.rawValue)
-        }
-    }
-
-    // MARK: Rejection (code-signing requirement)
-
-    /// The app's requirement on the helper fails (`NSXPCConnectionCodeSigningRequirementFailure`):
-    /// sticky `.rejected(.helperSignatureMismatch)`, later calls do not connect.
-    @Test func helperSignatureMismatchIsStickyRejection() async throws {
-        let helper = FakeHelper()
-        let client = helper.makeClient {
-            $0.setCodeSigningRequirement("identifier \"com.example.not-the-helper\" and anchor apple generic")
-        }
-        do {
-            _ = try await client.version()
-            Issue.record("expected a rejection")
-        } catch FanControlError.helperConnectionRejected {}
-        #expect(client.connectionState == .rejected(reason: .helperSignatureMismatch))
-        #expect(client.rejection == .helperSignatureMismatch)
-        // Observed: the peer still receives (and here answers) the first message; the
-        // client-side check discards the reply. Nothing reaches it afterwards.
-        #expect(helper.receivedMessages <= 1)
-        let received = helper.receivedMessages
-
-        let accepted = helper.acceptedConnections
-        await #expect(throws: FanControlError.self) { try await client.openSession() }
-        #expect(helper.acceptedConnections == accepted)  // refused without connecting
-        #expect(helper.receivedMessages == received)
-        #expect(client.connectionState == .rejected(reason: .helperSignatureMismatch))
-
-        client.resetRejection()
-        #expect(client.connectionState == .disconnected)
-        #expect(client.rejection == nil)
-    }
-
-    /// The helper's requirement on the client fails: the helper accepts the
-    /// connection, then drops it on the first message (seen by the client as an
-    /// interruption before any reply). Two such drops in a row are a rejection.
-    @Test func helperDroppingTheClientBecomesRejection() async throws {
-        let helper = FakeHelper(config: .init(acceptMode: .dropOnFirstMessage))
-        let client = helper.makeClient()
-        let first = await Self.failure { try await client.version() }
-        #expect(helper.receivedMessages == 1)
-        #expect(Self.isConnectionFailed(first))  // first drop: transient, backs off
-        #expect(client.rejection == nil)
-        // Wait out the 2 s transient backoff, then fail again.
-        try await Task.sleep(nanoseconds: 2_100_000_000)
-        let second = await Self.failure { try await client.version() }
-        #expect(Self.isRejected(second))
-        #expect(client.connectionState == .rejected(reason: .droppedByHelper))
-    }
-
-    /// The helper's system-enforced client requirement (as `HelperListenerDelegate`
-    /// sets it) rejects this process.
-    @Test func helperClientRequirementRejectsTheApp() async throws {
-        let helper = FakeHelper(config: .init(acceptMode: .clientRequirement(
-            "identifier \"com.example.not-the-app\" and anchor apple generic")))
-        let client = helper.makeClient()
-        let first = await Self.failure { try await client.version() }
-        #expect(Self.isConnectionFailed(first))
-        try await Task.sleep(nanoseconds: 2_100_000_000)
-        let second = await Self.failure { try await client.version() }
-        #expect(Self.isRejected(second))
-        #expect(helper.receivedMessages == 0)  // the system rejected the messages
-        #expect(client.connectionState == .rejected(reason: .droppedByHelper))
-    }
-
-    /// A listener that refuses the connection outright invalidates it
-    /// (`NSXPCConnectionInvalid`): a transient failure with backoff, not a rejection
-    /// (the real helper never refuses; this is what a missing service looks like).
-    @Test func listenerRefusingTheConnectionIsTransient() async throws {
-        let helper = FakeHelper(config: .init(acceptMode: .refuse))
-        let client = helper.makeClient()
-        let first = await Self.failure { try await client.version() }
-        #expect(Self.isConnectionFailed(first))
-        #expect(helper.receivedMessages == 0)
-        #expect(client.rejection == nil)
-        if case .error = client.connectionState {} else { Issue.record("state \(client.connectionState)") }
-        // Backing off: the next call fails fast without connecting.
-        let accepted = helper.acceptedConnections
-        let second = await Self.failure { try await client.version() }
-        #expect(Self.isConnectionFailed(second))
-        #expect(helper.acceptedConnections == accepted)
-    }
-
-    private static func failure(_ body: () async throws -> (Int, String)) async -> (any Error)? {
-        do { _ = try await body(); return nil } catch { return error }
-    }
-
-    private static func isConnectionFailed(_ error: (any Error)?) -> Bool {
-        if case FanControlError.helperConnectionFailed? = error { return true }
-        return false
-    }
-
-    private static func isRejected(_ error: (any Error)?) -> Bool {
-        if case FanControlError.helperConnectionRejected? = error { return true }
-        return false
+        await E2E.expectHelperRejection(.invalidKey) { _ = try await client.keyInfo("ZZZZ") }
     }
 }
 #endif

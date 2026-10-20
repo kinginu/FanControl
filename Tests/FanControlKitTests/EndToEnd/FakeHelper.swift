@@ -336,24 +336,4 @@ private final class FakeHelperService: NSObject, FanControlHelperProtocol, @unch
         reply(FanControlHelperErrorCode.ok.rawValue, info.dataSize, SMCKey(info.dataType.name)?.code ?? 0, info.attributes, "ok")
     }
 }
-
-struct UncheckedBox<T>: @unchecked Sendable {
-    let value: T
-    init(_ value: T) { self.value = value }
-}
-
-final class WeakBox<T: AnyObject>: @unchecked Sendable {
-    weak var value: T?
-    init(_ value: T) { self.value = value }
-}
-
-/// Polls `condition` until it holds or `timeout` elapses (XPC callbacks are asynchronous).
-func eventually(timeout: TimeInterval = 3, _ condition: @Sendable () -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(timeout)
-    while Date() < deadline {
-        if condition() { return true }
-        try? await Task.sleep(nanoseconds: 20_000_000)
-    }
-    return condition()
-}
 #endif

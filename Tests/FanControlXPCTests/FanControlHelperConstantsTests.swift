@@ -2,37 +2,31 @@ import Foundation
 import Testing
 @testable import FanControlXPC
 
+@Suite("Helper constants and write allowlist", .tags(.helper, .install))
 struct FanControlHelperConstantsTests {
-    @Test func testAllowedKeys() {
-        for key in ["F0Tg", "F9Md"] {
-            #expect(FanControlHelperConstants.isWriteAllowed(key: key), Comment(rawValue: key))
-        }
+    @Test(arguments: ["F0Tg", "F9Md", "F1Tg", "F1Md"])
+    func allowedKeys(key: String) {
+        #expect(FanControlHelperConstants.isWriteAllowed(key: key))
+        #expect(FanControlHelperConstants.isWriteAllowed(key: key), "the cached regexes match again")
     }
 
     /// Apple Silicon only (Intel dropped 2026-10-20): no Intel force-bit key and
     /// no `F<n>Mn` pattern in the allowlist.
-    @Test func testAllowlistHasNoIntelKeys() {
+    @Test func allowlistHasNoIntelKeys() {
         #expect(FanControlHelperConstants.allowedWriteKeyPatterns == ["^F[0-9]Tg$", "^F[0-9]Md$"])
         #expect(!FanControlHelperConstants.allowedWriteKeyPatterns.contains { $0.contains("FS!") || $0.contains("Mn") })
         #expect(!FanControlHelperConstants.isWriteAllowed(key: "FS! "))
     }
 
-    @Test func testRejectedKeys() {
-        for key in ["F0Tg\n", "f0Tg", "F10T", "FS!", "F0Ac", "TC0P", "", "F0Mx", "FS!\u{0}", "F0T\u{E9}",
-                    // Pre-write review 2026-10-20: never written (read-only on Apple Silicon / unlock key).
-                    "F0Mn", "F3Mn", "Ftst", "F0St", "F0Dc"] {
-            #expect(!FanControlHelperConstants.isWriteAllowed(key: key), Comment(rawValue: key.debugDescription))
-        }
+    /// Malformed, read-only or unrelated keys; the pre-write review (2026-10-20) adds
+    /// keys that are never written (read-only on Apple Silicon / the `Ftst` unlock key).
+    @Test(arguments: ["F0Tg\n", "f0Tg", "F10T", "FS!", "FS! ", "F0Ac", "TC0P", "", "F0Mx", "FS!\u{0}", "F0T\u{E9}",
+                      "F0Mn", "F3Mn", "Ftst", "F0St", "F0Dc"])
+    func rejectedKeys(key: String) {
+        #expect(!FanControlHelperConstants.isWriteAllowed(key: key), "\(key.debugDescription)")
     }
 
-    @Test func testCachedRegexesMatchRepeatedly() {
-        for _ in 0..<3 {
-            #expect(FanControlHelperConstants.isWriteAllowed(key: "F0Tg"))
-            #expect(!FanControlHelperConstants.isWriteAllowed(key: "F0Ac"))
-        }
-    }
-
-    @Test func testClientRequirement() {
+    @Test func clientRequirement() {
         let req = FanControlHelperConstants.clientCodeSigningRequirement(teamID: "ABCDE12345")
         #expect(req.contains("ABCDE12345"))
         #expect(req.contains("\"\(FanControlHelperConstants.appBundleIdentifier)\""))
@@ -42,7 +36,7 @@ struct FanControlHelperConstantsTests {
 }
 
 extension FanControlHelperConstantsTests {
-    @Test func testHelperRequirement() {
+    @Test func helperRequirement() {
         let req = FanControlHelperConstants.helperCodeSigningRequirement(teamID: "ABCDE12345")
         #expect(req == "anchor apple generic and identifier \"com.example.dynamicnotch.DynamicNotch.fanfi\" and certificate leaf[subject.OU] = \"ABCDE12345\"")
         #expect(FanControlHelperConstants.helperIdentifier == FanControlHelperConstants.machServiceName)

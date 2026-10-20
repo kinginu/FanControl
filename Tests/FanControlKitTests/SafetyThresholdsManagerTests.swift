@@ -6,22 +6,19 @@ import FanControlCore
 
 /// `FanControlManager.applySafetyThresholds(_:)` (design doc §5.6): the app's
 /// threshold setting reaches `safetyPolicy`, which every poll evaluates.
+@Suite("Safety thresholds (manager)", .tags(.safety, .manager))
 @MainActor
 struct SafetyThresholdsManagerTests {
+    private let defaults = ScratchDefaults()
 
-    private func makeManager(_ suite: String) -> FanControlManager {
-        FanControlManager(defaults: UserDefaults(suiteName: suite)!,
-                          powerSource: MockPowerSource(onBattery: false),
-                          conflictDetector: ConflictingControllerDetector(isAppRunning: { _ in false },
-                                                                          fileExists: { _ in false }))
-    }
-
-    @Test func testThresholdsChangeEvaluation() {
-        let manager = makeManager("SafetyThresholdsManagerTests.evaluation")
+    @Test func thresholdsChangeEvaluation() {
+        let manager = Isolated.manager(defaults: defaults)
         let reading = [SensorReading(id: "Tg0f", name: "GPU 0f", temperature: 87)]
         var before = AlertEvaluator()
-        #expect(before.evaluateHighTemperature(sensors: reading, policy: manager.safetyPolicy) == false)
-        #expect(before.evaluateEmergency(sensors: reading, policy: manager.safetyPolicy) == false)
+        #expect(before.evaluateHighTemperature(sensors: reading, policy: manager.safetyPolicy) == false,
+                "87 °C is below the default 90 °C alert")
+        #expect(before.evaluateEmergency(sensors: reading, policy: manager.safetyPolicy) == false,
+                "87 °C is below the default 95 °C emergency")
 
         manager.applySafetyThresholds(SafetyThresholds(highTemperatureAlert: 80, emergencyTemperature: 86,
                                                        alertHysteresis: 3))
@@ -32,8 +29,8 @@ struct SafetyThresholdsManagerTests {
         #expect(after.evaluateEmergency(sensors: reading, policy: manager.safetyPolicy) == true)
     }
 
-    @Test func testKeepsPrefixesAndHardwareMinimumAndClamps() {
-        let manager = makeManager("SafetyThresholdsManagerTests.keep")
+    @Test func keepsPrefixesAndHardwareMinimumAndClamps() {
+        let manager = Isolated.manager(defaults: defaults)
         manager.safetyPolicy.emergencySensorPrefixes = ["Tp", "Tg"]
         manager.safetyPolicy.enforceHardwareMinimum = false
         manager.applySafetyThresholds(SafetyThresholds(highTemperatureAlert: 150, emergencyTemperature: 20,

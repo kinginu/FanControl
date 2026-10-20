@@ -1,3 +1,4 @@
+import Foundation
 import FanControlCore
 
 /// In-memory `SMCReader` backed by a dictionary of key → (type, bytes).
@@ -45,7 +46,12 @@ final class MockSMCReader: SMCReader {
     }
 }
 
+/// Shared SMC layouts and values of the Core tests.
 enum Fixtures {
+    /// The two fans of the Mac14,9 (M2 Pro): 2317...6800 RPM.
+    static let mac14_9Fans = [FanDevice(id: 0, name: "Fan 1", minRPM: 2317, maxRPM: 6800),
+                              FanDevice(id: 1, name: "Fan 2", minRPM: 2317, maxRPM: 6800)]
+
     static func fpe2(_ value: Double) -> [UInt8] { SMCCodec.encode(value, as: .fpe2, size: 2)! }
     static func sp78(_ value: Double) -> [UInt8] { SMCCodec.encode(value, as: .sp78, size: 2)! }
     static func flt(_ value: Double) -> [UInt8] { SMCCodec.encode(value, as: .flt, size: 4)! }
@@ -104,4 +110,11 @@ enum Fixtures {
             ("Tg0f", .flt, flt(140)),        // implausible -> filtered
         ])
     }
+}
+
+/// Fixed wall-clock time for code that takes `now:` / `at:` (never `Date()` in assertions).
+enum TestClock {
+    static let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    /// `t0` plus `seconds`.
+    static func at(_ seconds: TimeInterval) -> Date { t0.addingTimeInterval(seconds) }
 }

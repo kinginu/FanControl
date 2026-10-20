@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import FanControlCore
 
+@Suite("Temperature sample filter", .tags(.sensors))
 struct TemperatureSampleFilterTests {
 
     private func batch(_ values: [(String, Double)]) -> [SensorReading] {
@@ -14,7 +15,7 @@ struct TemperatureSampleFilterTests {
 
     /// The Mac14,9 pattern: each Tp triplet alternates between real values and
     /// a fixed `0.00 / 6.70 / 8.43` (or `0.00 / 4.63 / 5.32`) pattern.
-    @Test func testMac14_9AlternatingPatternIsHeld() {
+    @Test func mac14_9AlternatingPatternIsHeld() {
         var filter = TemperatureSampleFilter()
         let real = batch([("Tp00", 56.31), ("Tp01", 63.01), ("Tp02", 77.13),
                           ("Tp0C", 55.92), ("Tp0D", 60.56), ("Tp0E", 69.20), ("Te04", 53.13)])
@@ -36,7 +37,7 @@ struct TemperatureSampleFilterTests {
         }
     }
 
-    @Test func testPreservesOrderNamesAndNonFilteredKeys() {
+    @Test func preservesOrderNamesAndNonFilteredKeys() {
         var filter = TemperatureSampleFilter()
         _ = filter.filter(batch([("Tp00", 50)]))
         let input = batch([("TH1a", 0), ("Tp00", 0), ("Tz11", 0), ("TB0T", 33)])
@@ -46,7 +47,7 @@ struct TemperatureSampleFilterTests {
         #expect(output.map(\.temperature) == [0, 50, 0, 33])
     }
 
-    @Test func testNonFiniteSamplesPassThrough() {
+    @Test func nonFiniteSamplesPassThrough() {
         var filter = TemperatureSampleFilter()
         _ = filter.filter(batch([("Tp00", 50)]))
         let out = filter.filter(batch([("Tp00", .nan), ("Tp01", .infinity)]))
@@ -55,7 +56,7 @@ struct TemperatureSampleFilterTests {
         #expect(filter.substitutedKeys.isEmpty)
     }
 
-    @Test func testFallsBackToGroupMaximumWithoutHistory() {
+    @Test func fallsBackToGroupMaximumWithoutHistory() {
         // Persistent pattern seen on Mac14,9: one gated cluster from the first read.
         var filter = TemperatureSampleFilter()
         let out = temps(filter.filter(batch([("Tp00", 0), ("Tp01", 6.70), ("Tp02", 8.43),
@@ -68,7 +69,7 @@ struct TemperatureSampleFilterTests {
         #expect(out["Te04"] == 44.4)
     }
 
-    @Test func testWholeGroupImplausiblePassesRaw() {
+    @Test func wholeGroupImplausiblePassesRaw() {
         var filter = TemperatureSampleFilter()
         let input = batch([("Tp00", 0), ("Tp01", 6.70), ("Te04", 45)])
         let out = temps(filter.filter(input))
@@ -77,7 +78,7 @@ struct TemperatureSampleFilterTests {
         #expect(filter.substitutedKeys.isEmpty)
     }
 
-    @Test func testStopsHoldingLastValueAfterMaxConsecutiveRejections() {
+    @Test func stopsHoldingLastValueAfterMaxConsecutiveRejections() {
         var filter = TemperatureSampleFilter(maxConsecutiveSubstitutions: 5)
         _ = filter.filter(batch([("Tp00", 60), ("Tp1A", 45)]))
         for _ in 0..<5 {
@@ -94,7 +95,7 @@ struct TemperatureSampleFilterTests {
         #expect(temps(filter.filter(batch([("Tp00", 0)])))["Tp00"] == 58)
     }
 
-    @Test func testFloorAndPrefixesAreConfigurable() {
+    @Test func floorAndPrefixesAreConfigurable() {
         var filter = TemperatureSampleFilter(floor: 20, filteredPrefixes: ["TH"])
         _ = filter.filter(batch([("TH0a", 38), ("Tp00", 50)]))
         let out = temps(filter.filter(batch([("TH0a", 15), ("Tp00", 0)])))
@@ -105,14 +106,14 @@ struct TemperatureSampleFilterTests {
         #expect(TemperatureSampleFilter(filteredPrefixes: ["T", "Tp"]).group(of: "Tp00") == "Tp")
     }
 
-    @Test func testDropsAboveFloorAreNotRejected() {
+    @Test func dropsAboveFloorAreNotRejected() {
         var filter = TemperatureSampleFilter()
         _ = filter.filter(batch([("Tp00", 80)]))
         #expect(temps(filter.filter(batch([("Tp00", 40)])))["Tp00"] == 40)
         #expect(temps(filter.filter(batch([("Tp00", 10)])))["Tp00"] == 10)
     }
 
-    @Test func testReset() {
+    @Test func reset() {
         var filter = TemperatureSampleFilter()
         _ = filter.filter(batch([("Tp00", 60)]))
         _ = filter.filter(batch([("Tp00", 0)]))
@@ -125,8 +126,8 @@ struct TemperatureSampleFilterTests {
 
     /// End to end with a mock SMC: the sensor-linked mode bound to a flickering
     /// `Tp*` key keeps its speed instead of dropping to the fan minimum.
-    @Test func testSensorModeDoesNotDropOnBogusSample() {
-        let fan = FanDevice(id: 0, name: "Fan 1", minRPM: 2317, maxRPM: 6800)
+    @Test func sensorModeDoesNotDropOnBogusSample() {
+        let fan = Fixtures.mac14_9Fans[0]
         let profile = FanProfile(name: "Sensor",
                                  modes: [0: .sensor(sensorKey: "Tp01", startTemperature: 40, maxTemperature: 80)])
         func reader(_ tp01: Double) -> MockSMCReader {
@@ -148,9 +149,10 @@ struct TemperatureSampleFilterTests {
     }
 }
 
+@Suite("Safety policy defaults", .tags(.safety))
 struct SafetyPolicyDefaultsTests {
     /// Apple Silicon only (Intel dropped 2026-10-20): one default list, without `TG`.
-    @Test func testDefaultIsTheAppleSiliconList() {
+    @Test func defaultIsTheAppleSiliconList() {
         #expect(SafetyPolicy.defaultEmergencySensorPrefixes == ["Tp", "Te", "TC", "Tg"])
         #expect(SafetyPolicy.default.emergencySensorPrefixes == ["Tp", "Te", "TC", "Tg"])
         #expect(SafetyPolicy().emergencySensorPrefixes == SafetyPolicy.defaultEmergencySensorPrefixes)
@@ -160,13 +162,13 @@ struct SafetyPolicyDefaultsTests {
         #expect(SafetyPolicy.default.alertHysteresis == 5)
     }
 
-    @Test func testTGBatterySensorsIgnored() {
+    @Test func tgBatterySensorsIgnored() {
         let sensors = [SensorReading(id: "TG0B", name: "", temperature: 96),
                        SensorReading(id: "Tg0f", name: "", temperature: 50)]
         #expect(FanControlEngine.hottestEmergencySensor(sensors, policy: .default)?.id == "Tg0f")
     }
 
-    @Test func testCodableRoundTripIncludingLegacyPayload() throws {
+    @Test func codableRoundTripIncludingLegacyPayload() throws {
         let policy = SafetyPolicy.default
         let data = try JSONEncoder().encode(policy)
         #expect(try JSONDecoder().decode(SafetyPolicy.self, from: data) == policy)

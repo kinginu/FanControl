@@ -3,13 +3,13 @@ import Testing
 @testable import FanControlCore
 
 /// The fixed set of seven profiles (`ProfileStore`, docs/kit.md "Profiles").
+@Suite("Profile store", .tags(.profiles))
 struct ProfileStoreTests {
     typealias ID = FanProfile.BuiltInID
 
-    let fans = [FanDevice(id: 0, name: "Fan 1", minRPM: 2317, maxRPM: 6800),
-                FanDevice(id: 1, name: "Fan 2", minRPM: 2317, maxRPM: 6800)]
+    let fans = Fixtures.mac14_9Fans
 
-    @Test func testFixedSetAndOrder() {
+    @Test func fixedSetAndOrder() {
         let store = ProfileStore()
         #expect(store.profiles.map(\.id) == FanProfile.fixedProfileIDs)
         #expect(store.profiles.map(\.id) == [ID.automatic, ID.constantQuiet, ID.constantHigh, ID.boost,
@@ -25,9 +25,9 @@ struct ProfileStoreTests {
         #expect(store.activeProfileID == nil)
     }
 
-    @Test func testPresetDefaults() {
+    @Test func presetDefaults() {
         for fan in fans {
-            #expect(FanProfile.automatic().mode(for: fan) == .automatic)
+            #expect(FanProfile.automatic().mode(for: fan) == .automatic, "\(fan.name)")
             #expect(FanProfile.constantQuiet().mode(for: fan) == .constant(rpm: 3000))
             #expect(FanProfile.constantHigh().mode(for: fan) == .constant(rpm: 5000))
             #expect(FanProfile.boost().mode(for: fan)
@@ -45,7 +45,7 @@ struct ProfileStoreTests {
         #expect(FanCurve.boost.points.map(\.rpm) == [0, 3500, 5200, 6400, 6800])
     }
 
-    @Test func testModeFallbackAndResolved() {
+    @Test func modeFallbackAndResolved() {
         var profile = FanProfile.boost()
         profile.modes[1] = .automatic
         #expect(profile.mode(for: fans[0]) == FanProfile.Preset.boostMode)
@@ -59,7 +59,7 @@ struct ProfileStoreTests {
         #expect(!FanProfile.automatic().resolved(for: fans).modes.values.contains { $0.isManual })
     }
 
-    @Test func testPresetsAreReadOnly() {
+    @Test func presetsAreReadOnly() {
         var store = ProfileStore()
         var quiet = FanProfile.constantQuiet()
         quiet.defaultMode = .constant(rpm: 1000)
@@ -78,7 +78,7 @@ struct ProfileStoreTests {
         #expect(store.profiles == ProfileStore().profiles)
     }
 
-    @Test func testEditRenameReset() {
+    @Test func editRenameReset() {
         var store = ProfileStore()
         var custom = store.profile(id: ID.custom2)!
         custom.modes = [0: .sensor(sensorKey: "agg:gpu", startTemperature: 45, maxTemperature: 75),
@@ -112,7 +112,7 @@ struct ProfileStoreTests {
         #expect(store.profile(id: ID.custom1)?.isBuiltIn == false)
     }
 
-    @Test func testDeleteIsNoOpAndActiveNormalized() {
+    @Test func deleteIsNoOpAndActiveNormalized() {
         var store = ProfileStore()
         for id in FanProfile.fixedProfileIDs { #expect(store.delete(id: id) == false) }
         #expect(store.profiles.count == 7)
@@ -128,7 +128,7 @@ struct ProfileStoreTests {
 
     /// Programmatic profiles stored by FanControlManager (setFanRPM's "Custom",
     /// HelperSmokeApp) are kept after the six, not shown as fixed profiles.
-    @Test func testAdditionalProfiles() throws {
+    @Test func additionalProfiles() throws {
         var store = ProfileStore()
         let managerCustom = FanProfile(id: UUID(uuidString: "6F1A0000-0000-4000-8000-0000000000C0")!,
                                        name: "Custom", modes: [0: .constant(rpm: 3000)])
@@ -155,7 +155,7 @@ struct ProfileStoreTests {
         #expect(store.delete(id: managerCustom.id) == false)
     }
 
-    @Test func testCodableRoundTrip() throws {
+    @Test func codableRoundTrip() throws {
         var store = ProfileStore()
         store.rename(id: ID.custom1, to: "Gaming")
         var custom2 = store.profile(id: ID.custom2)!
@@ -173,7 +173,7 @@ struct ProfileStoreTests {
         #expect(decoded.profile(id: ID.custom2)?.mode(for: fans[0]) == .constant(rpm: 3500))
     }
 
-    @Test func testStoredPresetIsRegeneratedFromCode() throws {
+    @Test func storedPresetIsRegeneratedFromCode() throws {
         // A v2 store whose preset values differ (e.g. written by an older build) gets today's presets.
         let stale = ProfileStore()
         var json = String(data: try ProfileStore.encodeJSON(stale), encoding: .utf8)!
@@ -183,7 +183,7 @@ struct ProfileStoreTests {
         #expect(decoded.profile(id: ID.constantQuiet) == .constantQuiet())
     }
 
-    @Test func testLegacyMigrationFoldsSensorProfile() throws {
+    @Test func legacyMigrationFoldsSensorProfile() throws {
         let sensorModes: [Int: FanControlMode] = [0: .sensor(sensorKey: "agg:cpu", startTemperature: 45, maxTemperature: 75),
                                                   1: .constant(rpm: 3000)]
         let smoke = FanProfile(id: UUID(uuidString: "6F1A0000-0000-4000-8000-00000000D0D0")!,
@@ -200,7 +200,7 @@ struct ProfileStoreTests {
         #expect(store.activeProfileID == ID.custom1)
     }
 
-    @Test func testLegacyMigrationDropsOthers() throws {
+    @Test func legacyMigrationDropsOthers() throws {
         let constant = FanProfile(name: "Mine", modes: [0: .constant(rpm: 2800)])
         // Active pointed at a dropped profile → Automatic (nil).
         var store = try ProfileStore.decodeJSON(legacyJSON(profiles: [constant, .maximum(for: fans)], active: constant.id))
@@ -214,7 +214,7 @@ struct ProfileStoreTests {
         #expect(try ProfileStore.decodeJSON(Data("{}".utf8)) == ProfileStore())
     }
 
-    @Test func testBoostPlan() {
+    @Test func boostPlan() {
         let profile = FanProfile.boost()
         func plan(_ cpu: Double?) -> [Int: Int?] {
             let sensors = cpu.map { [SensorReading(id: "agg:cpu", name: "CPU (max)", temperature: $0, sensorType: .greatest)] } ?? []
@@ -257,10 +257,10 @@ struct ProfileStoreTests {
 }
 
 /// Schema 3 (2026-10-20): curves in custom slots, Max preset, Custom 1 migration.
+@Suite("Profile store curves", .tags(.profiles, .control))
 struct ProfileStoreCurveTests {
     typealias ID = FanProfile.BuiltInID
-    let fans = [FanDevice(id: 0, name: "Fan 1", minRPM: 2317, maxRPM: 6800),
-                FanDevice(id: 1, name: "Fan 2", minRPM: 2317, maxRPM: 6800)]
+    let fans = Fixtures.mac14_9Fans
 
     /// A schema-2 store JSON with `custom1` as the Custom 1 slot.
     private func schema2JSON(custom1: FanProfile, active: UUID? = nil) throws -> Data {
@@ -268,7 +268,7 @@ struct ProfileStoreCurveTests {
         return try JSONEncoder().encode(V2(profiles: [custom1, .defaultCustom2()], activeProfileID: active))
     }
 
-    @Test func testUnchangedOldCustom1BecomesBoostCurve() throws {
+    @Test func unchangedOldCustom1BecomesBoostCurve() throws {
         let old = FanProfile(id: ID.custom1, name: "Custom 1", defaultMode: ProfileStore.legacyCustom1Mode)
         var store = try ProfileStore.decodeJSON(schema2JSON(custom1: old, active: ID.custom1))
         #expect(store.profile(id: ID.custom1) == .defaultCustom1())
@@ -281,7 +281,7 @@ struct ProfileStoreCurveTests {
         #expect(store.profile(id: ID.custom1) == .defaultCustom1())
     }
 
-    @Test func testEditedStartMaxSlotGetsTwoPointCurve() throws {
+    @Test func editedStartMaxSlotGetsTwoPointCurve() throws {
         let edited = FanProfile(id: ID.custom1, name: "Gaming",
                                 modes: [0: .sensor(sensorKey: "agg:gpu", startTemperature: 45, maxTemperature: 75),
                                         1: .constant(rpm: 3000)],
@@ -300,7 +300,7 @@ struct ProfileStoreCurveTests {
         #expect(try ProfileStore.decodeJSON(ProfileStore.encodeJSON(store)) == store)
     }
 
-    @Test func testCurveUnawareEditReplacesStaleCurve() {
+    @Test func curveUnawareEditReplacesStaleCurve() {
         var store = ProfileStore()
         var slot = store.profile(id: ID.custom1)!.resolved(for: fans)
         #expect(slot.curves[0] == .boost)
@@ -322,7 +322,7 @@ struct ProfileStoreCurveTests {
         #expect(!store.isModified(id: ID.custom1))
     }
 
-    @Test func testMaxPreset() {
+    @Test func maxPreset() {
         let plan = FanControlEngine.plan(profile: .max(), fans: fans + [FanDevice(id: 2, name: "S", minRPM: 1000, maxRPM: 5000)],
                                          sensors: [], policy: .default, isEmergency: false)
         #expect(plan == [0: 6800, 1: 6800, 2: 5000])

@@ -4,17 +4,18 @@ import FanControlXPC
 @testable import FanControlKit
 
 /// Retry / rejection state machine of `HelperClient` (mocked connection outcomes).
+@Suite("Helper connection gate", .tags(.helper))
 struct HelperConnectionGateTests {
     private static let install = "manual|791@1000|1340624@1000"
     private static let reinstalled = "manual|791@2000|1340624@2000"
 
-    @Test func testFreshGateProceeds() {
+    @Test func freshGateProceeds() {
         var gate = HelperConnectionGate()
         #expect(gate.decide(now: 0, fingerprint: Self.install) == .proceed)
         #expect(gate.rejection == nil)
     }
 
-    @Test func testBackoffIsExponentialAndCapped() {
+    @Test func backoffIsExponentialAndCapped() {
         let gate = HelperConnectionGate()
         #expect(gate.backoffDelay(afterFailures: 0) == 0)
         #expect(gate.backoffDelay(afterFailures: 1) == 2)
@@ -25,7 +26,7 @@ struct HelperConnectionGateTests {
         #expect(gate.backoffDelay(afterFailures: 10_000) == 300)
     }
 
-    @Test func testTransientFailuresBackOff() {
+    @Test func transientFailuresBackOff() {
         var gate = HelperConnectionGate()
         #expect(gate.recordFailure(.transient, now: 100, fingerprint: Self.install) == nil)
         #expect(gate.decide(now: 101, fingerprint: Self.install) == .backingOff(remaining: 1))
@@ -37,7 +38,7 @@ struct HelperConnectionGateTests {
         #expect(gate.rejection == nil)
     }
 
-    @Test func testSuccessResetsBackoff() {
+    @Test func successResetsBackoff() {
         var gate = HelperConnectionGate()
         gate.recordFailure(.transient, now: 0, fingerprint: Self.install)
         gate.recordFailure(.droppedWithoutReply, now: 0, fingerprint: Self.install)
@@ -49,7 +50,7 @@ struct HelperConnectionGateTests {
 
     /// What the 11:20 log showed: the helper accepts, then drops the peer right after
     /// the first message. Two such drops in a row are a sticky rejection.
-    @Test func testRepeatedDropsWithoutReplyBecomeRejection() {
+    @Test func repeatedDropsWithoutReplyBecomeRejection() {
         var gate = HelperConnectionGate()
         #expect(gate.recordFailure(.droppedWithoutReply, now: 0, fingerprint: Self.install) == nil)
         #expect(gate.decide(now: 1, fingerprint: Self.install) == .backingOff(remaining: 1))
@@ -58,7 +59,7 @@ struct HelperConnectionGateTests {
         #expect(gate.decide(now: 3 + 86_400, fingerprint: Self.install) == .rejected(.droppedByHelper))
     }
 
-    @Test func testTransientFailureInterruptsDropStreak() {
+    @Test func transientFailureInterruptsDropStreak() {
         var gate = HelperConnectionGate()
         gate.recordFailure(.droppedWithoutReply, now: 0, fingerprint: Self.install)
         gate.recordFailure(.transient, now: 10, fingerprint: Self.install)
@@ -66,14 +67,14 @@ struct HelperConnectionGateTests {
         #expect(gate.rejection == nil)
     }
 
-    @Test func testCodeSigningFailureRejectsImmediately() {
+    @Test func codeSigningFailureRejectsImmediately() {
         var gate = HelperConnectionGate()
         #expect(gate.recordFailure(.codeSigningRequirementFailed, now: 0, fingerprint: Self.install)
                 == .helperSignatureMismatch)
         #expect(gate.decide(now: 1_000, fingerprint: Self.install) == .rejected(.helperSignatureMismatch))
     }
 
-    @Test func testPinMismatchRejectionAndUserReset() {
+    @Test func pinMismatchRejectionAndUserReset() {
         var gate = HelperConnectionGate()
         let reason = HelperRejectionReason.clientNotPinned(pinnedCDHash: String(repeating: "a", count: 40),
                                                            appCDHash: String(repeating: "b", count: 40))
@@ -85,7 +86,7 @@ struct HelperConnectionGateTests {
 
     /// Re-running install.sh rewrites the plist and the helper: the rejection is
     /// dropped without a user click.
-    @Test func testReinstallClearsRejection() {
+    @Test func reinstallClearsRejection() {
         var gate = HelperConnectionGate()
         gate.recordFailure(.codeSigningRequirementFailed, now: 0, fingerprint: Self.install)
         #expect(gate.decide(now: 1, fingerprint: Self.reinstalled) == .proceed)
@@ -93,7 +94,7 @@ struct HelperConnectionGateTests {
         #expect(gate.consecutiveFailures == 0)
     }
 
-    @Test func testCustomPolicyThreshold() {
+    @Test func customPolicyThreshold() {
         var gate = HelperConnectionGate(policy: .init(initialBackoff: 1, multiplier: 3, maxBackoff: 60,
                                                       dropsBeforeRejection: 1))
         #expect(gate.backoffDelay(afterFailures: 3) == 9)
@@ -102,7 +103,7 @@ struct HelperConnectionGateTests {
         #expect(HelperConnectionGate.Policy(dropsBeforeRejection: 0).dropsBeforeRejection == 1)
     }
 
-    @Test func testClassification() {
+    @Test func classification() {
         let cocoa = NSCocoaErrorDomain
         #expect(HelperConnectionGate.classify(errorDomain: cocoa, errorCode: 4102, hadReplyBeforeSend: false)
                 == .codeSigningRequirementFailed)
@@ -121,7 +122,7 @@ struct HelperConnectionGateTests {
     }
 
     /// End-to-end sequence as `HelperClient` drives it: decide → (connect) → record.
-    @Test func testRejectedClientStopsConnecting() {
+    @Test func rejectedClientStopsConnecting() {
         var gate = HelperConnectionGate()
         var connections = 0
         // Ten user clicks, three seconds apart, against a helper that drops every peer.
@@ -133,16 +134,16 @@ struct HelperConnectionGateTests {
                                                              hadReplyBeforeSend: false),
                                now: now, fingerprint: Self.install)
         }
-        #expect(connections == 2)
+        #expect(connections == 2, "two drops, then the sticky rejection stops connecting")
         #expect(gate.rejection == .droppedByHelper)
     }
 
-    @Test func testRejectionDescriptionsNameTheRemedy() {
+    @Test func rejectionDescriptionsNameTheRemedy() {
         let reasons: [HelperRejectionReason] = [
             .clientNotPinned(pinnedCDHash: "p", appCDHash: "a"), .droppedByHelper, .helperSignatureMismatch,
         ]
         for reason in reasons {
-            #expect(reason.description.contains("sudo install.sh"))
+            #expect(reason.description.contains("sudo install.sh"), "\(reason)")
         }
         #expect(HelperRejectionReason.clientNotPinned(pinnedCDHash: "p", appCDHash: "a").description
                     .contains("pinned to a different build of the app"))

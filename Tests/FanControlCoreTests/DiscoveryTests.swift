@@ -2,10 +2,11 @@ import Foundation
 import Testing
 @testable import FanControlCore
 
+@Suite("Fan discovery", .tags(.smc))
 struct FanDiscoveryTests {
     /// Intel-era layout (unsupported since 2026-10-20): fpe2 fan keys still decode
     /// generically, but `FS! ` is no longer read, so no fan reports manual mode.
-    @Test func testLegacyFixedPointFansIgnoreForceBits() throws {
+    @Test func legacyFixedPointFansIgnoreForceBits() throws {
         let reader = Fixtures.intel()
         let fans = try FanDiscovery.discoverFans(using: reader)
         #expect(fans == [
@@ -18,7 +19,7 @@ struct FanDiscoveryTests {
         #expect(FanDiscovery.fanControlModes(fans: fans, using: reader) == [0: .automatic, 1: .automatic])
     }
 
-    @Test func testAppleSiliconFans() throws {
+    @Test func appleSiliconFans() throws {
         let reader = Fixtures.appleSilicon()
         let fans = try FanDiscovery.discoverFans(using: reader)
         #expect(fans == [
@@ -31,21 +32,21 @@ struct FanDiscoveryTests {
         #expect(FanDiscovery.fanControlModes(fans: fans, using: reader) == [0: .constant(rpm: 2400), 1: .automatic])
     }
 
-    @Test func testSkipsFansWithUnreadableLimits() throws {
+    @Test func skipsFansWithUnreadableLimits() throws {
         let reader = Fixtures.intel()
         reader.failingReads.insert(.fanMax(1))
         let fans = try FanDiscovery.discoverFans(using: reader)
         #expect(fans.map(\.id) == [0])
     }
 
-    @Test func testMissingFanCountThrows() {
+    @Test func missingFanCountThrows() {
         let reader = MockSMCReader([])
         #expect(throws: FanControlError.keyNotFound("FNum")) {
             try FanDiscovery.discoverFans(using: reader)
         }
     }
 
-    @Test func testReaderHelpers() throws {
+    @Test func readerHelpers() throws {
         let reader = Fixtures.intel()
         #expect(reader.exists("TC0P"))
         #expect(!reader.exists("XXXX"))
@@ -64,8 +65,9 @@ struct FanDiscoveryTests {
     }
 }
 
+@Suite("Sensor catalog", .tags(.sensors, .smc))
 struct SensorCatalogTests {
-    @Test func testDisplayNames() {
+    @Test func displayNames() {
         // Intel-only names were removed (Intel dropped 2026-10-20): generic fallback.
         for key in ["TC0P", "TC0D", "TG0P", "TG0D", "TA0P", "TPCD"] {
             #expect(SensorCatalog.displayName(for: key) == "Sensor \(key)")
@@ -88,7 +90,7 @@ struct SensorCatalogTests {
         #expect(SensorCatalog.displayName(for: "Tm0P") == "Sensor Tm0P")
     }
 
-    @Test func testUnknownAppleSiliconKeysStayGeneric() {
+    @Test func unknownAppleSiliconKeysStayGeneric() {
         // No community backing: keep "Sensor <key>" (TG* is battery-area, not GPU, on Mac14,9).
         for key in ["TG0B", "TCMz", "TCMb", "TCDX", "TVM0", "TVm0", "TPD0", "TRD0", "Th00", "TD00",
                     "Tf04", "Ts0C", "Tz11", "Ta0C", "TS0P"] {
@@ -116,7 +118,7 @@ struct SensorCatalogTests {
         Tz13 Tz14 Tz15 Tz16 Tz17 Tz18 Tz1j
         """.split(whereSeparator: \.isWhitespace).map(String.init)
 
-    @Test func testDisplayNamesAreUniqueAndDeterministic() {
+    @Test func displayNamesAreUniqueAndDeterministic() {
         let keys = Self.mac14_9Keys + Array(SensorCatalog.knownNames.keys)
         #expect(Self.mac14_9Keys.count == 259)
         var seen: [String: String] = [:]
@@ -131,7 +133,7 @@ struct SensorCatalogTests {
     }
 
     /// Intel-era fixture (sp78): discovery still decodes generically.
-    @Test func testDiscoverLegacyFixedPointSensors() throws {
+    @Test func discoverLegacyFixedPointSensors() throws {
         let sensors = try SensorCatalog.discoverTemperatureSensors(using: Fixtures.intel())
         #expect(sensors.map(\.id) == ["TC0P", "TG0D", "TB0T", "Tm0P"])
         #expect(sensors.first?.temperature == 55.5)
@@ -140,7 +142,7 @@ struct SensorCatalogTests {
         #expect(sensors.allSatisfy { $0.sensorType == .smc })
     }
 
-    @Test func testDiscoverAppleSilicon() throws {
+    @Test func discoverAppleSilicon() throws {
         let sensors = try SensorCatalog.discoverTemperatureSensors(using: Fixtures.appleSilicon())
         #expect(sensors.map(\.id) == ["Tp09", "Te05"])
         #expect(sensors[0].temperature == 61.5)
@@ -150,20 +152,20 @@ struct SensorCatalogTests {
         #expect(wide.map(\.id) == ["Tp09", "Te05", "Tg0f"])
     }
 
-    @Test func testDiscoverToleratesReadFailures() throws {
+    @Test func discoverToleratesReadFailures() throws {
         let reader = Fixtures.intel()
         reader.failingReads.insert("TC0P")
         let sensors = try SensorCatalog.discoverTemperatureSensors(using: reader)
         #expect(sensors.map(\.id) == ["TG0D", "TB0T", "Tm0P"])
     }
 
-    @Test func testReadTemperatures() {
+    @Test func readTemperatures() {
         let readings = SensorCatalog.readTemperatures(keys: ["TC0P", "NOPE", "bad", "TB0T"], using: Fixtures.intel())
         #expect(readings.map(\.id) == ["TC0P", "TB0T"])
         #expect(readings[1].temperature == 31)
     }
 
-    @Test func testFahrenheit() {
+    @Test func fahrenheit() {
         let reading = SensorReading(id: "TC0P", name: "CPU", temperature: 100, sensorType: .smc)
         #expect(reading.temperature(in: .fahrenheit) == 212)
         #expect(reading.temperature(in: .celsius) == 100)

@@ -3,19 +3,20 @@ import Testing
 @testable import FanControlCore
 
 /// `ThresholdBounds` / `SafetyThresholds` (design doc §5.6).
+@Suite("Threshold bounds", .tags(.safety))
 struct ThresholdBoundsTests {
 
     private func t(_ alert: Double, _ emergency: Double, _ hysteresis: Double) -> SafetyThresholds {
         SafetyThresholds(highTemperatureAlert: alert, emergencyTemperature: emergency, alertHysteresis: hysteresis)
     }
 
-    @Test func testDefaultsMatchPolicy() {
+    @Test func defaultsMatchPolicy() {
         #expect(SafetyThresholds.default == t(90, 95, 5))
         #expect(SafetyPolicy.default.thresholds == .default)
         #expect(ThresholdBounds.clamped(.default) == .default)
     }
 
-    @Test func testClampedRanges() {
+    @Test func clampedRanges() {
         #expect(ThresholdBounds.clamped(t(60, 50, 0)) == t(70, 71, 1))
         #expect(ThresholdBounds.clamped(t(120, 130, 20)) == t(100, 105, 10))
         // Emergency must stay above the alert.
@@ -27,7 +28,7 @@ struct ThresholdBoundsTests {
         #expect(ThresholdBounds.emergencyOverallRange == 71...105)
     }
 
-    @Test func testSettingOneReclampsOthers() {
+    @Test func settingOneReclampsOthers() {
         // Raising the alert pushes the emergency threshold up.
         #expect(ThresholdBounds.settingHighTemperatureAlert(98, in: .default) == t(98, 99, 5))
         #expect(ThresholdBounds.settingHighTemperatureAlert(150, in: .default) == t(100, 101, 5))
@@ -41,7 +42,7 @@ struct ThresholdBoundsTests {
         #expect(ThresholdBounds.settingAlertHysteresis(8, in: t(60, 50, 3)) == t(70, 71, 8))
     }
 
-    @Test func testPolicyThresholdsKeepOtherFields() {
+    @Test func policyThresholdsKeepOtherFields() {
         var policy = SafetyPolicy(emergencySensorPrefixes: ["Tp"], enforceHardwareMinimum: false)
         policy.thresholds = t(80, 88, 3)
         #expect(policy.highTemperatureAlert == 80 && policy.emergencyTemperature == 88 && policy.alertHysteresis == 3)
@@ -52,7 +53,7 @@ struct ThresholdBoundsTests {
         #expect(policy.clamped().emergencySensorPrefixes == ["Tp"])
     }
 
-    @Test func testDecodingMissingKeysUsesDefaults() throws {
+    @Test func decodingMissingKeysUsesDefaults() throws {
         let decoder = JSONDecoder()
         #expect(try decoder.decode(SafetyThresholds.self, from: Data("{}".utf8)) == .default)
         #expect(try decoder.decode(SafetyThresholds.self, from: Data(#"{"emergencyTemperature":99}"#.utf8))
@@ -62,7 +63,7 @@ struct ThresholdBoundsTests {
     }
 
     /// Lower thresholds change what `AlertEvaluator` reports for the same reading.
-    @Test func testEvaluationFollowsThresholds() {
+    @Test func evaluationFollowsThresholds() {
         let cpu = [SensorReading(id: "Tp01", name: "CPU", temperature: 86)]
         var defaultEvaluator = AlertEvaluator()
         #expect(defaultEvaluator.evaluateHighTemperature(sensors: cpu, policy: .default) == false)

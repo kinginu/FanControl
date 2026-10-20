@@ -1,9 +1,10 @@
 import Testing
 @testable import FanControlKit
 
+@Suite("Monitoring pause state", .tags(.manager))
 struct MonitoringPauseStateTests {
 
-    @Test func testPauseOnlyInEffectWithoutHolds() {
+    @Test func pauseOnlyInEffectWithoutHolds() {
         var state = MonitoringPauseState()
         #expect(!state.isInEffect)
         state.requested = true
@@ -16,7 +17,7 @@ struct MonitoringPauseStateTests {
         #expect(state.isInEffect)
     }
 
-    @Test func testHoldsAreKeyedAndIdempotent() {
+    @Test func holdsAreKeyedAndIdempotent() {
         var state = MonitoringPauseState()
         state.requested = true
         state.setHold(true, for: "settings")
@@ -30,7 +31,7 @@ struct MonitoringPauseStateTests {
         #expect(state.isInEffect)
     }
 
-    @Test func testHostResumeWinsRegardlessOfHolds() {
+    @Test func hostResumeWinsRegardlessOfHolds() {
         var state = MonitoringPauseState()
         state.setHold(true, for: "settings")
         state.requested = true

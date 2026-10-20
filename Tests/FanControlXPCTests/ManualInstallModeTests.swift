@@ -4,10 +4,11 @@ import Testing
 
 private typealias C = FanControlHelperConstants
 
+@Suite("Manual install mode", .tags(.install, .helper))
 struct ManualInstallModeTests {
     static let hash = "0123456789abcdef0123456789abcdef01234567"
 
-    @Test func testCDHashValidation() {
+    @Test func cdHashValidation() {
         #expect(C.isValidCDHash(Self.hash))
         #expect(C.isValidCDHash(Self.hash.uppercased()))
         #expect(C.normalizedCDHash(Self.hash.uppercased()) == Self.hash)
@@ -18,7 +19,7 @@ struct ManualInstallModeTests {
         }
     }
 
-    @Test func testRequirementBuilders() {
+    @Test func requirementBuilders() {
         #expect(C.manualModeClientRequirement(cdhash: Self.hash)
                 == "identifier \"com.example.dynamicnotch.DynamicNotch\" and cdhash H\"\(Self.hash)\"")
         #expect(C.manualModeHelperRequirement(cdhash: Self.hash.uppercased())
@@ -27,7 +28,7 @@ struct ManualInstallModeTests {
         #expect(C.manualModeHelperRequirement(cdhash: "") == nil)
     }
 
-    @Test func testValidatorAcceptsBuilderOutput() throws {
+    @Test func validatorAcceptsBuilderOutput() throws {
         let req = try #require(C.manualModeClientRequirement(cdhash: Self.hash))
         #expect(C.validateManualClientRequirement(req) == .success(Self.hash))
         #expect(C.validateManualClientRequirement("  \(req)\n") == .success(Self.hash))
@@ -35,7 +36,7 @@ struct ManualInstallModeTests {
         #expect(C.validateManualClientRequirement(upper) == .success(Self.hash))
     }
 
-    @Test func testClientPinCheck() throws {
+    @Test func clientPinCheck() throws {
         let app = String(repeating: "ab", count: 20)
         let other = String(repeating: "cd", count: 20)
         let pinnedApp = try #require(C.manualModeClientRequirement(cdhash: app))
@@ -55,7 +56,7 @@ struct ManualInstallModeTests {
         }
     }
 
-    @Test func testValidatorRejectsWeakOrMalformed() {
+    @Test func validatorRejectsWeakOrMalformed() {
         let id = "identifier \"\(C.appBundleIdentifier)\""
         #expect(C.validateManualClientRequirement("") == .failure(.empty))
         #expect(C.validateManualClientRequirement("   ") == .failure(.empty))
@@ -80,13 +81,13 @@ struct ManualInstallModeTests {
         #expect(C.validateManualClientRequirement(badHex) == .failure(.invalidCDHash(String(repeating: "z", count: 40))))
     }
 
-    @Test func testResolveWithoutOverrideUsesTeamID() {
+    @Test func resolveWithoutOverrideUsesTeamID() {
         let result = C.resolveClientRequirement(environment: ["PATH": "/usr/bin"], teamID: "ABCDE12345")
         #expect(result == .success(ClientRequirement(mode: .teamID,
                                                      requirement: C.clientCodeSigningRequirement(teamID: "ABCDE12345"))))
     }
 
-    @Test func testResolveWithValidOverride() throws {
+    @Test func resolveWithValidOverride() throws {
         let req = try #require(C.manualModeClientRequirement(cdhash: Self.hash))
         var teamIDEvaluated = false
         func team() -> String { teamIDEvaluated = true; return "ABCDE12345" }
@@ -95,7 +96,7 @@ struct ManualInstallModeTests {
         #expect(!teamIDEvaluated, "Team ID lookup (and its placeholder warning) must be skipped in manual mode")
     }
 
-    @Test func testResolveWithInvalidOverrideFails() {
+    @Test func resolveWithInvalidOverrideFails() {
         // Present but empty / weak: never falls back to the Team ID requirement.
         #expect(C.resolveClientRequirement(environment: [C.clientRequirementEnvironmentKey: ""], teamID: "T") == .failure(.empty))
         let weak = "identifier \"\(C.appBundleIdentifier)\""
@@ -111,21 +112,21 @@ struct ManualInstallModeTests {
         }
     }
 
-    @Test func testHelperRequirementMode() {
+    @Test func helperRequirementMode() {
         #expect(C.helperRequirementMode(appTeamID: "ABCDE12345", manualInstallDetected: false) == .teamID)
         #expect(C.helperRequirementMode(appTeamID: "ABCDE12345", manualInstallDetected: true) == .manualCDHash)
         #expect(C.helperRequirementMode(appTeamID: nil, manualInstallDetected: false) == .manualCDHash)
         #expect(C.helperRequirementMode(appTeamID: "", manualInstallDetected: false) == .manualCDHash)
     }
 
-    @Test func testManualInstallState() {
+    @Test func manualInstallState() {
         #expect(C.manualInstallState(plistExists: true, helperExists: true) == .installed)
         #expect(C.manualInstallState(plistExists: false, helperExists: false) == .absent)
         #expect(C.manualInstallState(plistExists: true, helperExists: false) == .incomplete(missing: C.manualHelperPath))
         #expect(C.manualInstallState(plistExists: false, helperExists: true) == .incomplete(missing: C.manualLaunchDaemonPlistPath))
     }
 
-    @Test func testPathsAndTrustAnchorCheck() {
+    @Test func pathsAndTrustAnchorCheck() {
         #expect(C.manualHelperPath == "/Library/PrivilegedHelperTools/com.example.dynamicnotch.DynamicNotch.fanfi")
         #expect(C.manualLaunchDaemonPlistPath == "/Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist")
         #expect(C.isRootOwnedAndProtected(ownerUID: 0, permissions: 0o755))
@@ -137,6 +138,7 @@ struct ManualInstallModeTests {
 }
 
 /// The shell scripts and the plist template must use the same names and format as the Swift code.
+@Suite("Manual install scripts match the Swift constants", .tags(.install))
 struct ManualInstallScriptConsistencyTests {
     static let dir = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -144,7 +146,7 @@ struct ManualInstallScriptConsistencyTests {
 
     static let supportDir = dir.deletingLastPathComponent()
 
-    @Test func testTemplatePlistMatchesConstants() throws {
+    @Test func templatePlistMatchesConstants() throws {
         // install.sh rewrites Label, Program and MachServices for the actual identifiers;
         // the template carries the defaults.
         let url = Self.dir.appendingPathComponent("FanControlHelper.manual.plist")
@@ -164,7 +166,7 @@ struct ManualInstallScriptConsistencyTests {
         }
     }
 
-    @Test func testCommonShMatchesConstants() throws {
+    @Test func commonShMatchesConstants() throws {
         let sh = try String(contentsOf: Self.dir.appendingPathComponent("common.sh"), encoding: .utf8)
         #expect(sh.contains("source \"${SCRIPT_DIR}/../identifiers.sh\""))
         #expect(sh.contains("TEMPLATE=\"${SCRIPT_DIR}/FanControlHelper.manual.plist\""))
@@ -185,12 +187,13 @@ struct ManualInstallScriptConsistencyTests {
 
 /// `Support/identifiers.sh`, `Helper-Info.plist` and the checked-in LaunchDaemon plist must agree
 /// with `FanControlIdentifiers` (keys, defaults, fallback order).
+@Suite("Identifier configuration files match the Swift constants", .tags(.install))
 struct IdentifierConfigurationConsistencyTests {
     static let support = ManualInstallScriptConsistencyTests.supportDir
     private typealias I = FanControlIdentifiers
     private typealias K = FanControlIdentifiers.InfoKey
 
-    @Test func testIdentifiersShMatchesSwift() throws {
+    @Test func identifiersShMatchesSwift() throws {
         let sh = try String(contentsOf: Self.support.appendingPathComponent("identifiers.sh"), encoding: .utf8)
         #expect(sh.contains("DEFAULT_HELPER_ID=\"\(I.defaultHelperIdentifier)\""))
         #expect(sh.contains("DEFAULT_APP_BUNDLE_ID=\"\(I.defaultClientBundleIdentifier)\""))
@@ -206,7 +209,7 @@ struct IdentifierConfigurationConsistencyTests {
     }
 
     /// Helper-Info.plist carries every key, and resolving it gives the defaults (DynamicNotch).
-    @Test func testHelperInfoPlist() throws {
+    @Test func helperInfoPlist() throws {
         let url = Self.support.appendingPathComponent("Helper-Info.plist")
         let plist = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any])
         for key in K.all {
@@ -223,7 +226,7 @@ struct IdentifierConfigurationConsistencyTests {
 
     /// The checked-in SMAppService plist (copied as-is by DynamicNotchApp) is what
     /// `embed-helper-config.sh` generates from Helper-Info.plist.
-    @Test func testCheckedInLaunchDaemonPlist() throws {
+    @Test func checkedInLaunchDaemonPlist() throws {
         let ids = I.defaults
         let url = Self.support.appendingPathComponent("LaunchDaemons/\(ids.machServiceName).plist")
         let plist = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any])

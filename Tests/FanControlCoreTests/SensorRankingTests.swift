@@ -4,6 +4,7 @@ import Testing
 
 /// Non-thermal / unreliable keys (`SensorCatalog.isExcludedFromRanking`) and the
 /// automatic "hottest sensors" selection (`SensorAggregator.hottestOverview`).
+@Suite("Sensor ranking", .tags(.sensors))
 struct SensorRankingTests {
 
     private let appleSilicon = SensorAggregator.definitions
@@ -24,7 +25,7 @@ struct SensorRankingTests {
         ])
     }
 
-    @Test func testExclusionTable() {
+    @Test func exclusionTable() {
         #expect(SensorCatalog.rankingExcludedPrefixes == ["Tf"])
         for key in ["Tf00", "Tf02", "Tf06", "Tf16", "Tf26", "Tf04", "Tf2E",
                     "TH1a", "TH1b", "TVMD", "Ta0C", "Ta0D", "Ta0G", "Ta0H", "Ta0K", "Ta0L", "Ta0V",
@@ -44,7 +45,7 @@ struct SensorRankingTests {
         }
     }
 
-    @Test func testExclusionOnMac14_9Keys() {
+    @Test func exclusionOnMac14_9Keys() {
         let excluded = SensorCatalogTests.mac14_9Keys.filter(SensorCatalog.isExcludedFromRanking)
         // Every exact key exists on Mac14,9; 33 Tf* + 19 exact keys.
         #expect(SensorCatalog.rankingExcludedKeys.isSubset(of: Set(SensorCatalogTests.mac14_9Keys)))
@@ -52,7 +53,7 @@ struct SensorRankingTests {
         #expect(excluded.count == 33 + SensorCatalog.rankingExcludedKeys.count)
     }
 
-    @Test func testAggregatesAndEmergencyExcludeThemByConstruction() {
+    @Test func aggregatesAndEmergencyExcludeThemByConstruction() {
         let excluded = SensorCatalogTests.mac14_9Keys.filter(SensorCatalog.isExcludedFromRanking)
         for key in excluded {
             #expect(!SafetyPolicy.default.emergencySensorPrefixes.contains { key.hasPrefix($0) }, "\(key)")
@@ -71,7 +72,7 @@ struct SensorRankingTests {
         #expect(evaluator.evaluateEmergency(sensors: readings, policy: policy) == false)
     }
 
-    @Test func testWidgetAutoSelectionOnMac14_9() {
+    @Test func widgetAutoSelectionOnMac14_9() {
         let readings = SensorAggregator.appendingAggregates(to: mac14_9Snapshot, definitions: appleSilicon)
         let hottest = SensorAggregator.hottestOverview(readings, definitions: appleSilicon)
         #expect(hottest.map(\.id) == ["agg:cpu", "agg:gpu", "TW0P"])
@@ -86,7 +87,7 @@ struct SensorRankingTests {
                 == ["Tp1K", "TCMz", "Tp0C"])
     }
 
-    @Test func testHottestOverviewLimitsAndTies() {
+    @Test func hottestOverviewLimitsAndTies() {
         let readings = batch([("TB0T", 33), ("TW0P", 45), ("TH0x", 45), ("TaLP", .nan), ("Tf06", 105)])
         #expect(SensorAggregator.hottestOverview(readings, definitions: appleSilicon, limit: 2).map(\.id) == ["TW0P", "TH0x"])
         #expect(SensorAggregator.hottestOverview(readings, definitions: appleSilicon, limit: 10).map(\.id) == ["TW0P", "TH0x", "TB0T"])
@@ -95,7 +96,7 @@ struct SensorRankingTests {
         #expect(SensorAggregator.hottestOverview(batch([("Tf06", 105), ("Ta0D", 9.5)]), definitions: appleSilicon).isEmpty)
     }
 
-    @Test func testDiscoveryStillListsExcludedKeys() {
+    @Test func discoveryStillListsExcludedKeys() {
         // Exclusion is for ranking only; names are unchanged.
         #expect(SensorCatalog.displayName(for: "Tf06") == "Sensor Tf06")
         #expect(SensorCatalog.displayName(for: "TH1a") == "Storage 1a")

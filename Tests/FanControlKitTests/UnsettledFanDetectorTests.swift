@@ -2,9 +2,9 @@ import Testing
 import FanControlCore
 @testable import FanControlKit
 
+@Suite("Unsettled fan detector", .tags(.control, .power))
 struct UnsettledFanDetectorTests {
-    private let fans = [FanDevice(id: 0, name: "Fan 1", minRPM: 2317, maxRPM: 6800),
-                        FanDevice(id: 1, name: "Fan 2", minRPM: 2317, maxRPM: 6800)]
+    private let fans = Fixtures.mac14_9Fans
     private let controllable: Set<Int> = [0, 1]
     private typealias O = UnsettledFanDetector.Observation
 

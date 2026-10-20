@@ -5,8 +5,9 @@ import Testing
 private typealias I = FanControlIdentifiers
 private typealias K = FanControlIdentifiers.InfoKey
 
+@Suite("Helper identifiers", .tags(.install))
 struct FanControlIdentifiersTests {
-    @Test func testDefaultsWithoutKeys() {
+    @Test func defaultsWithoutKeys() {
         for info in [nil, [:], ["CFBundleIdentifier": "com.apple.dt.xctest.tool"]] as [[String: Any]?] {
             let ids = I(infoDictionary: info)
             #expect(ids.helperIdentifier == "com.example.dynamicnotch.DynamicNotch.fanfi")
@@ -20,7 +21,7 @@ struct FanControlIdentifiersTests {
 
     /// The test runner's Info.plist has none of the keys, so the process-wide accessors
     /// fall back to the defaults (which is also what DynamicNotchApp relies on).
-    @Test func testProcessAccessorsFallBackToDefaults() {
+    @Test func processAccessorsFallBackToDefaults() {
         #expect(FanControlHelperConstants.machServiceName == I.defaultHelperIdentifier)
         #expect(FanControlHelperConstants.helperIdentifier == I.defaultHelperIdentifier)
         #expect(FanControlHelperConstants.appBundleIdentifier == I.defaultClientBundleIdentifier)
@@ -28,7 +29,7 @@ struct FanControlIdentifiersTests {
         #expect(FanControlHelperConstants.clientTeamID == nil)
     }
 
-    @Test func testAllKeysSet() {
+    @Test func allKeysSet() {
         let ids = I(infoDictionary: [K.helperIdentifier: "com.acme.Notch.helper",
                                      K.machServiceName: "com.acme.Notch.fan-xpc",
                                      K.clientBundleIdentifier: "com.acme.Notch",
@@ -45,7 +46,7 @@ struct FanControlIdentifiersTests {
     }
 
     /// Helper identifier and Mach service default to each other.
-    @Test func testHelperAndMachServiceFallBackToEachOther() {
+    @Test func helperAndMachServiceFallBackToEachOther() {
         let onlyHelper = I(infoDictionary: [K.helperIdentifier: "com.acme.Notch.helper"])
         #expect(onlyHelper.machServiceName == "com.acme.Notch.helper")
         let onlyMach = I(infoDictionary: [K.machServiceName: "com.acme.Notch.helper"])
@@ -54,7 +55,7 @@ struct FanControlIdentifiersTests {
         #expect(onlyMach.infoDictionaryRepresentation[K.clientTeamID] == nil)
     }
 
-    @Test func testInvalidValuesFallBackAndAreReported() {
+    @Test func invalidValuesFallBackAndAreReported() {
         let ids = I(infoDictionary: [K.helperIdentifier: "com.acme\" or anchor apple",
                                      K.machServiceName: 42,
                                      K.clientBundleIdentifier: "../etc/passwd",
@@ -67,19 +68,19 @@ struct FanControlIdentifiersTests {
         #expect(ids.issues.contains { $0.contains(K.clientTeamID) })
     }
 
-    @Test func testWhitespaceTrimmedAndEmptyTeamIDIgnored() {
+    @Test func whitespaceTrimmedAndEmptyTeamIDIgnored() {
         let ids = I(infoDictionary: [K.clientBundleIdentifier: "  com.acme.Notch\n", K.clientTeamID: ""])
         #expect(ids.clientBundleIdentifier == "com.acme.Notch")
         #expect(ids.clientTeamID == nil)
         #expect(ids.issues.isEmpty)
     }
 
-    @Test func testSameIdentifierForAppAndHelperIsReported() {
+    @Test func sameIdentifierForAppAndHelperIsReported() {
         let ids = I(infoDictionary: [K.helperIdentifier: "com.acme.Notch", K.clientBundleIdentifier: "com.acme.Notch"])
         #expect(ids.issues.count == 1)
     }
 
-    @Test func testIdentifierValidation() {
+    @Test func identifierValidation() {
         for good in ["com.acme.Notch", "a", "com.example.dynamicnotch.DynamicNotch.fanfi", "com.acme-corp.x1"] {
             #expect(I.isValidIdentifier(good), Comment(rawValue: good))
         }
@@ -96,7 +97,7 @@ struct FanControlIdentifiersTests {
 
     /// Requirement builders honour explicit identifiers (what a host with its own
     /// Info.plist gets through the defaults).
-    @Test func testRequirementBuildersWithCustomIdentifiers() {
+    @Test func requirementBuildersWithCustomIdentifiers() {
         let hash = ManualInstallModeTests.hash
         let C = FanControlHelperConstants.self
         #expect(C.clientCodeSigningRequirement(teamID: "ABCDE12345", clientBundleIdentifier: "com.acme.Notch")

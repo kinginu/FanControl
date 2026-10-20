@@ -4,16 +4,16 @@ import Testing
 
 /// `TemperatureSmoother`, `FanTargetStabilizer` and the whole anti-hunting pipeline
 /// (filter → aggregate → smoothing → curve → deadband / dwell / slew).
+@Suite("Anti-hunting control loop", .tags(.control))
 struct FanControlTuningTests {
-    let fan = FanDevice(id: 0, name: "Fan 1", minRPM: 2317, maxRPM: 6800)
-    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    let fan = Fixtures.mac14_9Fans[0]
     let tuning = FanControlTuning.default
 
-    private func at(_ seconds: Double) -> Date { t0.addingTimeInterval(seconds) }
+    private func at(_ seconds: Double) -> Date { TestClock.at(seconds) }
 
     // MARK: Tuning
 
-    @Test func testDefaultsAndCodable() throws {
+    @Test func defaultsAndCodable() throws {
         #expect(tuning.riseTimeConstant == 3)
         #expect(tuning.fallTimeConstant == 25)
         #expect(tuning.deadbandRPM == 150)
@@ -29,7 +29,7 @@ struct FanControlTuningTests {
 
     // MARK: Smoother
 
-    @Test func testSmootherAsymmetry() {
+    @Test func smootherAsymmetry() {
         var smoother = TemperatureSmoother()
         #expect(smoother.update(key: "k", temperature: 60, at: at(0), tuning: tuning) == 60)
         // Rise 60 → 70 for one time constant (3 s): 1 − e⁻¹ ≈ 63 % of the step.
@@ -48,7 +48,7 @@ struct FanControlTuningTests {
         #expect(raw.update(key: "k", temperature: 90, at: at(2), tuning: .disabled) == 90)
     }
 
-    @Test func testSmoothReadingsOnlyForControlKeys() {
+    @Test func smoothReadingsOnlyForControlKeys() {
         var smoother = TemperatureSmoother()
         func batch(_ cpu: Double, _ gpu: Double) -> [SensorReading] {
             [SensorReading(id: "agg:cpu", name: "CPU", temperature: cpu, sensorType: .greatest),
@@ -69,7 +69,7 @@ struct FanControlTuningTests {
 
     // MARK: Stabilizer
 
-    @Test func testDeadbandAndBounds() {
+    @Test func deadbandAndBounds() {
         var s = FanTargetStabilizer()
         #expect(s.stabilize([0: 4000], fans: [fan], at: at(0), tuning: tuning) == [0: 4000])  // first: as-is
         #expect(s.stabilize([0: 4100], fans: [fan], at: at(20), tuning: tuning) == [0: 4000])  // < 150
@@ -86,7 +86,7 @@ struct FanControlTuningTests {
         #expect(bottom.stabilize([0: 2317], fans: [fan], at: at(30), tuning: tuning) == [0: 2317])
     }
 
-    @Test func testSlewAndDwell() {
+    @Test func slewAndDwell() {
         var s = FanTargetStabilizer()
         _ = s.stabilize([0: 2317], fans: [fan], at: at(0), tuning: tuning)
         // Increases: +500 per poll, no dwell between consecutive increases.
@@ -116,7 +116,7 @@ struct FanControlTuningTests {
         #expect(s.stabilize([0: 4000], fans: [fan], at: at(90), tuning: tuning) == [0: 6300])
     }
 
-    @Test func testDwellAppliesToIncreasesOption() {
+    @Test func dwellAppliesToIncreasesOption() {
         var strict = FanControlTuning.default
         strict.dwellAppliesToIncreases = true
         var s = FanTargetStabilizer()
@@ -127,7 +127,7 @@ struct FanControlTuningTests {
         #expect(s.stabilize([0: 6800], fans: [fan], at: at(20), tuning: strict) == [0: 3317])
     }
 
-    @Test func testBypassAutomaticAndSeed() {
+    @Test func bypassAutomaticAndSeed() {
         var s = FanTargetStabilizer()
         _ = s.stabilize([0: 2317], fans: [fan], at: at(0), tuning: tuning)
         // Emergency override: straight to max.
@@ -198,7 +198,7 @@ struct FanControlTuningTests {
     /// core alternates 58 / 66 °C from poll to poll, or follows a fast ±4 °C wave (8 s).
     /// After the initial rise the output never reverses and settles in at most two writes.
     @Test(arguments: [0, 1])
-    func testOscillatingInputGivesMonotoneBoundedOutput(pattern: Int) {
+    func oscillatingInputGivesMonotoneBoundedOutput(pattern: Int) {
         let flapping: (Double) -> Double = { t in Int(t / 2) % 2 == 0 ? 58.0 : 66.0 }
         let wave: (Double) -> Double = { t in
             let phase: Double = 2 * Double.pi * t / 8 + 0.3
@@ -226,7 +226,7 @@ struct FanControlTuningTests {
     /// random runs look like small load changes, so the output may move, but rarely
     /// (13 reversals in 9.5 min with this seed, vs. ~1 per poll raw), in ≥ 150 RPM steps,
     /// within a band.
-    @Test func testNoisyInputIsBounded() {
+    @Test func noisyInputIsBounded() {
         var noise = Noise(state: 42)
         var samples: [Double] = []
         for _ in 0..<300 { samples.append(62 + 4 * noise.next()) }
@@ -243,7 +243,7 @@ struct FanControlTuningTests {
 
     /// Slow sinusoidal load (period 40 s, ±3 °C) plus noise around 70 °C: far fewer
     /// direction changes than the raw curve, bounded band.
-    @Test func testSinusoidalLoadDoesNotHunt() {
+    @Test func sinusoidalLoadDoesNotHunt() {
         var noise = Noise(state: 7)
         var samples: [Double] = []
         for poll in 0..<300 {
@@ -260,7 +260,7 @@ struct FanControlTuningTests {
     }
 
     /// A real step in load is still followed: idle 55 °C → 80 °C sustained → back to 55 °C.
-    @Test func testStepLoadIsFollowed() {
+    @Test func stepLoadIsFollowed() {
         let out = simulate(tuning: .default, seconds: 400) { t in (60...200).contains(t) ? 80 : 55 }
         let curve = FanCurve.boost
         #expect(out[20] == curve.rpm(at: 55, for: fan))

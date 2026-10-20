@@ -3,11 +3,12 @@ import Testing
 @testable import FanControlCore
 
 /// `TemperatureUnitConversion`: stored °C, displayed / stepped in °C or °F.
+@Suite("Temperature units", .tags(.sensors))
 struct TemperatureUnitConversionTests {
 
     private typealias C = TemperatureUnitConversion
 
-    @Test func testAbsoluteAndDeltaConversion() {
+    @Test func absoluteAndDeltaConversion() {
         #expect(C.displayValue(celsius: 90, kind: .absolute, unit: .fahrenheit) == 194)
         #expect(C.displayValue(celsius: 100, kind: .absolute, unit: .fahrenheit) == 212)
         #expect(C.displayValue(celsius: 5, kind: .delta, unit: .fahrenheit) == 9)
@@ -17,7 +18,7 @@ struct TemperatureUnitConversionTests {
         #expect(C.celsius(displayValue: 42, kind: .delta, unit: .celsius) == 42)
     }
 
-    @Test func testSteppingCelsiusIsOneDegree() {
+    @Test func steppingCelsiusIsOneDegree() {
         #expect(C.stepped(celsius: 90, kind: .absolute, unit: .celsius, up: true) == 91)
         #expect(C.stepped(celsius: 90, kind: .absolute, unit: .celsius, up: false) == 89)
         // A fractional stored value (set in °F) snaps to the next whole °C.
@@ -25,7 +26,7 @@ struct TemperatureUnitConversionTests {
         #expect(C.stepped(celsius: 89.4, kind: .absolute, unit: .celsius, up: false) == 89)
     }
 
-    @Test func testSteppingFahrenheitIsOneDegreeF() {
+    @Test func steppingFahrenheitIsOneDegreeF() {
         let up = C.stepped(celsius: 90, kind: .absolute, unit: .fahrenheit, up: true)
         #expect(abs(C.displayValue(celsius: up, kind: .absolute, unit: .fahrenheit) - 195) < 1e-9)
         let down = C.stepped(celsius: 90, kind: .absolute, unit: .fahrenheit, up: false)
@@ -43,7 +44,7 @@ struct TemperatureUnitConversionTests {
         #expect(abs(C.displayValue(celsius: fromFloor, kind: .delta, unit: .fahrenheit) - 2) < 1e-9)
     }
 
-    @Test func testSteppedValuesClampInCelsius() {
+    @Test func steppedValuesClampInCelsius() {
         // 1 °C hysteresis floor = 1.8 °F: a step down converts to 0.8 °F and clamps back to 1 °C.
         let down = C.stepped(celsius: 1, kind: .delta, unit: .fahrenheit, up: false)
         let t = ThresholdBounds.settingAlertHysteresis(down, in: .default)
@@ -56,7 +57,7 @@ struct TemperatureUnitConversionTests {
         #expect(ThresholdBounds.settingEmergencyTemperature(over, in: .default).emergencyTemperature == 105)
     }
 
-    @Test func testLabels() {
+    @Test func labels() {
         #expect(C.label(celsius: 90, kind: .absolute, unit: .celsius) == "90 °C")
         #expect(C.label(celsius: 90, kind: .absolute, unit: .fahrenheit) == "194 °F")
         #expect(C.label(celsius: 1, kind: .delta, unit: .fahrenheit) == "1.8 °F")

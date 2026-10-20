@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import FanControlCore
 
+@Suite("Sensor aggregates", .tags(.sensors))
 struct SensorAggregatorTests {
 
     private let appleSilicon = SensorAggregator.definitions
@@ -14,24 +15,25 @@ struct SensorAggregatorTests {
         Dictionary(uniqueKeysWithValues: readings.map { ($0.id, $0.temperature) })
     }
 
-    @Test func testTables() {
+    @Test func tables() {
         #expect(appleSilicon.map(\.id) == ["agg:cpu", "agg:cpu.p", "agg:cpu.e", "agg:gpu"])
         #expect(appleSilicon.map(\.memberPrefixes) == [["Tp", "Te", "TC"], ["Tp"], ["Te"], ["Tg"]])
         #expect(appleSilicon.filter(\.isOverview).map(\.id) == ["agg:cpu", "agg:gpu"])
         // Members are a subset of the emergency prefixes (no TG anywhere).
         let emergency = Set(SafetyPolicy.defaultEmergencySensorPrefixes)
         for definition in appleSilicon {
-            #expect(Set(definition.memberPrefixes).isSubset(of: emergency))
-            #expect(!definition.memberPrefixes.contains("TG"))
-            #expect(SMCKey(definition.id) == nil)
-            #expect(definition.id.count > 4)
-            #expect(SensorAggregator.isAggregate(definition.id))
+            let id = definition.id
+            #expect(Set(definition.memberPrefixes).isSubset(of: emergency), "\(id)")
+            #expect(!definition.memberPrefixes.contains("TG"), "\(id)")
+            #expect(SMCKey(id) == nil, "\(id) must not parse as an SMC key")
+            #expect(id.count > 4, "\(id)")
+            #expect(SensorAggregator.isAggregate(id), "\(id)")
         }
         #expect(SensorAggregator.knownNames.count == appleSilicon.count)
     }
 
     /// Mac14,9 shape: TG* is a battery-area sensor (~33 °C) and must not feed GPU.
-    @Test func testAppleSiliconValues() {
+    @Test func appleSiliconValues() {
         let readings = batch([("Tp00", 56.3), ("Tp02", 77.1), ("Te04", 53.1), ("Te06", 62.0),
                               ("TCMz", 70.0), ("Tg0X", 58.5), ("Tg1l", 57.8), ("TG0B", 90.0),
                               ("TB0T", 33.0)])
@@ -43,7 +45,7 @@ struct SensorAggregatorTests {
                                            "CPU Efficiency Cores (max)", "GPU (max)"])
     }
 
-    @Test func testEmptyGroupsOmitted() {
+    @Test func emptyGroupsOmitted() {
         // Intel-era keys (unsupported since 2026-10-20): TC* still counts as CPU,
         // TG* is never GPU, and the P/E aggregates are omitted without Tp/Te keys.
         let readings = batch([("TC0P", 61), ("TC0D", 72.5), ("TG0P", 55), ("TG0D", 66), ("TA0P", 30)])
@@ -53,13 +55,13 @@ struct SensorAggregatorTests {
         #expect(SensorAggregator.aggregates(of: [], definitions: appleSilicon).isEmpty)
     }
 
-    @Test func testNonFiniteMembersIgnored() {
+    @Test func nonFiniteMembersIgnored() {
         let readings = batch([("Tp00", .nan), ("Tp01", 50), ("Te04", .infinity), ("Tg0X", .nan)])
         let result = temps(SensorAggregator.aggregates(of: readings, definitions: appleSilicon))
         #expect(result == ["agg:cpu": 50, "agg:cpu.p": 50])
     }
 
-    @Test func testAppendingReplacesStaleAggregatesAndIgnoresThemAsInput() {
+    @Test func appendingReplacesStaleAggregatesAndIgnoresThemAsInput() {
         let first = SensorAggregator.appendingAggregates(to: batch([("Tp00", 60)]), definitions: appleSilicon)
         #expect(first.map(\.id) == ["Tp00", "agg:cpu", "agg:cpu.p"])
         var changed = first
@@ -71,7 +73,7 @@ struct SensorAggregatorTests {
 
     /// Aggregates fed from `TemperatureSampleFilter` never see the Mac14,9
     /// gated-cluster pattern, even when every Tp key is bogus for one poll.
-    @Test func testFilteredMac14_9PatternDoesNotReachAggregate() {
+    @Test func filteredMac14_9PatternDoesNotReachAggregate() {
         var filter = TemperatureSampleFilter()
         let real = batch([("Tp00", 56.31), ("Tp01", 63.01), ("Tp02", 77.13), ("Te04", 53.13)])
         let bogus = batch([("Tp00", 0.00), ("Tp01", 6.70), ("Tp02", 8.43), ("Te04", 53.0)])
@@ -90,7 +92,7 @@ struct SensorAggregatorTests {
         #expect(result["agg:cpu.p"] == 69.2)
     }
 
-    @Test func testOverviewReplacesCoveredKeys() {
+    @Test func overviewReplacesCoveredKeys() {
         let readings = SensorAggregator.appendingAggregates(
             to: batch([("Tp02", 77.1), ("Te04", 53.1), ("TCMz", 70), ("Tg0X", 58.5),
                        ("TG0B", 33.1), ("TB0T", 33.0), ("TH0x", 38)]),
@@ -102,7 +104,7 @@ struct SensorAggregatorTests {
         #expect(SensorAggregator.overview(plain, definitions: appleSilicon) == plain)
     }
 
-    @Test func testCatalogNames() {
+    @Test func catalogNames() {
         #expect(SensorCatalog.displayName(for: "agg:cpu") == "CPU (max)")
         #expect(SensorCatalog.displayName(for: "agg:cpu.p") == "CPU Performance Cores (max)")
         #expect(SensorCatalog.displayName(for: "agg:cpu.e") == "CPU Efficiency Cores (max)")
@@ -110,18 +112,18 @@ struct SensorAggregatorTests {
         #expect(SensorCatalog.displayName(for: "agg:nope") == "Sensor agg:nope")
         // Aggregate names never equal a name an SMC key gets.
         for key in ["Tp00", "Te04", "Tg0X", "TC0P", "TG0D", "TCMz"] {
-            #expect(!SensorAggregator.knownNames.values.contains(SensorCatalog.displayName(for: key)))
+            #expect(!SensorAggregator.knownNames.values.contains(SensorCatalog.displayName(for: key)), "\(key)")
         }
     }
 
-    @Test func testAggregateReadingCodableRoundTrip() throws {
+    @Test func aggregateReadingCodableRoundTrip() throws {
         let reading = SensorReading(id: "agg:cpu", name: "CPU (max)", temperature: 61.5, sensorType: .greatest)
         let data = try JSONEncoder().encode(reading)
         #expect(String(decoding: data, as: UTF8.self).contains("\"greatest\""))
         #expect(try JSONDecoder().decode(SensorReading.self, from: data) == reading)
     }
 
-    @Test func testEnginePlanWithAggregateKey() {
+    @Test func enginePlanWithAggregateKey() {
         let fan = FanDevice(id: 0, name: "Fan 1", minRPM: 1000, maxRPM: 5000)
         let profile = FanProfile(name: "CPU", modes: [
             0: .sensor(sensorKey: SensorAggregator.ID.cpu, startTemperature: 40, maxTemperature: 80),

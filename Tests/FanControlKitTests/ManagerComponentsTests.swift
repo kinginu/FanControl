@@ -7,16 +7,17 @@ import FanControlCore
 
 /// The components behind the `FanControlManager` facade (docs/kit.md "Architecture"),
 /// exercised on their own without SMC or helper I/O.
+@Suite("Monitoring service", .tags(.manager, .power))
 @MainActor
 struct MonitoringServiceTests {
 
     private func makeService(onBattery: Bool = false) -> (MonitoringService, MockPowerSource) {
         let power = MockPowerSource(onBattery: onBattery)
-        let poller = FanControlPoller(helperClient: HelperClient(), label: "MonitoringServiceTests.poll")
-        return (MonitoringService(poller: poller, powerSource: power), power)
+        return (MonitoringService(poller: Isolated.poller(label: "MonitoringServiceTests.poll"), powerSource: power),
+                power)
     }
 
-    @Test func testStartStopAndTimerInterval() {
+    @Test func startStopAndTimerInterval() {
         let (service, power) = makeService()
         #expect(service.markStarted())
         #expect(!service.markStarted())
@@ -31,7 +32,7 @@ struct MonitoringServiceTests {
     }
 
     /// Polls go through the hooks, and only while monitoring.
-    @Test func testPollHooksOnlyWhileMonitoring() {
+    @Test func pollHooksOnlyWhileMonitoring() {
         let (service, _) = makeService()
         var before = 0, polls = 0
         service.beforePoll = { before += 1 }
@@ -49,7 +50,7 @@ struct MonitoringServiceTests {
     }
 
     /// While paused, the slow poll runs only with a session or with alerts kept.
-    @Test func testPausedTimerNeedsSessionOrAlerts() {
+    @Test func pausedTimerNeedsSessionOrAlerts() {
         let (service, _) = makeService()
         var sessionOpen = false
         service.isSessionOpen = { sessionOpen }
@@ -69,6 +70,24 @@ struct MonitoringServiceTests {
         service.setLiveDataHold(false, for: "test")
         _ = service.stop()
     }
+
+    /// The paused alert-only poll (`keepAlertsWhilePaused`, on by default) is derived
+    /// from the effective interval and follows the power source.
+    @Test func pausedAlertPollFollowsPowerSource() {
+        let (service, power) = makeService()
+        service.poll = {}
+        _ = service.markStarted()
+        service.scheduleTimer()
+        #expect(service.keepAlertsWhilePaused)
+        power.simulate(onBattery: true)
+        #expect(service.scheduledTimerInterval == 10)
+        service.setPaused(true)
+        #expect(service.scheduledTimerInterval == 50, "5 × the 10 s battery interval")
+        service.setPaused(false)
+        power.simulate(onBattery: false)
+        #expect(service.scheduledTimerInterval == 2)
+        _ = service.stop()
+    }
 }
 
 /// Records what `WakeCoordinator` asks of its host.
@@ -86,6 +105,7 @@ private final class FakeWakeHost: WakeCoordinatorHost {
     func reapplyActiveProfileAfterWake(recordingErrors: Bool) { reapplies.append(recordingErrors) }
 }
 
+@Suite("Wake coordinator", .tags(.manager, .power))
 @MainActor
 struct WakeCoordinatorTests {
 
@@ -100,7 +120,7 @@ struct WakeCoordinatorTests {
         return (coordinator, { delays })
     }
 
-    @Test func testWakeReappliesAtEveryDelayRecordingOnlyTheLast() {
+    @Test func wakeReappliesAtEveryDelayRecordingOnlyTheLast() {
         let host = FakeWakeHost()
         let (coordinator, delays) = makeCoordinator(host)
         coordinator.handleWake()
@@ -112,7 +132,7 @@ struct WakeCoordinatorTests {
         #expect(host.closes == 0)
     }
 
-    @Test func testWakeClosesSessionWhenReapplyIsOff() {
+    @Test func wakeClosesSessionWhenReapplyIsOff() {
         let host = FakeWakeHost()
         let (coordinator, delays) = makeCoordinator(host)
         coordinator.reapplyProfileAfterWake = false
@@ -122,7 +142,7 @@ struct WakeCoordinatorTests {
         #expect(delays().isEmpty)
     }
 
-    @Test func testWakeWithoutSessionOnlyPolls() {
+    @Test func wakeWithoutSessionOnlyPolls() {
         let host = FakeWakeHost()
         host.isSessionOpen = false
         let (coordinator, delays) = makeCoordinator(host)
@@ -133,7 +153,7 @@ struct WakeCoordinatorTests {
     }
 
     /// Sleep cancels attempts that have not run yet.
-    @Test func testSleepCancelsPendingAttempts() {
+    @Test func sleepCancelsPendingAttempts() {
         let host = FakeWakeHost()
         let coordinator = WakeCoordinator { _, _ in }   // never runs the attempts
         coordinator.host = host
@@ -146,9 +166,10 @@ struct WakeCoordinatorTests {
     }
 }
 
+@Suite("Profile selection rollback", .tags(.manager, .profiles))
 struct ProfileSelectionRollbackTests {
 
-    @Test func testNewUserProfileIsRemovedOnUndo() {
+    @Test func newUserProfileIsRemovedOnUndo() {
         var store = ProfileStore()
         let previous = store
         let profile = FanProfile(id: UUID(), name: "New", modes: [0: .constant(rpm: 3000)], isBuiltIn: false)
@@ -159,7 +180,7 @@ struct ProfileSelectionRollbackTests {
         #expect(store == previous)
     }
 
-    @Test func testExistingUserProfileIsRestoredOnUndo() {
+    @Test func existingUserProfileIsRestoredOnUndo() {
         let id = UUID()
         let original = FanProfile(id: id, name: "Mine", modes: [0: .constant(rpm: 3000)], isBuiltIn: false)
         var store = ProfileStore()
@@ -174,7 +195,7 @@ struct ProfileSelectionRollbackTests {
         #expect(store == previous)
     }
 
-    @Test func testBuiltInIsOnlySelected() {
+    @Test func builtInIsOnlySelected() {
         var store = ProfileStore()
         let count = store.profiles.count
         let rollback = ProfileSelectionRollback.select(.automatic(), in: &store)
@@ -202,23 +223,22 @@ private final class FakeControllerHost: FanControllerHost {
     func fanControllerDidApply(modes: [Int: FanControlMode], emergencyOverride: Bool) { applied += 1 }
 }
 
+@Suite("Fan controller", .tags(.manager, .control))
 @MainActor
 struct FanControllerTests {
 
     private func makeController(_ host: FakeControllerHost) -> FanController {
-        let client = HelperClient()
-        let helper = HelperCoordinator(client: client, installer: HelperInstaller(),
-                                   conflictDetector: ConflictingControllerDetector(isAppRunning: { _ in false },
-                                                                                   fileExists: { _ in false }))
-        let controller = FanController(poller: FanControlPoller(helperClient: client,
-                                                                label: "FanControllerTests.poll"),
+        let client = Isolated.helperClient()
+        let helper = HelperCoordinator(client: client, installer: Isolated.installer(),
+                                       conflictDetector: Isolated.conflictDetector())
+        let controller = FanController(poller: FanControlPoller(helperClient: client, label: "FanControllerTests.poll"),
                                        helper: helper)
         controller.host = host
         return controller
     }
 
     /// An automatic profile needs no session: it is selected, nothing is written.
-    @Test func testAutomaticApplyWithoutSessionOnlySelects() async throws {
+    @Test func automaticApplyWithoutSessionOnlySelects() async throws {
         let host = FakeControllerHost()
         let controller = makeController(host)
         try await controller.apply(.automatic(), force: true, allowOpeningSession: true, makeActive: true)
@@ -228,7 +248,7 @@ struct FanControllerTests {
     }
 
     /// A wake re-apply (`allowOpeningSession: false`) without a session changes nothing.
-    @Test func testReapplyWithoutSessionIsANoOp() async throws {
+    @Test func reapplyWithoutSessionIsANoOp() async throws {
         let host = FakeControllerHost()
         let controller = makeController(host)
         let manual = FanProfile(id: UUID(), name: "Manual", modes: [0: .constant(rpm: 3000)], isBuiltIn: false)
@@ -241,14 +261,14 @@ struct FanControllerTests {
     /// `modes`; applied unresolved or resolved before the fans are known
     /// (`resolved(for: [])`), they must still open the session (review fix:
     /// deciding from `modes` alone selected the preset and wrote nothing).
-    @Test func testDefaultModePresetsRequireSession() {
+    @Test func defaultModePresetsRequireSession() {
         #expect(!FanController.requiresSession(.automatic()))
         let presets: [FanProfile] = [.constantQuiet(), .constantHigh(), .boost(), .max(),
                                      .defaultCustom1(), .defaultCustom2()]
         for preset in presets {
-            #expect(preset.modes.isEmpty)
+            #expect(preset.modes.isEmpty, "\(preset.name) keeps its mode in defaultMode")
             #expect(FanController.requiresSession(preset), "\(preset.name)")
-            #expect(FanController.requiresSession(preset.resolved(for: [])), "\(preset.name)")
+            #expect(FanController.requiresSession(preset.resolved(for: [])), "\(preset.name) resolved before discovery")
         }
         let explicit = FanProfile(id: UUID(), name: "Manual", modes: [1: .constant(rpm: 3000)], isBuiltIn: false)
         #expect(FanController.requiresSession(explicit))
@@ -262,44 +282,47 @@ struct FanControllerTests {
 /// monitoring was off is closed again unless monitoring or a session needs it
 /// (review fix: it stayed open for the life of the process). `strategy` stands in
 /// for the reader (no SMC in tests): `closeReader()` clears both.
+@Suite("Poller idle reader", .tags(.manager))
 struct PollerIdleReaderTests {
 
     private func pollerWithStrategy(monitoring: Bool) async -> FanControlPoller {
-        let poller = FanControlPoller(helperClient: HelperClient(), label: "PollerIdleReaderTests.poll")
+        let poller = Isolated.poller(label: "PollerIdleReaderTests.poll")
         await poller.run { poller in
             poller.monitoringActive = monitoring
-            poller.strategy = FanWriteStrategy(reader: MockSMCReader([]), fanIndices: [0])
+            poller.strategy = FanWriteStrategy(reader: FakeSMC([] as [(String, SMCDataType, [UInt8])]), fanIndices: [0])
         }
         return poller
     }
 
-    @Test func testClosesWhenIdle() async {
+    @Test func closesWhenIdle() async {
         let poller = await pollerWithStrategy(monitoring: false)
         await poller.run { $0.closeReaderIfIdle(sessionOpen: false) }
-        #expect(await poller.run { $0.strategy == nil && $0.reader == nil })
+        #expect(await poller.run { $0.strategy == nil && $0.reader == nil }, "idle: strategy and reader closed")
     }
 
-    @Test func testKeepsWhileMonitoringOrSessionOpen() async {
+    @Test func keepsWhileMonitoringOrSessionOpen() async {
         let monitoring = await pollerWithStrategy(monitoring: true)
         await monitoring.run { $0.closeReaderIfIdle(sessionOpen: false) }
-        #expect(await monitoring.run { $0.strategy != nil })
+        #expect(await monitoring.run { $0.strategy != nil }, "kept while monitoring")
         let session = await pollerWithStrategy(monitoring: false)
         await session.run { $0.closeReaderIfIdle(sessionOpen: true) }
-        #expect(await session.run { $0.strategy != nil })
+        #expect(await session.run { $0.strategy != nil }, "kept while a session is open")
     }
 }
 
+@Suite("Helper coordinator", .tags(.manager, .helper))
 @MainActor
 struct HelperCoordinatorTests {
 
-    @Test func testConflictCheckIsThrottled() {
+    @Test func conflictCheckIsThrottled() {
         let running = Mutex<Set<String>>([])
         let detector = ConflictingControllerDetector(isAppRunning: { id in running.withLock { $0.contains(id) } },
                                                      fileExists: { _ in false })
-        let service = HelperCoordinator(client: HelperClient(), installer: HelperInstaller(), conflictDetector: detector)
+        let service = HelperCoordinator(client: Isolated.helperClient(), installer: Isolated.installer(),
+                                        conflictDetector: detector)
         var changes: [[String]] = []
         service.onConflictingControllersChange = { changes.append($0) }
-        let start = Date()
+        let start = TestClock.t0
         #expect(service.isConflictCheckDue(now: start))
         service.refreshConflictingControllersIfDue(now: start)
         #expect(!service.isConflictCheckDue(now: start.addingTimeInterval(59)))
@@ -313,7 +336,7 @@ struct HelperCoordinatorTests {
 
     /// `installHelper()`'s status → error mapping (`.requiresApproval` is left out:
     /// it opens System Settings).
-    @Test func testRequireUsable() {
+    @Test func requireUsable() {
         #expect(throws: Never.self) { try HelperCoordinator.requireUsable(.enabled) }
         #expect(throws: FanControlError.helperNotInstalled) { try HelperCoordinator.requireUsable(.notRegistered) }
         #expect(throws: (any Error).self) { try HelperCoordinator.requireUsable(.notFound) }

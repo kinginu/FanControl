@@ -1,11 +1,11 @@
-#if os(macOS)
 import Foundation
 import Synchronization
 import FanControlCore
 
-/// Thread-safe in-memory SMC for the end-to-end tests: a reader (`SMCReader`, used
-/// by `FanWriteStrategy` on the app side) and the write target of `FakeHelper`
-/// (which runs on XPC queues). Records every successful write in order.
+/// The one in-memory SMC of the Kit tests (never the IOKit `SMCClient`): a reader
+/// (`SMCReader`, for `FanWriteStrategy` and the poller) and the write target of
+/// `FakeHelper` (which runs on XPC queues). Thread-safe; records every successful
+/// write in order.
 final class FakeSMC: SMCReader, Sendable {
     struct Entry: Sendable {
         var type: SMCDataType
@@ -34,6 +34,11 @@ final class FakeSMC: SMCReader, Sendable {
         state = Mutex(initial)
     }
 
+    /// Keys without attributes (0x00), for tests that only read.
+    convenience init(_ list: [(String, SMCDataType, [UInt8])]) {
+        self.init(list.map { ($0.0, $0.1, $0.2, UInt8(0)) })
+    }
+
     /// Mac14,9-like layout (`docs/verification/Mac14,9-macOS26-dump.txt`): two fans,
     /// `F<n>Md` ui8 (0xd0), `F<n>Tg` flt (0xd4), read-only `F<n>Mn`/`Mx` (0x84),
     /// idle (automatic, `Tg` = 0).
@@ -54,6 +59,7 @@ final class FakeSMC: SMCReader, Sendable {
     }
 
     static func flt(_ value: Double) -> [UInt8] { SMCCodec.encode(value, as: .flt, size: 4)! }
+    static func fpe2(_ value: Double) -> [UInt8] { SMCCodec.encode(value, as: .fpe2, size: 2)! }
 
     // MARK: SMCReader
 
@@ -119,4 +125,3 @@ final class FakeSMC: SMCReader, Sendable {
 
     func number(_ key: String) -> Double? { try? readNumber(SMCKey(key)!) }
 }
-#endif

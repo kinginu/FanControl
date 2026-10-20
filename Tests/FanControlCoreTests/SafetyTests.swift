@@ -2,10 +2,11 @@ import Foundation
 import Testing
 @testable import FanControlCore
 
+@Suite("Non-finite guard", .tags(.safety, .control))
 struct NonFiniteGuardTests {
     let fan = FanDevice(id: 0, name: "Fan 1", minRPM: 1000, maxRPM: 5000)
 
-    @Test func testNonFiniteThresholdsOrReadingFailLoud() {
+    @Test func nonFiniteThresholdsOrReadingFailLoud() {
         let cases: [(Double, Double, Double?)] = [
             (.nan, 80, 50), (40, .nan, 50), (.infinity, 80, 50), (40, -.infinity, 50),
             (40, 80, .nan), (40, 80, .infinity), (40, 80, -.infinity),
@@ -21,13 +22,14 @@ struct NonFiniteGuardTests {
     }
 }
 
+@Suite("Emergency latch", .tags(.safety))
 struct EmergencyLatchTests {
     let fan = FanDevice(id: 0, name: "Fan 1", minRPM: 1000, maxRPM: 5000)
     let policy = SafetyPolicy(emergencyTemperature: 95, alertHysteresis: 5)
 
     private func cpu(_ t: Double) -> [SensorReading] { [SensorReading(id: "Tp01", name: "CPU", temperature: t)] }
 
-    @Test func testLatchOnOffWithHysteresis() {
+    @Test func latchOnOffWithHysteresis() {
         var evaluator = AlertEvaluator()
         #expect(!evaluator.isEmergencyActive)
         #expect(evaluator.evaluateEmergency(sensors: cpu(94.9), policy: policy) == false)
@@ -47,13 +49,13 @@ struct EmergencyLatchTests {
         #expect(evaluator.evaluateEmergency(sensors: cpu(94), policy: policy) == false)
     }
 
-    @Test func testLatchIndependentOfHighTemperatureAlert() {
+    @Test func latchIndependentOfHighTemperatureAlert() {
         var evaluator = AlertEvaluator()
         #expect(evaluator.evaluateHighTemperature(sensors: cpu(91), policy: policy) == true)
         #expect(evaluator.evaluateEmergency(sensors: cpu(91), policy: policy) == false)
     }
 
-    @Test func testPlanUsesLatchedState() {
+    @Test func planUsesLatchedState() {
         let profile = FanProfile(name: "auto")
         // Below threshold but latched on: all fans max.
         #expect(FanControlEngine.plan(profile: profile, fans: [fan], sensors: cpu(92), policy: policy,

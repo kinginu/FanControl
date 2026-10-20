@@ -2,11 +2,12 @@ import Testing
 @testable import FanControlCore
 
 /// `SensorCatalog.nameComponents(for:)` (design doc §5.7, localizable sensor names).
-@Suite struct SensorNameComponentsTests {
+@Suite("Sensor name components", .tags(.sensors))
+struct SensorNameComponentsTests {
 
     private func components(_ key: String) -> SensorNameComponents { SensorCatalog.nameComponents(for: key) }
 
-    @Test func testRepresentativeKeys() {
+    @Test func representativeKeys() {
         #expect(components("Tp0D") == SensorNameComponents(labelKey: "CPU Performance Core", suffix: "0D"))
         #expect(components("Te05") == SensorNameComponents(labelKey: "CPU Efficiency Core", suffix: "05"))
         #expect(components("Tg0f") == SensorNameComponents(labelKey: "GPU", suffix: "0f"))
@@ -24,7 +25,7 @@ import Testing
         #expect(components("TM0P") == SensorNameComponents(labelKey: "Memory", suffix: "0P"))
     }
 
-    @Test func testFallbackAndAggregates() {
+    @Test func fallbackAndAggregates() {
         let unknown = components("Tz11")
         #expect(unknown == SensorNameComponents(labelKey: "Sensor", suffix: "Tz11", isFallback: true))
         #expect(unknown.englishName == "Sensor Tz11")
@@ -32,18 +33,18 @@ import Testing
         #expect(components("agg:nope") == SensorNameComponents(labelKey: "Sensor", suffix: "agg:nope", isFallback: true))
     }
 
-    @Test func testLabelKeysCoverEveryComponent() {
+    @Test func labelKeysCoverEveryComponent() {
         for key in Self.mac14_9Names.keys + ["TM0P"] {
             let c = components(key)
             #expect(SensorCatalog.labelKeys.contains(c.labelKey), "\(key) → \(c.labelKey)")
-            #expect(c.isFallback == (c.labelKey == SensorCatalog.fallbackLabelKey))
+            #expect(c.isFallback == (c.labelKey == SensorCatalog.fallbackLabelKey), "\(key)")
         }
         for name in SensorCatalog.knownNames.values {
-            #expect(SensorCatalog.labelKeys.contains { name == $0 || name.hasPrefix($0 + " ") })
+            #expect(SensorCatalog.labelKeys.contains { name == $0 || name.hasPrefix($0 + " ") }, "\(name)")
         }
     }
 
-    @Test func testNameWithLocalizedLabel() {
+    @Test func nameWithLocalizedLabel() {
         #expect(components("Tp09").name(label: "CPU 高性能コア") == "CPU 高性能コア 09")
         #expect(components("TH0x").name(label: "NAND（SSD）") == "NAND（SSD）")
     }
@@ -51,7 +52,7 @@ import Testing
     /// `displayName(for:)` output is unchanged for every `T*` key of the Mac14,9 /
     /// macOS 26 dump (`docs/verification/Mac14,9-macOS26-dump.txt`), recorded
     /// before the names were split into components.
-    @Test func testDisplayNameUnchangedForMac14_9Keys() {
+    @Test func displayNameUnchangedForMac14_9Keys() {
         #expect(Self.mac14_9Names.count == 259)
         for (key, name) in Self.mac14_9Names {
             #expect(SensorCatalog.displayName(for: key) == name, "\(key)")

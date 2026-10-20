@@ -3,23 +3,6 @@ import Testing
 import FanControlCore
 @testable import FanControlXPC
 
-/// Values from the Mac14,9 / macOS 26 dump (`docs/verification/Mac14,9-macOS26-dump.txt`).
-private enum Mac14_9 {
-    static let md = SMCKeyInfo(dataSize: 1, dataType: .ui8, attributes: 0xd0)
-    static let tg = SMCKeyInfo(dataSize: 4, dataType: .flt, attributes: 0xd4)
-    static let mn = SMCKeyInfo(dataSize: 4, dataType: .flt, attributes: 0x84)
-    static let limits: [Int: ClosedRange<Double>] = [0: 2317...6800, 1: 2317...6800]
-    static func flt(_ v: Double) -> [UInt8] { SMCCodec.encode(v, as: .flt, size: 4)! }
-    static func info(_ key: SMCKey) -> SMCKeyInfo? {
-        switch key.name.suffix(2) {
-        case "Md": return md
-        case "Tg": return tg
-        case "Mn": return mn
-        default: return nil
-        }
-    }
-}
-
 /// Records restore writes; keys in `failing` throw.
 private final class RecordingWriter {
     var writes: [(String, [UInt8])] = []
@@ -31,6 +14,7 @@ private final class RecordingWriter {
     }
 }
 
+@Suite("Helper write policy", .tags(.helper, .smc))
 struct HelperWritePolicyTests {
 
     private func validate(_ bytes: [UInt8], _ key: SMCKey, _ info: SMCKeyInfo) -> HelperWritePolicy.Rejection? {
@@ -39,13 +23,13 @@ struct HelperWritePolicyTests {
 
     // MARK: Validation
 
-    @Test func testMac14_9FloatEncodingMatchesDump() {
+    @Test func mac14_9FloatEncodingMatchesDump() {
         // F0Mn / F0Mx raw bytes as read on hardware.
         #expect(Mac14_9.flt(2317) == [0x00, 0xd0, 0x10, 0x45])
         #expect(Mac14_9.flt(6800) == [0x00, 0x80, 0xd4, 0x45])
     }
 
-    @Test func testAcceptsValidAppleSiliconWrites() {
+    @Test func acceptsValidAppleSiliconWrites() {
         #expect(validate([1], "F0Md", Mac14_9.md) == nil)
         #expect(validate([0], "F1Md", Mac14_9.md) == nil)
         #expect(validate(Mac14_9.flt(2317), "F0Tg", Mac14_9.tg) == nil)
@@ -53,7 +37,7 @@ struct HelperWritePolicyTests {
         #expect(validate(Mac14_9.flt(2316.5), "F0Tg", Mac14_9.tg) == nil) // ±1 RPM rounding slack
     }
 
-    @Test func testRejectsTargetsOutsideHardwareRange() {
+    @Test func rejectsTargetsOutsideHardwareRange() {
         // The Apple Silicon idle snapshot (Tg = 0) is not a valid write.
         #expect(validate(Mac14_9.flt(0), "F0Tg", Mac14_9.tg)?.code == .badRequest)
         #expect(validate(Mac14_9.flt(2315), "F0Tg", Mac14_9.tg)?.code == .badRequest)
@@ -63,14 +47,14 @@ struct HelperWritePolicyTests {
         #expect(validate(Mac14_9.flt(3000), "F2Tg", Mac14_9.tg)?.code == .smcError)
     }
 
-    @Test func testRejectsBadModeValuesAndSizes() {
+    @Test func rejectsBadModeValuesAndSizes() {
         #expect(validate([2], "F0Md", Mac14_9.md)?.code == .badRequest)
         #expect(validate([0xff], "F0Md", Mac14_9.md)?.code == .badRequest)
         #expect(validate([1, 0], "F0Md", Mac14_9.md)?.code == .badRequest)
         #expect(validate([0, 0], "F0Tg", Mac14_9.tg)?.code == .badRequest)
     }
 
-    @Test func testRejectsKeysWithoutWriteAttribute() {
+    @Test func rejectsKeysWithoutWriteAttribute() {
         // F<n>Mn is 0x84 on Mac14,9: refused even with an in-range value.
         #expect(validate(Mac14_9.flt(2317), "F0Mn", Mac14_9.mn)?.code == .badRequest)
         let readOnlyTarget = SMCKeyInfo(dataSize: 4, dataType: .flt, attributes: 0x84)
@@ -79,7 +63,7 @@ struct HelperWritePolicyTests {
 
     /// Intel dropped 2026-10-20: `FS! ` is refused by validation too (defence in
     /// depth behind the allowlist), even with a write-capable attribute.
-    @Test func testRejectsForceBitsKey() {
+    @Test func rejectsForceBitsKey() {
         let fs = SMCKeyInfo(dataSize: 2, dataType: .ui16, attributes: 0xd4)
         #expect(validate([0x00, 0x01], "FS! ", fs)?.code == .badRequest)
         let writableMin = SMCKeyInfo(dataSize: 4, dataType: .flt, attributes: 0xd4)
@@ -95,7 +79,7 @@ struct HelperWritePolicyTests {
                                   keyInfo: Mac14_9.info, write: writer.write)
     }
 
-    @Test func testAppleSiliconIdleSnapshotRestoresModeOnly() {
+    @Test func appleSiliconIdleSnapshotRestoresModeOnly() {
         // Session started at idle (Md = 0, Tg = 0 < Mn), client wrote Md = 1 and Tg.
         let writer = RecordingWriter()
         restore([("F0Md", [0]), ("F0Tg", Mac14_9.flt(0)), ("F1Md", [0]), ("F1Tg", Mac14_9.flt(0))], writer: writer)
@@ -103,14 +87,14 @@ struct HelperWritePolicyTests {
         #expect(writer.writes.map(\.1) == [[0], [0]])
     }
 
-    @Test func testModeKeyForcedToAutomaticEvenIfSnapshotWasManual() {
+    @Test func modeKeyForcedToAutomaticEvenIfSnapshotWasManual() {
         let writer = RecordingWriter()
         restore([("F0Md", [1]), ("F0Tg", Mac14_9.flt(4000))], writer: writer)
         #expect(writer.writes.map(\.0) == ["F0Md"])
         #expect(writer.writes.map(\.1) == [[0]])
     }
 
-    @Test func testFailedModeRestoreIsRetriedAndTargetLeftAlone() {
+    @Test func failedModeRestoreIsRetriedAndTargetLeftAlone() {
         let writer = RecordingWriter()
         writer.failing = ["F0Md"]
         var logs: [String] = []
@@ -120,24 +104,24 @@ struct HelperWritePolicyTests {
             write: writer.write, log: { logs.append($0) })
         // Two attempts at F0Md, then F1Md; the sub-minimum Tg snapshot is never written.
         #expect(writer.writes.map(\.0) == ["F0Md", "F0Md", "F1Md"])
-        #expect(result.filter { !$0.succeeded }.count == 2)
+        #expect(result.filter { !$0.succeeded }.count == 2, "both F0Md attempts are reported as failed")
         #expect(logs.contains { $0.contains("F0Md could not be set to automatic") })
     }
 
-    @Test func testTargetOnlyFanRestoredClampedIntoRange() {
+    @Test func targetOnlyFanRestoredClampedIntoRange() {
         let writer = RecordingWriter()
         restore([("F0Tg", Mac14_9.flt(0)), ("F1Tg", Mac14_9.flt(3000))], writer: writer)
         #expect(writer.writes.map(\.0) == ["F0Tg", "F1Tg"])
         #expect(writer.writes.map(\.1) == [Mac14_9.flt(2317), Mac14_9.flt(3000)])
     }
 
-    @Test func testEmptySessionWritesNothing() {
+    @Test func emptySessionWritesNothing() {
         let writer = RecordingWriter()
         #expect(restore([], writer: writer).isEmpty)
         #expect(writer.writes.isEmpty)
     }
 
-    @Test func testModeKeyClassification() {
+    @Test func modeKeyClassification() {
         #expect(HelperWritePolicy.isModeKey("F0Md"))
         #expect(!HelperWritePolicy.isModeKey("FS! "))
         #expect(!HelperWritePolicy.isModeKey("F0Tg"))

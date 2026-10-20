@@ -3,11 +3,12 @@ import Testing
 @testable import FanControlCore
 
 /// `FanCurve` (monotone cubic, PCHIP) and its use by `FanProfile` / `FanControlEngine`.
+@Suite("Fan curves", .tags(.control, .profiles))
 struct FanCurveTests {
-    let fan = FanDevice(id: 0, name: "Fan 1", minRPM: 2317, maxRPM: 6800)
-    let fan2 = FanDevice(id: 1, name: "Fan 2", minRPM: 2317, maxRPM: 6800)
+    let fan = Fixtures.mac14_9Fans[0]
+    let fan2 = Fixtures.mac14_9Fans[1]
 
-    @Test func testPassesThroughPointsAndFlatOutside() {
+    @Test func passesThroughPointsAndFlatOutside() {
         let curve = FanCurve.boost
         #expect(curve.rpm(at: 0, for: fan) == 2317)
         #expect(curve.rpm(at: 50, for: fan) == 2317)
@@ -21,7 +22,7 @@ struct FanCurveTests {
         #expect(curve.rpm(at: .infinity, for: fan) == 6800)
     }
 
-    @Test func testMonotoneWithoutOvershoot() {
+    @Test func monotoneWithoutOvershoot() {
         // Includes a plateau (60–70 °C flat) where a natural cubic spline would overshoot.
         let curves = [FanCurve.boost,
                       FanCurve([(40, 0), (60, 4000), (70, 4000), (75, 6800)]),
@@ -47,7 +48,7 @@ struct FanCurveTests {
         #expect(plateau.rpm(at: 65, for: fan) == 4000)
     }
 
-    @Test func testTwoPointsEqualLegacyRamp() {
+    @Test func twoPointsEqualLegacyRamp() {
         let mode = FanControlMode.sensor(sensorKey: "agg:cpu", startTemperature: 40, maxTemperature: 80)
         let curve = FanCurve.linear(startTemperature: 40, maxTemperature: 80)
         for step in 0...1000 {
@@ -57,7 +58,7 @@ struct FanCurveTests {
         }
     }
 
-    @Test func testDegenerateCurves() {
+    @Test func degenerateCurves() {
         #expect(FanCurve(points: []).rpm(at: 50, for: fan) == 6800)
         #expect(FanCurve([(50, 3000)]).rpm(at: 10, for: fan) == 3000)
         #expect(FanCurve([(50, 3000)]).rpm(at: 90, for: fan) == 3000)
@@ -72,7 +73,7 @@ struct FanCurveTests {
         #expect(messy.endTemperature == 130)
     }
 
-    @Test func testValidation() {
+    @Test func validation() {
         #expect(FanCurve.boost.isValid())
         #expect(!FanCurve.boost.isValid(rpmRange: fan.rpmRange))  // 0 = "minimum" marker
         #expect(FanCurve.boost.resolved(for: fan).isValid(rpmRange: fan.rpmRange))
@@ -85,14 +86,15 @@ struct FanCurveTests {
         #expect(FanCurve([(-1, 3000), (50, 4000)]).validationIssues() == [.temperatureOutOfRange(index: 0)])
     }
 
-    @Test func testSample() {
+    @Test func sample() {
         let samples = FanCurve.boost.sample(count: 8, rpmRange: fan.rpmRange)
         #expect(samples.first?.temperature == 50)
         #expect(samples.last?.temperature == 85)
         #expect(samples.map(\.temperature) == samples.map(\.temperature).sorted())
         // Every point is included exactly.
         for point in FanCurve.boost.resolved(for: fan).points {
-            #expect(samples.contains { $0.temperature == point.temperature && $0.rpm == Double(point.rpm) })
+            #expect(samples.contains { $0.temperature == point.temperature && $0.rpm == Double(point.rpm) },
+                    "curve point \(point.temperature) °C / \(point.rpm) RPM is sampled")
         }
         let wide = FanCurve.boost.sample(count: 101, rpmRange: fan.rpmRange, temperatureDomain: 20...100)
         #expect(wide.count >= 101)
@@ -101,7 +103,7 @@ struct FanCurveTests {
         #expect(FanCurve(points: []).sample(count: 1).count == 2)
     }
 
-    @Test func testGrid() {
+    @Test func gridTemperaturesAndResampling() {
         #expect(FanCurve.gridTemperatures() == [30, 40, 50, 60, 70, 80, 90, 100])
         #expect(FanCurve.gridTemperatures(from: 40, through: 60, step: 10) == [40, 50, 60])
         #expect(FanCurve.gridTemperatures(from: 60, through: 40) == [])
@@ -118,21 +120,21 @@ struct FanCurveTests {
         #expect(FanCurve.GridPreset.boost.curve == .boost)
     }
 
-    @Test func testMatches() {
+    @Test func matches() {
         #expect(FanCurve.boost.matches(startTemperature: 50, maxTemperature: 85))
         #expect(FanCurve.boost.matches(startTemperature: 50.04, maxTemperature: 85))
         #expect(!FanCurve.boost.matches(startTemperature: 55, maxTemperature: 85))
         #expect(!FanCurve(points: []).matches(startTemperature: 50, maxTemperature: 85))
     }
 
-    @Test func testCodable() throws {
+    @Test func codable() throws {
         let data = try JSONEncoder().encode(FanCurve.boost)
         #expect(try JSONDecoder().decode(FanCurve.self, from: data) == .boost)
     }
 
     // MARK: FanProfile
 
-    @Test func testProfileCurveSelection() {
+    @Test func profileCurveSelection() {
         var profile = FanProfile(name: "P", defaultMode: FanProfile.Preset.boostMode,
                                  defaultCurve: FanProfile.Preset.boostCurve)
         #expect(profile.curve(for: fan) == .boost)
@@ -155,7 +157,7 @@ struct FanCurveTests {
         #expect(profile.defaultCurve == .boost)
     }
 
-    @Test func testSetCurveAndResolved() {
+    @Test func setCurveAndResolved() {
         var profile = FanProfile(name: "P")
         let curve = FanCurve([(80, 6800), (45, 2400), (60, 4000)])
         profile.setCurve(curve, sensorKey: "agg:gpu", forFan: 1)
@@ -174,7 +176,7 @@ struct FanCurveTests {
         #expect(unchanged == profile)
     }
 
-    @Test func testProfileCodableBackwardCompatible() throws {
+    @Test func profileCodableBackwardCompatible() throws {
         var profile = FanProfile.defaultCustom1()
         profile.setCurve(FanCurve([(40, 2500), (70, 6000)]), sensorKey: "agg:gpu", forFan: 1)
         let data = try JSONEncoder().encode(profile)
@@ -189,7 +191,7 @@ struct FanCurveTests {
 
     // MARK: Engine
 
-    @Test func testPlanUsesCurve() {
+    @Test func planUsesCurve() {
         var profile = FanProfile(name: "P")
         profile.setCurve(FanCurve([(40, 2317), (60, 3000), (80, 6800)]), sensorKey: "Tp01", forFan: 0)
         profile.modes[1] = .sensor(sensorKey: "Tp01", startTemperature: 40, maxTemperature: 80)

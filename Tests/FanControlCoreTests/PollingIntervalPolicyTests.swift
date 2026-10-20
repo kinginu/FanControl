@@ -2,30 +2,31 @@ import Foundation
 import Testing
 @testable import FanControlCore
 
+@Suite("Polling interval policy", .tags(.power))
 struct PollingIntervalPolicyTests {
 
-    @Test func testACUsesPollingInterval() {
+    @Test func acUsesPollingInterval() {
         #expect(PollingIntervalPolicy.effectiveInterval(pollingInterval: 2, batteryInterval: 10,
                                                         slowOnBattery: true, onBattery: false) == 2)
     }
 
-    @Test func testBatterySlowsDown() {
+    @Test func batterySlowsDown() {
         #expect(PollingIntervalPolicy.effectiveInterval(pollingInterval: 2, batteryInterval: 10,
                                                         slowOnBattery: true, onBattery: true) == 10)
     }
 
-    @Test func testBatteryWithSlowPollingOffKeepsInterval() {
+    @Test func batteryWithSlowPollingOffKeepsInterval() {
         #expect(PollingIntervalPolicy.effectiveInterval(pollingInterval: 2, batteryInterval: 10,
                                                         slowOnBattery: false, onBattery: true) == 2)
     }
 
     /// A user interval longer than the battery interval is never shortened.
-    @Test func testLongerUserIntervalWinsOnBattery() {
+    @Test func longerUserIntervalWinsOnBattery() {
         #expect(PollingIntervalPolicy.effectiveInterval(pollingInterval: 30, batteryInterval: 10,
                                                         slowOnBattery: true, onBattery: true) == 30)
     }
 
-    @Test func testClampedToAllowedRange() {
+    @Test func clampedToAllowedRange() {
         #expect(PollingIntervalPolicy.effectiveInterval(pollingInterval: 0.1, batteryInterval: 10,
                                                         slowOnBattery: true, onBattery: false) == 0.5)
         #expect(PollingIntervalPolicy.effectiveInterval(pollingInterval: 2, batteryInterval: 1000,
@@ -34,7 +35,7 @@ struct PollingIntervalPolicyTests {
                                                         slowOnBattery: true, onBattery: true) == 2)
     }
 
-    @Test func testPausedIntervalUsesEffectiveInterval() {
+    @Test func pausedIntervalUsesEffectiveInterval() {
         #expect(PollingIntervalPolicy.pausedInterval(effective: 1) == 10)
         #expect(PollingIntervalPolicy.pausedInterval(effective: 2) == 10)
         // On battery (effective 10 s) the alert-only poll slows to 50 s.

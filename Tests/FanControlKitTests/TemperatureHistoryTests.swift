@@ -4,16 +4,16 @@ import FanControlCore
 @testable import FanControlKit
 
 /// `TemperatureHistory` (ring buffer per key) and the manager's history / control-temperature API.
+@Suite("Temperature history", .tags(.sensors))
 struct TemperatureHistoryTests {
-    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
-    private func at(_ seconds: Double) -> Date { t0.addingTimeInterval(seconds) }
+    private func at(_ seconds: Double) -> Date { TestClock.at(seconds) }
 
-    @Test func testDefaultCapacityCoversThirtyMinutesAtTwoSeconds() {
+    @Test func defaultCapacityCoversThirtyMinutesAtTwoSeconds() {
         #expect(TemperatureHistory.defaultCapacityPerKey * 2 >= 30 * 60)
         #expect(TemperatureHistory.defaultKeys == ["agg:cpu", "agg:gpu", "TH0x"])
     }
 
-    @Test func testRingBufferWrapsInOrder() {
+    @Test func ringBufferWrapsInOrder() {
         var history = TemperatureHistory(capacityPerKey: 5)
         for i in 0..<12 { history.append(Double(i), for: "agg:cpu", at: at(Double(i) * 2)) }
         let samples = history.history(for: "agg:cpu")
@@ -23,7 +23,7 @@ struct TemperatureHistoryTests {
         #expect(history.history(for: "nope").isEmpty)
     }
 
-    @Test func testWindowAndRange() {
+    @Test func windowAndRange() {
         var history = TemperatureHistory()
         let values: [Double] = [50, 72, 61, 58, 66]
         for (i, value) in values.enumerated() { history.append(value, for: "agg:cpu", at: at(Double(i) * 60)) }
@@ -35,7 +35,7 @@ struct TemperatureHistoryTests {
         #expect(history.range(for: "agg:gpu") == nil)
     }
 
-    @Test func testIgnoresBadSamplesAndBoundsKeys() {
+    @Test func ignoresBadSamplesAndBoundsKeys() {
         var history = TemperatureHistory(capacityPerKey: 4, maximumKeys: 2)
         history.append(.nan, for: "a", at: at(0))
         #expect(history.keys.isEmpty)
@@ -51,7 +51,7 @@ struct TemperatureHistoryTests {
         #expect(history.keys.isEmpty)
     }
 
-    @Test func testRecordFiltersKeys() {
+    @Test func recordFiltersKeys() {
         var history = TemperatureHistory()
         let sensors = [SensorReading(id: "agg:cpu", name: "CPU", temperature: 70, sensorType: .greatest),
                        SensorReading(id: "Tp01", name: "P", temperature: 69)]
@@ -61,21 +61,17 @@ struct TemperatureHistoryTests {
 }
 
 #if os(macOS)
+@Suite("Temperature history (manager)", .tags(.sensors, .manager))
 @MainActor
 struct TemperatureHistoryManagerTests {
-    private func makeManager(_ suite: String) -> FanControlManager {
-        FanControlManager(defaults: UserDefaults(suiteName: suite)!,
-                          powerSource: MockPowerSource(onBattery: false),
-                          conflictDetector: ConflictingControllerDetector(isAppRunning: { _ in false },
-                                                                          fileExists: { _ in false }))
-    }
+    private let defaults = ScratchDefaults()
 
-    @Test func testHistoryKeySubscriptions() {
-        let manager = makeManager("TemperatureHistoryManagerTests.keys")
+    @Test func historyKeySubscriptions() {
+        let manager = Isolated.manager(defaults: defaults)
         #expect(manager.temperatureHistoryKeys == Set(TemperatureHistory.defaultKeys))
         manager.setTemperatureHistoryKeys(["Tp01", "Tg0f"], for: "chart")
         #expect(manager.temperatureHistoryKeys == Set(TemperatureHistory.defaultKeys).union(["Tp01", "Tg0f"]))
-        let now = Date()
+        let now = TestClock.t0
         manager.recordTemperatureHistory([SensorReading(id: "Tp01", name: "P", temperature: 70),
                                           SensorReading(id: "Tp02", name: "P", temperature: 71),
                                           SensorReading(id: "agg:cpu", name: "CPU", temperature: 72,
@@ -87,8 +83,8 @@ struct TemperatureHistoryManagerTests {
         #expect(manager.temperatureHistory.keys == ["agg:cpu"])
     }
 
-    @Test func testControlTemperatureFallsBackToRaw() {
-        let manager = makeManager("TemperatureHistoryManagerTests.control")
+    @Test func controlTemperatureFallsBackToRaw() {
+        let manager = Isolated.manager(defaults: defaults)
         #expect(manager.tuning == .default)
         manager.sensorReadings = [SensorReading(id: "agg:cpu", name: "CPU", temperature: 80, sensorType: .greatest)]
         #expect(manager.controlTemperature(for: "agg:cpu") == 80)

@@ -2,8 +2,9 @@ import Foundation
 import Testing
 @testable import FanControlCore
 
+@Suite("SMC keys", .tags(.smc))
 struct SMCKeyTests {
-    @Test func testCodeNameRoundtrip() {
+    @Test func codeNameRoundtrip() {
         let name = "#KEY"
         let key = SMCKey(name)!
         #expect(key.code == 0x234B_4559)
@@ -17,14 +18,14 @@ struct SMCKeyTests {
         #expect(literal.name == "TC0P")
     }
 
-    @Test func testRejectsBadKeys() {
+    @Test func rejectsBadKeys() {
         // Runtime strings: `SMCKey("literal")` would be a literal coercion (SE-0213).
         for bad in ["", "ABC", "ABCDE", "TC0é"] {
             #expect(SMCKey(bad) == nil, Comment(rawValue: bad))
         }
     }
 
-    @Test func testFanHelpers() {
+    @Test func fanHelpers() {
         #expect(SMCKey.keyCount.name == "#KEY")
         #expect(SMCKey.fanCount.name == "FNum")
         #expect(SMCKey.fanMode(0).name == "F0Md")
@@ -36,7 +37,7 @@ struct SMCKeyTests {
         #expect(SMCKey.fanSafe(6).name == "F6Sf")
     }
 
-    @Test func testCodable() throws {
+    @Test func codable() throws {
         let spaced: SMCKey = "FS! "
         let data = try JSONEncoder().encode([spaced])
         #expect(String(decoding: data, as: UTF8.self) == "[\"FS! \"]")
@@ -47,8 +48,9 @@ struct SMCKeyTests {
     }
 }
 
+@Suite("SMC data types", .tags(.smc))
 struct SMCDataTypeTests {
-    @Test func testParsing() {
+    @Test func parsing() {
         #expect(SMCDataType(name: "flt ") == .flt)
         #expect(SMCDataType(name: "flt") == .flt)
         #expect(SMCDataType(name: "fpe2") == .fpe2)
@@ -66,14 +68,14 @@ struct SMCDataTypeTests {
         #expect(SMCDataType(fourCC: 0x666C_7420) == .flt)
     }
 
-    @Test func testNameRoundtrip() {
+    @Test func nameRoundtrip() {
         for type: SMCDataType in [.flt, .fpe2, .fp1f, .sp78, .sp5a, .ui8, .ui64, .si32, .si64, .flag, .ch8, .hex, .ioft] {
             #expect(SMCDataType(name: type.name) == type)
-            #expect(type.name.count == 4)
+            #expect(type.name.count == 4, "\(type.name.debugDescription)")
         }
     }
 
-    @Test func testFractionalBits() {
+    @Test func fractionalBits() {
         #expect(SMCDataType.fpe2.fractionalBits == 2)
         #expect(SMCDataType.fp88.fractionalBits == 8)
         #expect(SMCDataType.fp1f.fractionalBits == 15)
@@ -85,7 +87,7 @@ struct SMCDataTypeTests {
         #expect(SMCDataType.ui16.fractionalBits == nil)
     }
 
-    @Test func testIsNumeric() {
+    @Test func isNumeric() {
         #expect(SMCDataType.flt.isNumeric)
         #expect(SMCDataType.sp78.isNumeric)
         #expect(SMCDataType.ui32.isNumeric)
@@ -98,8 +100,9 @@ struct SMCDataTypeTests {
     }
 }
 
+@Suite("SMC codec", .tags(.smc))
 struct SMCCodecTests {
-    @Test func testFixedPoint() {
+    @Test func fixedPoint() {
         #expect(SMCCodec.decode([0x0B, 0xB8], as: .fpe2) == .number(750))
         #expect(SMCCodec.encode(1200, as: .fpe2, size: 2) == [0x12, 0xC0])
         #expect(SMCCodec.decode([0x2A, 0x80], as: .sp78) == .number(42.5))
@@ -109,7 +112,7 @@ struct SMCCodecTests {
         #expect(SMCCodec.decode([0x01, 0x80], as: .fp88) == .number(1.5))
     }
 
-    @Test func testFixedPointClamping() {
+    @Test func fixedPointClamping() {
         #expect(SMCCodec.encode(-5, as: .fpe2, size: 2) == [0x00, 0x00])
         #expect(SMCCodec.encode(1e9, as: .fpe2, size: 2) == [0xFF, 0xFF])
         #expect(SMCCodec.encode(1e9, as: .sp78, size: 2) == [0x7F, 0xFF])
@@ -117,7 +120,7 @@ struct SMCCodecTests {
         #expect(SMCCodec.encode(1, as: .fpe2, size: 4) == nil)
     }
 
-    @Test func testFloat() {
+    @Test func float() {
         #expect(SMCCodec.decode([0x00, 0x00, 0x96, 0x44], as: .flt) == .number(1200))
         #expect(SMCCodec.encode(1200, as: .flt, size: 4) == [0x00, 0x00, 0x96, 0x44])
         #expect(SMCCodec.decode([0x00, 0x00, 0x96], as: .flt) == nil)
@@ -125,7 +128,7 @@ struct SMCCodecTests {
         #expect(SMCCodec.encode(.nan, as: .flt, size: 4) == nil)
     }
 
-    @Test func testIntegers() {
+    @Test func integers() {
         #expect(SMCCodec.decode([0x01, 0x02], as: .ui16) == .number(258))
         #expect(SMCCodec.decode([0x02], as: .ui8) == .number(2))
         #expect(SMCCodec.decode([0, 0, 0x01, 0x00], as: .ui32) == .number(256))
@@ -141,7 +144,7 @@ struct SMCCodecTests {
         #expect(SMCCodec.decode([0x01], as: .ui16) == nil)
     }
 
-    @Test func testFlagStringBytes() {
+    @Test func flagStringBytes() {
         #expect(SMCCodec.decode([0x01], as: .flag) == .flag(true))
         #expect(SMCCodec.decode([0x00], as: .flag) == .flag(false))
         #expect(SMCCodec.encode(1, as: .flag, size: 1) == [0x01])
@@ -151,7 +154,7 @@ struct SMCCodecTests {
         #expect(SMCCodec.encode(1, as: .ch8, size: 4) == nil)
     }
 
-    @Test func testIoft() {
+    @Test func ioft() {
         // Little-endian 16.16 fixed point.
         #expect(SMCCodec.decode([0x00, 0x80, 0x01, 0, 0, 0, 0, 0], as: .ioft) == .number(1.5))
         #expect(SMCCodec.encode(1.5, as: .ioft, size: 8) == [0x00, 0x80, 0x01, 0, 0, 0, 0, 0])
@@ -159,7 +162,7 @@ struct SMCCodecTests {
     }
 
     /// Raw `ioft` temperature keys from the Mac14,9 / macOS 26 dump.
-    @Test func testIoftRealDump() throws {
+    @Test func ioftRealDump() throws {
         let tg0b = try #require(SMCCodec.decode([0x66, 0xE6, 0x20, 0, 0, 0, 0, 0], as: .ioft)?.doubleValue)
         #expect(abs(tg0b - 32.9) < 0.001)   // TB0T (flt) read 32.90 °C at the same time
         let tr0z = try #require(SMCCodec.decode([0x9A, 0xD9, 0x33, 0, 0, 0, 0, 0], as: .ioft)?.doubleValue)
@@ -167,7 +170,7 @@ struct SMCCodecTests {
         #expect(SMCCodec.decode([0, 0, 0x20, 0, 0, 0, 0, 0], as: .ioft) == .number(32))  // TG0C
     }
 
-    @Test func testSi64() {
+    @Test func si64() {
         #expect(SMCCodec.decode([0, 0, 0, 0, 0, 0, 0x01, 0x00], as: .si64) == .number(256))
         #expect(SMCCodec.decode([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE], as: .si64) == .number(-2))
         #expect(SMCCodec.decode([0, 0, 0, 0], as: .si64) == nil)
@@ -179,7 +182,7 @@ struct SMCCodecTests {
         #expect(SMCCodec.encode(-1e9, as: .si16, size: 2) == [0x80, 0x00])
     }
 
-    @Test func testDoubleValue() {
+    @Test func doubleValue() {
         #expect(SMCValue.number(3).doubleValue == 3)
         #expect(SMCValue.flag(true).doubleValue == 1)
         #expect(SMCValue.string("x").doubleValue == nil)

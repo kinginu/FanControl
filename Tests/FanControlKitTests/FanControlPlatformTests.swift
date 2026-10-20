@@ -3,8 +3,9 @@ import Testing
 import FanControlCore
 @testable import FanControlKit
 
+@Suite("Platform", .tags(.manager, .safety))
 struct FanControlPlatformTests {
-    @Test func testDetectsHostArchitecture() throws {
+    @Test func detectsHostArchitecture() throws {
         #if arch(arm64)
         #expect(FanControlPlatform.isAppleSilicon)
         #expect(FanControlPlatform.isSupported)
@@ -19,7 +20,7 @@ struct FanControlPlatformTests {
     }
 
     /// No per-architecture defaults any more (Intel dropped 2026-10-20).
-    @Test func testSingleDefaults() {
+    @Test func singleDefaults() {
         #expect(FanControlPlatform.defaultSafetyPolicy == .default)
         #expect(!FanControlPlatform.defaultSafetyPolicy.emergencySensorPrefixes.contains("TG"))
         #expect(FanControlPlatform.sensorAggregateDefinitions == SensorAggregator.definitions)
@@ -27,8 +28,9 @@ struct FanControlPlatformTests {
     }
 
     #if os(macOS)
-    @Test @MainActor func testManagerStartsWithPlatformPolicy() {
-        let manager = FanControlManager(defaults: UserDefaults(suiteName: "FanControlPlatformTests")!)
+    @Test @MainActor func managerStartsWithPlatformPolicy() {
+        let defaults = ScratchDefaults()
+        let manager = Isolated.manager(defaults: defaults)
         #expect(manager.safetyPolicy == FanControlPlatform.defaultSafetyPolicy)
         #expect(manager.substitutedSensorKeys.isEmpty)
     }

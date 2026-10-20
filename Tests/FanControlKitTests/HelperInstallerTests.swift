@@ -5,6 +5,7 @@ import FanControlCore
 import FanControlXPC
 @testable import FanControlKit
 
+@Suite("Helper installer", .tags(.helper, .install))
 struct HelperInstallerTests {
     private static func installer(existing: Set<String>) -> HelperInstaller {
         HelperInstaller(fileExists: { existing.contains($0) }, pinCheck: { .matches })
@@ -13,18 +14,18 @@ struct HelperInstallerTests {
     private static let both: Set<String> = [FanControlHelperConstants.manualLaunchDaemonPlistPath,
                                             FanControlHelperConstants.manualHelperPath]
 
-    @Test func testManualInstallStateFromInjectedProbe() {
+    @Test func manualInstallStateFromInjectedProbe() {
         #expect(Self.installer(existing: Self.both).manualInstallState == .installed)
         #expect(Self.installer(existing: []).manualInstallState == .absent)
         #expect(Self.installer(existing: [FanControlHelperConstants.manualHelperPath]).manualInstallState
                 == .incomplete(missing: FanControlHelperConstants.manualLaunchDaemonPlistPath))
     }
 
-    @Test func testStatusDecision() {
+    @Test func statusDecision() {
         var serviceQueried = false
         func service() -> HelperInstallStatus { serviceQueried = true; return .enabled }
         #expect(HelperInstaller.resolveStatus(manual: .installed, serviceStatus: service()) == .installedManually)
-        #expect(!serviceQueried)
+        #expect(!serviceQueried, "a complete manual install never queries SMAppService")
         guard case .unknown(let detail) = HelperInstaller.resolveStatus(
             manual: .incomplete(missing: FanControlHelperConstants.manualHelperPath), serviceStatus: service()) else {
             Issue.record("incomplete manual install must be reported as .unknown")
@@ -32,13 +33,13 @@ struct HelperInstallerTests {
         }
         #expect(detail.contains(FanControlHelperConstants.manualHelperPath))
         #expect(detail.contains("install.sh"))
-        #expect(!serviceQueried)
+        #expect(!serviceQueried, "an incomplete manual install never queries SMAppService")
         #expect(HelperInstaller.resolveStatus(manual: .absent, serviceStatus: .requiresApproval) == .requiresApproval)
         #expect(HelperInstaller.resolveStatus(manual: .absent, serviceStatus: service()) == .enabled)
-        #expect(serviceQueried)
+        #expect(serviceQueried, "without a manual install the SMAppService status decides")
     }
 
-    @Test func testStatusReportsPinMismatch() throws {
+    @Test func statusReportsPinMismatch() throws {
         let pinned = String(repeating: "a", count: 40)
         let own = String(repeating: "b", count: 40)
         #expect(HelperInstaller.resolveStatus(manual: .installed,
@@ -63,52 +64,52 @@ struct HelperInstallerTests {
         #expect(!HelperInstallStatus.enabled.isManualInstallation)
     }
 
-    @Test func testStatusAndRegisterWithManualInstall() throws {
+    @Test func statusAndRegisterWithManualInstall() throws {
         let installer = Self.installer(existing: Self.both)
         #expect(installer.status() == .installedManually)
         // No SMAppService call: returns the manual status.
         #expect(try installer.register() == .installedManually)
     }
 
-    @Test func testRegisterRefusesIncompleteManualInstall() {
+    @Test func registerRefusesIncompleteManualInstall() {
         let installer = Self.installer(existing: [FanControlHelperConstants.manualLaunchDaemonPlistPath])
         #expect(throws: FanControlError.self) { try installer.register() }
     }
 
-    @Test func testUnregisterRefusesManualInstall() async {
+    @Test func unregisterRefusesManualInstall() async {
         let installer = Self.installer(existing: Self.both)
-        await #expect(throws: FanControlError.self) { try await installer.unregister() }
-        do {
-            try await installer.unregister()
-        } catch let FanControlError.helperConnectionFailed(reason) {
-            #expect(reason.contains("uninstall.sh"))
-        } catch {
-            Issue.record("unexpected error \(error)")
+        let error = await #expect(throws: FanControlError.self) { try await installer.unregister() }
+        guard case .helperConnectionFailed(let reason)? = error else {
+            Issue.record("expected .helperConnectionFailed naming uninstall.sh, got \(String(describing: error))")
+            return
         }
+        #expect(reason.contains("uninstall.sh"))
     }
 
-    @Test func testInstalledHelperCDHashFailsWhenMissing() {
+    @Test func installedHelperCDHashFailsWhenMissing() {
         #expect(throws: FanControlError.self) {
             try ManualHelperSigning.installedHelperCDHash(atPath: "/nonexistent/fanfi-test-helper")
         }
     }
 
-    @Test func testInstalledHelperCDHashRejectsUserOwnedFile() throws {
+    @Test func installedHelperCDHashRejectsUserOwnedFile() throws {
         // A user-writable copy must never become the trust anchor.
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("fanfi-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let copy = dir.appendingPathComponent("helper")
         try FileManager.default.copyItem(atPath: "/usr/bin/true", toPath: copy.path)
-        do {
-            _ = try ManualHelperSigning.installedHelperCDHash(atPath: copy.path)
-            Issue.record("user-owned file accepted")
-        } catch let FanControlError.helperConnectionFailed(reason) {
-            #expect(reason.contains("owned by root"))
+        let error = #expect(throws: FanControlError.self, "a user-owned copy must be refused") {
+            try ManualHelperSigning.installedHelperCDHash(atPath: copy.path)
         }
+        guard case .helperConnectionFailed(let reason)? = error else {
+            Issue.record("expected .helperConnectionFailed, got \(String(describing: error))")
+            return
+        }
+        #expect(reason.contains("owned by root"))
     }
 
-    @Test func testInstalledHelperCDHashOfRootOwnedSystemBinary() throws {
+    @Test func installedHelperCDHashOfRootOwnedSystemBinary() throws {
         // /usr/bin/true: root-owned, 0755, in a root-owned directory, platform-signed.
         let hash = try ManualHelperSigning.installedHelperCDHash(atPath: "/usr/bin/true")
         #expect(FanControlHelperConstants.isValidCDHash(hash))
