@@ -38,16 +38,57 @@ import Foundation
 /// and a drop detector would need tuning per model. The floor alone fixes the
 /// observed failure (near-zero samples driving the fan down).
 ///
-/// Not thread-safe; use it from the queue that reads the sensors.
+/// State: one `KeyState` per key ever seen by `filter(_:)` (last accepted
+/// value, current run of rejections), plus the keys substituted by the latest
+/// call. Only `filter(_:)` and `reset()` change it. It is a value type, so the
+/// owner's isolation protects it (`FanControlPoller` keeps one on its queue).
 public struct TemperatureSampleFilter: Hashable, Sendable {
 
     /// Default `floor` (°C). A running CPU/GPU die is not below 10 °C in
     /// practice; every bogus value observed on Mac14,9 is below 8.5 °C.
     public static let defaultFloor: Double = 10
-    /// Default `filteredPrefixes`: die-type sensors (P/E cores, GPU, `TC*` CPU).
-    public static let defaultFilteredPrefixes = ["Tp", "Te", "Tg", "TC"]
+    /// Default `filteredPrefixes`: the prefix rows of the die groups in
+    /// `SensorCatalog.entries` (`SensorGroup.isDie`: P/E cores, GPU, `TC*` CPU),
+    /// in the order `Tp`, `Te`, `Tg`, `TC`.
+    public static let defaultFilteredPrefixes: [String] =
+        [SensorGroup.cpuPerformanceCore, .cpuEfficiencyCore, .gpu, .cpuOther].flatMap(SensorCatalog.keyPrefixes(of:))
     /// Default `maxConsecutiveSubstitutions` (5 polls = 10 s at the default 2 s interval).
     public static let defaultMaxConsecutiveSubstitutions = 5
+
+    /// What the filter remembers about one key.
+    public struct KeyState: Hashable, Sendable {
+        /// The key's last accepted temperature, `nil` until one was accepted.
+        public var lastAccepted: Double?
+        /// Consecutive rejections since the last accepted sample (0 after an accepted one).
+        public var consecutiveRejections: Int
+
+        public init(lastAccepted: Double? = nil, consecutiveRejections: Int = 0) {
+            self.lastAccepted = lastAccepted
+            self.consecutiveRejections = consecutiveRejections
+        }
+    }
+
+    /// How `filter(_:)` treated one sample (`decide(_:state:groupMaximum:)`).
+    public enum Decision: Hashable, Sendable {
+        /// Not a filtered key, or non-finite: returned unchanged, state untouched.
+        case ignored
+        /// Finite and `>= floor`: returned unchanged and remembered.
+        case accepted
+        /// Below `floor`, replaced by the key's last accepted value (short dropout).
+        case substitutedLastAccepted(Double)
+        /// Below `floor`, replaced by the hottest accepted sample of its group in this batch.
+        case substitutedGroupMaximum(Double)
+        /// Below `floor` with no substitute (whole group implausible): returned unchanged.
+        case rejectedUnreplaced
+
+        /// The replacement temperature, if the sample was substituted.
+        public var substitute: Double? {
+            switch self {
+            case .substitutedLastAccepted(let value), .substitutedGroupMaximum(let value): return value
+            case .ignored, .accepted, .rejectedUnreplaced: return nil
+            }
+        }
+    }
 
     /// Samples below this temperature (°C) are implausible for filtered keys.
     public var floor: Double
@@ -59,12 +100,17 @@ public struct TemperatureSampleFilter: Hashable, Sendable {
     /// is used instead.
     public var maxConsecutiveSubstitutions: Int
 
-    /// Last accepted temperature per key.
-    public private(set) var lastAccepted: [String: Double] = [:]
-    /// Current run of consecutive rejections per key (absent = 0).
-    public private(set) var consecutiveRejections: [String: Int] = [:]
+    /// Per-key state (keys never seen, or ignored, are absent).
+    public private(set) var states: [String: KeyState] = [:]
     /// Keys whose temperature was replaced in the most recent `filter(_:)` call.
     public private(set) var substitutedKeys: Set<String> = []
+
+    /// Last accepted temperature per key (view of `states`).
+    public var lastAccepted: [String: Double] { states.compactMapValues(\.lastAccepted) }
+    /// Current run of consecutive rejections per key; keys at 0 are absent (view of `states`).
+    public var consecutiveRejections: [String: Int] {
+        states.compactMapValues { $0.consecutiveRejections > 0 ? $0.consecutiveRejections : nil }
+    }
 
     public init(floor: Double = TemperatureSampleFilter.defaultFloor,
                 filteredPrefixes: [String] = TemperatureSampleFilter.defaultFilteredPrefixes,
@@ -74,12 +120,14 @@ public struct TemperatureSampleFilter: Hashable, Sendable {
         self.maxConsecutiveSubstitutions = maxConsecutiveSubstitutions
     }
 
-    /// The prefix group of `key` (longest matching prefix), or `nil` if the
-    /// filter does not apply to it.
+    /// The prefix group of `key` (longest matching prefix; the first listed on
+    /// a tie), or `nil` if the filter does not apply to it.
     public func group(of key: String) -> String? {
-        filteredPrefixes
-            .filter { !$0.isEmpty && key.hasPrefix($0) }
-            .max { $0.count < $1.count }
+        var best: String?
+        for prefix in filteredPrefixes where !prefix.isEmpty && key.hasPrefix(prefix) {
+            if prefix.count > (best?.count ?? 0) { best = prefix }
+        }
+        return best
     }
 
     /// `true` if `reading` is a finite sample below `floor` of a filtered key.
@@ -87,38 +135,57 @@ public struct TemperatureSampleFilter: Hashable, Sendable {
         group(of: reading.id) != nil && reading.temperature.isFinite && reading.temperature < floor
     }
 
+    /// The rule of the type documentation for one finite sample of a filtered
+    /// key, and the key's state after it. Pure: `filter(_:)` applies it to
+    /// every sample of a batch.
+    ///
+    /// - Parameters:
+    ///   - temperature: the sample (finite).
+    ///   - state: the key's state before the sample.
+    ///   - groupMaximum: the hottest accepted sample of the key's group in the
+    ///     same batch, if any.
+    public func decide(_ temperature: Double, state: KeyState,
+                       groupMaximum: Double?) -> (decision: Decision, state: KeyState) {
+        if temperature >= floor {
+            return (.accepted, KeyState(lastAccepted: temperature, consecutiveRejections: 0))
+        }
+        var next = state
+        next.consecutiveRejections += 1
+        if next.consecutiveRejections <= maxConsecutiveSubstitutions, let last = state.lastAccepted {
+            return (.substitutedLastAccepted(last), next)
+        }
+        if let groupMaximum {
+            return (.substitutedGroupMaximum(groupMaximum), next)
+        }
+        return (.rejectedUnreplaced, next)
+    }
+
     /// Filters one batch of samples (one poll). Order, ids, names and sensor
-    /// types are preserved; only `temperature` may change.
+    /// types are preserved; only `temperature` may change. Two passes: the
+    /// group maxima of the accepted samples, then `decide` per sample. The
+    /// result shares storage with `readings` when nothing is substituted.
     public mutating func filter(_ readings: [SensorReading]) -> [SensorReading] {
-        var groupMax: [String: Double] = [:]
-        for reading in readings {
-            guard let group = group(of: reading.id), reading.temperature.isFinite,
-                  reading.temperature >= floor else { continue }
-            groupMax[group] = Swift.max(groupMax[group] ?? -.infinity, reading.temperature)
+        // Pass 1: each sample's group (once) and the per-group maximum of accepted samples.
+        let groups = readings.map { $0.temperature.isFinite ? group(of: $0.id) : nil }
+        var groupMaximum: [String: Double] = [:]
+        for (reading, group) in zip(readings, groups) {
+            guard let group, reading.temperature >= floor else { continue }
+            groupMaximum[group] = Swift.max(groupMaximum[group] ?? -.infinity, reading.temperature)
         }
 
+        // Pass 2: decide per sample, update the state, substitute.
+        var result = readings
         var substituted: Set<String> = []
-        let result = readings.map { reading -> SensorReading in
-            guard let group = group(of: reading.id), reading.temperature.isFinite else { return reading }
-            let key = reading.id
-            if reading.temperature >= floor {
-                lastAccepted[key] = reading.temperature
-                consecutiveRejections[key] = nil
-                return reading
+        for index in readings.indices {
+            guard let group = groups[index] else { continue }
+            let key = readings[index].id
+            let (decision, state) = decide(readings[index].temperature, state: states[key] ?? KeyState(),
+                                           groupMaximum: groupMaximum[group])
+            states[key] = state
+            if let substitute = decision.substitute {
+                result[index].temperature = substitute
+                substituted.insert(key)
             }
-            let rejections = (consecutiveRejections[key] ?? 0) + 1
-            consecutiveRejections[key] = rejections
-            let replacement: Double?
-            if rejections <= maxConsecutiveSubstitutions, let last = lastAccepted[key] {
-                replacement = last
-            } else {
-                replacement = groupMax[group]
-            }
-            guard let replacement else { return reading }
-            substituted.insert(key)
-            var copy = reading
-            copy.temperature = replacement
-            return copy
         }
         substitutedKeys = substituted
         return result
@@ -126,8 +193,7 @@ public struct TemperatureSampleFilter: Hashable, Sendable {
 
     /// Forgets all per-key history (call when the sensor set is rediscovered).
     public mutating func reset() {
-        lastAccepted = [:]
-        consecutiveRejections = [:]
+        states = [:]
         substitutedKeys = []
     }
 }

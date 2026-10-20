@@ -3,8 +3,11 @@ import Foundation
 /// One fan reading for `FanStatistics`: time since the window started and the
 /// actual (`F<n>Ac`) / target (`F<n>Tg`) RPM, `nil` when that read failed.
 public struct FanSample: Hashable, Sendable {
+    /// Seconds since the window started (samples are passed in time order).
     public var time: TimeInterval
+    /// `F<n>Ac`, `nil` when the read failed.
     public var actualRPM: Int?
+    /// `F<n>Tg`, `nil` when the read failed.
     public var targetRPM: Int?
 
     public init(time: TimeInterval, actualRPM: Int?, targetRPM: Int?) {
@@ -27,19 +30,24 @@ public struct FanStabilityCriteria: Hashable, Sendable {
     /// Fraction of post-settle samples that must be within the tolerance.
     public var requiredTrackingFraction: Double = 0.95
 
+    /// The default criteria (the values above).
     public init() {}
 
+    /// The criteria `fanfi-probe --fan-stats` uses.
     public static let `default` = FanStabilityCriteria()
 }
 
 /// Result of `FanStatistics.analyze`.
 public struct FanStabilityReport: Hashable, Sendable {
+    /// Number of samples analysed (with or without readings).
     public var sampleCount: Int
     /// Window length (last sample time − first sample time), seconds.
     public var duration: TimeInterval
+    /// Lowest / highest / mean actual RPM over the samples that have one.
     public var actualMin: Int?
     public var actualMax: Int?
     public var actualMean: Double?
+    /// Lowest / highest target RPM over the samples that have one.
     public var targetMin: Int?
     public var targetMax: Int?
     /// Direction changes of the target sequence (dead band `reversalDeadBandRPM`).
@@ -55,6 +63,7 @@ public struct FanStabilityReport: Hashable, Sendable {
     /// Why the test failed; empty = PASS.
     public var failureReasons: [String]
 
+    /// `true` when no criterion failed.
     public var passed: Bool { failureReasons.isEmpty }
 }
 

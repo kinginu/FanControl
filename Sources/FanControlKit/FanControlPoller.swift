@@ -16,7 +16,13 @@ import FanControlXPC
 /// - `await run(_:)` for a result (the job is enqueued on `queue` when awaited).
 ///
 /// Results are published to the main actor with `DispatchQueue.main.async`, in the
-/// order they were produced.
+/// order they were produced (`publish(_:)`); a poll publishes one `PollSnapshot`.
+///
+/// Read path (all on `queue`): `prepareReader()` discovers fans and temperature
+/// keys once per reader (`temperatureKeys`, names resolved there), then every
+/// poll / apply calls `readSensors(using:)`: read → `sampleFilter` →
+/// `SensorAggregator` aggregates. The smoother and the planner consume that
+/// batch; the manager records the published batch into its `TemperatureHistory`.
 actor FanControlPoller {
     /// The actor's executor. `exportSMCDump()` (sync) blocks on it with `queue.sync`.
     nonisolated let queue: DispatchSerialQueue
@@ -36,7 +42,9 @@ actor FanControlPoller {
     var reader: SMCClient?
     var strategy: FanWriteStrategy?
     var polledFans: [FanDevice] = []
-    var sensorKeys: [String] = []
+    /// The temperature keys found by discovery, re-read by every poll (key and
+    /// display name resolved once, `TemperatureSensorKey`).
+    var temperatureKeys: [TemperatureSensorKey] = []
     var alertEvaluator = AlertEvaluator()
     /// Applied to every sensor batch before alerts, planning and publishing;
     /// reset whenever sensors are rediscovered.
@@ -113,6 +121,28 @@ actor FanControlPoller {
         }
     }
 
+    /// Publishes one poll's results: every published property is assigned in a
+    /// single main-queue block, the batch is recorded into the temperature
+    /// history, and `.fanControlDidUpdate` is posted last.
+    private func publish(_ snapshot: PollSnapshot) {
+        publish { manager in
+            manager.fans = snapshot.fans
+            manager.currentRPMs = snapshot.currentRPMs
+            manager.targetRPMs = snapshot.targetRPMs
+            manager.sensorReadings = snapshot.sensors.readings
+            manager.substitutedSensorKeys = snapshot.sensors.substitutedKeys
+            manager.controlTemperatures = snapshot.controlTemperatures
+            manager.recordTemperatureHistory(snapshot.sensors.readings, at: snapshot.date)
+            manager.fanControlModes = snapshot.fanControlModes
+            manager.highTempAlertActive = snapshot.highTempAlertActive
+            manager.emergencyOverrideActive = snapshot.emergencyOverrideActive
+            manager.anomalousFanIDs = snapshot.anomalousFanIDs
+            manager.isSMCConnected = true
+            manager.lastUpdate = snapshot.date
+            NotificationCenter.default.post(name: .fanControlDidUpdate, object: manager)
+        }
+    }
+
     // MARK: - Reader
 
     /// Opens the SMC and discovers sensors once; fan discovery is retried on
@@ -133,28 +163,40 @@ actor FanControlPoller {
         }
         let discovered = (try? SensorCatalog.discoverTemperatureSensors(using: client)) ?? []
         reader = client
-        sensorKeys = discovered.map(\.id)
+        temperatureKeys = discovered.compactMap { TemperatureSensorKey(id: $0.id, name: $0.name) }
         alertEvaluator = AlertEvaluator()
         sampleFilter.reset()
         smoother.reset()
-        let sensors = SensorAggregator.appendingAggregates(to: sampleFilter.filter(discovered),
-                                                           definitions: aggregateDefinitions)
-        let substituted = sampleFilter.substitutedKeys
+        // The discovery read doubles as the first batch.
+        let batch = process(discovered)
         strategy = nil
         discoverFans(using: client)
         publish { manager in
             manager.isSMCConnected = true
-            manager.sensorReadings = sensors
-            manager.substitutedSensorKeys = substituted
+            manager.sensorReadings = batch.readings
+            manager.substitutedSensorKeys = batch.substitutedKeys
         }
     }
 
-    /// Re-reads `sensorKeys`, runs them through `sampleFilter` and appends the
-    /// aggregates computed from the filtered values.
-    func readFilteredTemperatures(using reader: SMCReader) -> [SensorReading] {
-        SensorAggregator.appendingAggregates(
-            to: sampleFilter.filter(SensorCatalog.readTemperatures(keys: sensorKeys, using: reader)),
-            definitions: aggregateDefinitions)
+    /// One filtered sensor batch: the readings (aggregates appended) and the
+    /// keys `sampleFilter` substituted in it.
+    struct SensorBatch: Sendable {
+        var readings: [SensorReading]
+        var substitutedKeys: Set<String>
+    }
+
+    /// Re-reads `temperatureKeys` and `process`es them.
+    func readSensors(using reader: SMCReader) -> SensorBatch {
+        process(SensorCatalog.readTemperatures(temperatureKeys, using: reader))
+    }
+
+    /// Runs raw samples through `sampleFilter` (advancing its state) and appends
+    /// the aggregates computed from the filtered values.
+    private func process(_ raw: [SensorReading]) -> SensorBatch {
+        let filtered = sampleFilter.filter(raw)
+        return SensorBatch(
+            readings: SensorAggregator.appendingAggregates(to: filtered, definitions: aggregateDefinitions),
+            substitutedKeys: sampleFilter.substitutedKeys)
     }
 
     /// Runs `FanDiscovery.discoverFans`; a failure is published to `lastError`
@@ -210,6 +252,10 @@ actor FanControlPoller {
 
     // MARK: - Polling
 
+    /// One poll: read fans and sensors, evaluate alerts, smooth, and (session
+    /// open) plan, stabilize and write in the background; then publish one
+    /// `PollSnapshot`. Writes go through `applyTargets` in a child task, so the
+    /// poll itself never waits for the helper.
     func poll(_ context: PollContext) {
         // Queued while monitoring, but monitoring has stopped since: drop it
         // rather than reopening the reader that `stopMonitoring()` closed.
@@ -227,8 +273,8 @@ actor FanControlPoller {
         let fans = polledFans
         let current = FanDiscovery.readCurrentRPMs(fans: fans, using: reader)
         let targets = FanDiscovery.readTargetRPMs(fans: fans, using: reader)
-        let sensors = readFilteredTemperatures(using: reader)
-        let substituted = sampleFilter.substitutedKeys
+        let batch = readSensors(using: reader)
+        let sensors = batch.readings
         let highTemp = alertEvaluator.evaluateHighTemperature(sensors: sensors, policy: context.policy)
         // Evaluated every poll (session or not) so the latch's hysteresis state
         // is current when a session opens.
@@ -240,13 +286,8 @@ actor FanControlPoller {
         let controlSensors = smoother.smooth(
             sensors, keys: FanControlEngine.controlSensorKeys(profile: context.profile, fans: fans),
             at: now, tuning: context.tuning)
-        let controlTemperatures = smoother.values
 
-        if systemSleeping, let started = systemSleepStartedAt,
-           Date().timeIntervalSince(started) > Self.sleepSuspendTimeout {
-            systemSleeping = false
-            systemSleepStartedAt = nil
-        }
+        expireSleepSuspension(now: now)
         let modes: [Int: FanControlMode]
         if context.sessionOpen {
             modes = Dictionary(uniqueKeysWithValues: fans.map { ($0.id, context.profile.mode(for: $0)) })
@@ -255,40 +296,43 @@ actor FanControlPoller {
             // The emergency override is never delayed (bypass).
             let stabilized = stabilizer.stabilize(plan, fans: fans, at: now, tuning: context.tuning,
                                                   bypass: emergency)
-            let desired = Self.targets(from: stabilized)
             if !systemSleeping { flagUnsettledFans(fans: fans, targets: targets, using: reader) }
-            if !systemSleeping, !pollWriteInFlight, !changedTargets(desired, force: false).isEmpty {
-                pollWriteInFlight = true
-                let generation = applyGate.current
-                // Inherits this actor's isolation: back on `queue` after each await.
-                Task {
-                    do {
-                        try await self.applyTargets(desired, force: false, pollGeneration: generation)
-                    } catch {
-                        self.publishError(Self.fanControlError(from: error))
-                    }
-                    self.pollWriteInFlight = false
-                }
-            }
+            startPollWrite(Self.targets(from: stabilized))
         } else {
             modes = FanDiscovery.fanControlModes(fans: fans, using: reader)
         }
 
-        publish { manager in
-            manager.fans = fans
-            manager.currentRPMs = current
-            manager.targetRPMs = targets
-            manager.sensorReadings = sensors
-            manager.substitutedSensorKeys = substituted
-            manager.controlTemperatures = controlTemperatures
-            manager.recordTemperatureHistory(sensors, at: now)
-            manager.fanControlModes = modes
-            manager.highTempAlertActive = highTemp
-            manager.emergencyOverrideActive = emergency
-            manager.anomalousFanIDs = anomalies
-            manager.isSMCConnected = true
-            manager.lastUpdate = now
-            NotificationCenter.default.post(name: .fanControlDidUpdate, object: manager)
+        publish(PollSnapshot(
+            fans: fans, currentRPMs: current, targetRPMs: targets,
+            sensors: batch, controlTemperatures: smoother.values, fanControlModes: modes,
+            highTempAlertActive: highTemp, emergencyOverrideActive: emergency,
+            anomalousFanIDs: anomalies, date: now))
+    }
+
+    /// Clears `systemSleeping` once it has been set for longer than
+    /// `sleepSuspendTimeout` (a missed wake notification).
+    private func expireSleepSuspension(now: Date) {
+        guard systemSleeping, let started = systemSleepStartedAt,
+              now.timeIntervalSince(started) > Self.sleepSuspendTimeout else { return }
+        systemSleeping = false
+        systemSleepStartedAt = nil
+    }
+
+    /// Starts a background write of `desired` unless asleep, one is in flight, or
+    /// nothing changed enough. The batch carries the current apply generation, so
+    /// a user apply started meanwhile drops it.
+    private func startPollWrite(_ desired: [Int: FanTarget]) {
+        guard !systemSleeping, !pollWriteInFlight, !changedTargets(desired, force: false).isEmpty else { return }
+        pollWriteInFlight = true
+        let generation = applyGate.current
+        // Inherits this actor's isolation: back on `queue` after each await.
+        Task {
+            do {
+                try await self.applyTargets(desired, force: false, pollGeneration: generation)
+            } catch {
+                self.publishError(Self.fanControlError(from: error))
+            }
+            self.pollWriteInFlight = false
         }
     }
 
@@ -323,7 +367,7 @@ actor FanControlPoller {
         // selection; their batches now carry a stale generation.
         applyGate.advance()
         try prepareReader()
-        let sensors = reader.map { readFilteredTemperatures(using: $0) } ?? []
+        let sensors = reader.map { readSensors(using: $0).readings } ?? []
         // Same latch as the poll loop, so a user action cannot drop an
         // active emergency override inside the hysteresis band.
         let emergency = alertEvaluator.evaluateEmergency(sensors: sensors, policy: policy)
@@ -459,6 +503,23 @@ actor FanControlPoller {
     static func fanControlError(from error: Error) -> FanControlError {
         (error as? FanControlError) ?? .helperConnectionFailed(error.localizedDescription)
     }
+}
+
+/// Everything one poll publishes to the main actor (`FanControlPoller.publish(_:)`).
+struct PollSnapshot: Sendable {
+    var fans: [FanDevice]
+    var currentRPMs: [Int: Int]
+    var targetRPMs: [Int: Int]
+    /// Filtered readings with aggregates, and the substituted keys.
+    var sensors: FanControlPoller.SensorBatch
+    /// Smoothed control temperatures (`TemperatureSmoother.values`).
+    var controlTemperatures: [String: Double]
+    var fanControlModes: [Int: FanControlMode]
+    var highTempAlertActive: Bool
+    var emergencyOverrideActive: Bool
+    var anomalousFanIDs: Set<Int>
+    /// When the poll read its samples (`lastUpdate`, history timestamps).
+    var date: Date
 }
 
 /// Settings snapshot taken on the main actor for one poll.

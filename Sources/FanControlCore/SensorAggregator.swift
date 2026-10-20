@@ -24,9 +24,21 @@ public struct SensorAggregateDefinition: Hashable, Sendable {
         self.isOverview = isOverview
     }
 
+    /// An aggregate over the prefix rows of `groups` in `SensorCatalog.entries`
+    /// (`SensorCatalog.keyPrefixes(of:)`, in `groups` order).
+    public init(id: String, name: String, groups: [SensorGroup], isOverview: Bool) {
+        self.init(id: id, name: name, memberPrefixes: groups.flatMap(SensorCatalog.keyPrefixes(of:)),
+                  isOverview: isOverview)
+    }
+
     /// `true` if `key` belongs to this aggregate. Aggregate ids never match.
     public func contains(_ key: String) -> Bool {
-        !SensorAggregator.isAggregate(key) && memberPrefixes.contains { !$0.isEmpty && key.hasPrefix($0) }
+        !SensorAggregator.isAggregate(key) && hasMemberPrefix(key)
+    }
+
+    /// `contains(_:)` without the aggregate-id check (callers that already did it).
+    func hasMemberPrefix(_ key: String) -> Bool {
+        memberPrefixes.contains { !$0.isEmpty && key.hasPrefix($0) }
     }
 }
 
@@ -67,27 +79,27 @@ public enum SensorAggregator {
     }
 
     /// The aggregate table, in display order (Apple Silicon only; Intel dropped
-    /// 2026-10-20):
+    /// 2026-10-20). Members come from the groups of `SensorCatalog.entries`:
     ///
-    /// | id | name | members |
-    /// |---|---|---|
-    /// | `agg:cpu` | CPU (max) | `Tp` `Te` `TC` |
-    /// | `agg:cpu.p` | CPU Performance Cores (max) | `Tp` |
-    /// | `agg:cpu.e` | CPU Efficiency Cores (max) | `Te` |
-    /// | `agg:gpu` | GPU (max) | `Tg` |
+    /// | id | name | groups | members |
+    /// |---|---|---|---|
+    /// | `agg:cpu` | CPU (max) | P cores, E cores, other CPU | `Tp` `Te` `TC` |
+    /// | `agg:cpu.p` | CPU Performance Cores (max) | P cores | `Tp` |
+    /// | `agg:cpu.e` | CPU Efficiency Cores (max) | E cores | `Te` |
+    /// | `agg:gpu` | GPU (max) | GPU | `Tg` |
     ///
     /// Every member prefix is in `SafetyPolicy.defaultEmergencySensorPrefixes`;
     /// `TG*` (a battery-area `ioft` sensor on Mac14,9, not the GPU) is excluded
     /// exactly as there.
     public static let definitions: [SensorAggregateDefinition] = [
         SensorAggregateDefinition(id: ID.cpu, name: "CPU (max)",
-                                  memberPrefixes: ["Tp", "Te", "TC"], isOverview: true),
+                                  groups: [.cpuPerformanceCore, .cpuEfficiencyCore, .cpuOther], isOverview: true),
         SensorAggregateDefinition(id: ID.cpuPerformance, name: "CPU Performance Cores (max)",
-                                  memberPrefixes: ["Tp"], isOverview: false),
+                                  groups: [.cpuPerformanceCore], isOverview: false),
         SensorAggregateDefinition(id: ID.cpuEfficiency, name: "CPU Efficiency Cores (max)",
-                                  memberPrefixes: ["Te"], isOverview: false),
+                                  groups: [.cpuEfficiencyCore], isOverview: false),
         SensorAggregateDefinition(id: ID.gpu, name: "GPU (max)",
-                                  memberPrefixes: ["Tg"], isOverview: true),
+                                  groups: [.gpu], isOverview: true),
     ]
 
     /// Every aggregate id with its name (used by `SensorCatalog.displayName(for:)`).
@@ -101,23 +113,33 @@ public enum SensorAggregator {
 
     /// The aggregate readings for `readings` (aggregate inputs are ignored), in
     /// `definitions` order. Aggregates without a finite member are omitted.
+    /// One pass over `readings`, no intermediate arrays.
     public static func aggregates(of readings: [SensorReading],
                                   definitions: [SensorAggregateDefinition]) -> [SensorReading] {
-        definitions.compactMap { definition in
-            let values = readings
-                .filter { definition.contains($0.id) && $0.temperature.isFinite }
-                .map(\.temperature)
-            guard let maximum = values.max() else { return nil }
+        guard !definitions.isEmpty else { return [] }
+        var maxima = [Double](repeating: -.infinity, count: definitions.count)
+        var found = [Bool](repeating: false, count: definitions.count)
+        for reading in readings where reading.temperature.isFinite && !isAggregate(reading.id) {
+            for index in definitions.indices where definitions[index].hasMemberPrefix(reading.id) {
+                found[index] = true
+                maxima[index] = Swift.max(maxima[index], reading.temperature)
+            }
+        }
+        return definitions.indices.compactMap { index in
+            guard found[index] else { return nil }
+            let definition = definitions[index]
             return SensorReading(id: definition.id, name: definition.name,
-                                 temperature: maximum, sensorType: .greatest)
+                                 temperature: maxima[index], sensorType: .greatest)
         }
     }
 
-    /// `readings` with any previous aggregates removed and fresh ones appended.
+    /// `readings` with any previous aggregates removed and fresh ones appended
+    /// (no copy of `readings` when it holds no aggregate, the per-poll case).
     public static func appendingAggregates(to readings: [SensorReading],
                                            definitions: [SensorAggregateDefinition]) -> [SensorReading] {
-        let base = readings.filter { !isAggregate($0.id) }
-        return base + aggregates(of: base, definitions: definitions)
+        var result = readings.contains(where: \.isAggregate) ? readings.filter { !$0.isAggregate } : readings
+        result.append(contentsOf: aggregates(of: result, definitions: definitions))
+        return result
     }
 
     /// An at-a-glance subset of `readings`: the overview aggregates present in

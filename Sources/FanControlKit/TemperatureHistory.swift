@@ -9,7 +9,12 @@ import FanControlCore
 /// filtered readings of `FanControlManager.sensorReadings` (not smoothed).
 ///
 /// `FanControlManager.temperatureHistory` records `defaultKeys` plus the keys requested
-/// with `FanControlManager.setTemperatureHistoryKeys(_:for:)` on every published poll.
+/// with `FanControlManager.setTemperatureHistoryKeys(_:for:)` on every published poll
+/// (the last step of the read path: discovery → read → filter → aggregate → history).
+///
+/// Samples of a key are kept in date order (an older sample than the key's latest is
+/// dropped), so windowed queries binary-search the start of the window instead of
+/// scanning, and `range`/`minimum`/`maximum` do not copy the samples.
 public struct TemperatureHistory: Hashable, Sendable {
 
     /// One sample.
@@ -28,9 +33,12 @@ public struct TemperatureHistory: Hashable, Sendable {
     public static let defaultKeys: [String] = [SensorAggregator.ID.cpu, SensorAggregator.ID.gpu, "TH0x"]
     /// 34 min at a 2 s poll.
     public static let defaultCapacityPerKey = 1024
+    /// Default `maximumKeys`.
     public static let defaultMaximumKeys = 32
 
+    /// Samples kept per key (at least 1); the oldest is overwritten when full.
     public let capacityPerKey: Int
+    /// Keys kept (at least 1); samples of further keys are ignored.
     public let maximumKeys: Int
     private var buffers: [String: Ring] = [:]
 
@@ -54,8 +62,9 @@ public struct TemperatureHistory: Hashable, Sendable {
         buffers[key]?.append(Sample(date: date, temperature: temperature))
     }
 
-    /// Appends the readings of `sensors` whose id is in `keys`.
+    /// Appends the readings of `sensors` whose id is in `keys` (a poll's batch).
     public mutating func record(_ sensors: [SensorReading], keys: Set<String>, at date: Date) {
+        guard !keys.isEmpty else { return }
         for reading in sensors where keys.contains(reading.id) {
             append(reading.temperature, for: reading.id, at: date)
         }
@@ -65,10 +74,8 @@ public struct TemperatureHistory: Hashable, Sendable {
     /// `window` seconds before `now`.
     public func history(for key: String, window: TimeInterval? = nil, now: Date = Date()) -> [Sample] {
         guard let ring = buffers[key] else { return [] }
-        let all = ring.ordered()
-        guard let window else { return all }
-        let cutoff = now.addingTimeInterval(-window)
-        return all.filter { $0.date >= cutoff }
+        let first = window.map { ring.firstIndex(notBefore: now.addingTimeInterval(-$0)) } ?? 0
+        return (first..<ring.count).map { ring[$0] }
     }
 
     /// The latest sample of `key`.
@@ -76,8 +83,16 @@ public struct TemperatureHistory: Hashable, Sendable {
 
     /// Lowest and highest temperature of `key` in `history(for:window:now:)`.
     public func range(for key: String, window: TimeInterval? = nil, now: Date = Date()) -> ClosedRange<Double>? {
-        let temperatures = history(for: key, window: window, now: now).map(\.temperature)
-        guard let low = temperatures.min(), let high = temperatures.max() else { return nil }
+        guard let ring = buffers[key] else { return nil }
+        let first = window.map { ring.firstIndex(notBefore: now.addingTimeInterval(-$0)) } ?? 0
+        guard first < ring.count else { return nil }
+        var low = Double.infinity
+        var high = -Double.infinity
+        for index in first..<ring.count {
+            let temperature = ring[index].temperature
+            low = Swift.min(low, temperature)
+            high = Swift.max(high, temperature)
+        }
         return low...high
     }
 
@@ -99,7 +114,8 @@ public struct TemperatureHistory: Hashable, Sendable {
     /// Drops everything.
     public mutating func removeAll() { buffers = [:] }
 
-    /// Fixed-capacity ring buffer.
+    /// Fixed-capacity ring buffer of date-ordered samples. Logical index 0 is the
+    /// oldest sample.
     private struct Ring: Hashable, Sendable {
         let capacity: Int
         var storage: [Sample] = []
@@ -111,11 +127,18 @@ public struct TemperatureHistory: Hashable, Sendable {
             storage.reserveCapacity(min(capacity, 64))
         }
 
-        var last: Sample? {
-            guard !storage.isEmpty else { return nil }
-            return storage.count < capacity ? storage.last : storage[(head + capacity - 1) % capacity]
+        var count: Int { storage.count }
+
+        /// The sample at logical `index` (0 = oldest).
+        subscript(index: Int) -> Sample {
+            storage.count < capacity ? storage[index] : storage[(head + index) % capacity]
         }
 
+        var last: Sample? {
+            storage.isEmpty ? nil : self[storage.count - 1]
+        }
+
+        /// Appends `sample` unless it is older than the latest one (keeps the order).
         mutating func append(_ sample: Sample) {
             if let last, sample.date < last.date { return }
             if storage.count < capacity {
@@ -126,8 +149,15 @@ public struct TemperatureHistory: Hashable, Sendable {
             }
         }
 
-        func ordered() -> [Sample] {
-            storage.count < capacity ? storage : Array(storage[head...] + storage[..<head])
+        /// Logical index of the first sample with `date >= cutoff` (`count` if none).
+        func firstIndex(notBefore cutoff: Date) -> Int {
+            var low = 0
+            var high = count
+            while low < high {
+                let mid = (low + high) / 2
+                if self[mid].date < cutoff { low = mid + 1 } else { high = mid }
+            }
+            return low
         }
     }
 }

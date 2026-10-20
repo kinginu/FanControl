@@ -6,14 +6,16 @@ import FanControlCore
 /// Motivation: across a sleep the SMC resets `F<n>Tg` to 0 but keeps `F<n>Md` = 1
 /// (`docs/verification/first-write-2026-10-20.md` テスト 4), so a fan can sit in
 /// manual mode at target 0 (stopped) while the throttle baseline (`appliedTargets`)
-/// still says "applied". A fan reported here is added to the manager's
-/// `unsettledFans`, so the next poll writes its planned state regardless of the
-/// throttle (`FanControlManager.changedTargetsOnQueue`).
+/// still says "applied". A fan reported here is added to the poller's
+/// `unsettledFans` (`FanControlPoller.flagUnsettledFans`, skipped while the system
+/// sleeps), so the same poll writes its planned state regardless of the throttle
+/// (`FanControlPoller.changedTargets`).
 enum UnsettledFanDetector {
 
     /// A manual fan whose `F<n>Tg` differs from the applied target by more than
-    /// this (RPM) is unsettled. Larger than `FanControlManager.writeThresholdRPM`
-    /// rounding, small enough to catch a reset.
+    /// this (RPM) is unsettled; also the margin below `F<n>Mn` for rule 1. Larger
+    /// than `FanControlManager.writeThresholdRPM` and the float rounding of
+    /// `F<n>Tg`, small enough to catch a reset.
     static let targetToleranceRPM = 50
 
     /// What the poll read for one fan.
