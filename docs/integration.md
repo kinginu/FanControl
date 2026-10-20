@@ -267,6 +267,11 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 - [ ] 後片付け: `sudo ./uninstall.sh` → `launchctl print` でサービスが消え、状態表示が「未インストール」に戻る。
 
 ### Phase 4: 書き込み・プロファイル
+
+**初回書込（2026-10-20、HelperSmokeApp + 手動インストールモード、Mac14,9）**: Fan 1 を固定 3000 RPM にして戻すまでを実施し成功。`F0Md`=1 → `F0Tg`=3000 で current が約 3 秒で 3000 に追随、`F0Md`=0 だけで target が SMC の値に即座に戻り current も数秒で収束した。記録: [`verification/first-write-2026-10-20.md`](verification/first-write-2026-10-20.md)。以下のチェックリストはこの結果を反映している。
+
+- [x] （HelperSmokeApp）固定 3000 RPM の書込で `F0Md`=1、`F0Tg`=3000、`F0Ac` が追随する。Fan 2 は影響なし。
+- [x] （HelperSmokeApp）「自動制御に戻す」で `F0Md`=0 → SMC 制御に戻る（`Tg` の書き戻し不要）。セッション無しで押しても何も書かない。
 > **最初の書込の前に** `docs/verification/pre-write-review-2026-10-20.md` の「初回書込の手順」に従う
 > （別ターミナルで `swift run fanfi-probe --watch 1` を流し、逃げ道 `F<n>Md` = 0 を先に確認する）。
 - [ ] 最初は「固定 3000 RPM」程度の 1 ファン（`F0`）だけで、`F0Md`=1 → `F0Tg`=3000 の順に書かれ、`F0Ac` が数秒で目標付近に追従すること。
