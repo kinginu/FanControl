@@ -5,12 +5,16 @@ import Foundation
 /// The identifiers (Mach service, helper / client identifiers, Team ID) are **not**
 /// hard-coded: they are read once from `Bundle.main.infoDictionary` through
 /// `FanControlIdentifiers` (app: its Info.plist; helper: its embedded
-/// `__TEXT,__info_plist`), falling back to the DynamicNotch defaults. The accessors
-/// below keep the old names so call sites do not change. docs/helper.md
+/// `__TEXT,__info_plist`), falling back to the DynamicNotch defaults. docs/helper.md
 /// "Configuring identifiers".
 ///
-/// This file is intentionally platform-neutral so that the allowlist logic can be
-/// unit-tested on any platform.
+/// Both install paths (SMAppService and manual install) use the same identifiers,
+/// launchd label and Mach service; they differ only in how each side pins the
+/// other's signature (`SigningPin`, `CodeSigningRequirement`). The manual-install
+/// members live in `ManualInstallMode.swift`.
+///
+/// Platform-neutral so that the allowlist and requirement logic is unit-tested on
+/// any platform.
 public enum FanControlHelperConstants {
     /// Identifiers resolved from this process's Info.plist (read once, on first use).
     public static let identifiers = FanControlIdentifiers(bundle: .main)
@@ -25,8 +29,11 @@ public enum FanControlHelperConstants {
     public static var plistName: String { "\(launchdLabel).plist" }
     /// Executable name inside `<App>.app/Contents/MacOS/`.
     public static let helperExecutableName = "FanControlHelper"
-    /// Bump whenever `FanControlHelperProtocol` changes incompatibly. The app compares
-    /// this with the value returned by `version(reply:)` and re-registers the helper on mismatch.
+    /// Version of the XPC contract (`FanControlHelperProtocol` selectors and argument
+    /// types, `FanControlHelperErrorCode` raw values, write allowlist semantics).
+    /// The app compares it with the value returned by `version(reply:)` and
+    /// re-registers (SMAppService) or asks for `install.sh` to be re-run (manual
+    /// install) on mismatch. History and bump rules: `FanControlHelperProtocol`.
     public static let protocolVersion = 1
     /// Bundle identifier of the only client allowed to connect
     /// (Info.plist `FanControlClientBundleIdentifier`).
@@ -41,18 +48,27 @@ public enum FanControlHelperConstants {
     /// of the Xcode helper target, Info.plist `FanControlHelperIdentifier`).
     public static var helperIdentifier: String { identifiers.helperIdentifier }
 
-    /// Code-signing requirement the **helper** must satisfy; the app sets it on its
-    /// client connection (`NSXPCConnection.setCodeSigningRequirement`) so it only
-    /// talks to our own helper. `teamID` is `FanControlManager.clientTeamID`.
+    /// Team-ID requirement the **helper** must satisfy (SMAppService path). The app sets
+    /// it on its client connection (`NSXPCConnection.setCodeSigningRequirement`) so it
+    /// only talks to our own helper. `teamID` is `FanControlManager.clientTeamID`.
+    ///
+    /// `CodeSigningRequirement.teamPinned(identifier:teamID:)`; an invalid Team ID or
+    /// identifier yields `CodeSigningRequirement.never` (rejects every helper) instead
+    /// of a requirement with attacker-chosen text in it. Manual-install counterpart:
+    /// `manualModeHelperRequirement(cdhash:)`.
     public static func helperCodeSigningRequirement(teamID: String,
                                                     helperIdentifier: String = FanControlHelperConstants.helperIdentifier) -> String {
-        "anchor apple generic and identifier \"\(helperIdentifier)\" and certificate leaf[subject.OU] = \"\(teamID)\""
+        CodeSigningRequirement.teamPinned(identifier: helperIdentifier, teamID: teamID) ?? CodeSigningRequirement.never
     }
 
-    /// Code-signing requirement a client must satisfy to talk to the helper.
+    /// Team-ID requirement a **client** must satisfy to talk to the helper (SMAppService
+    /// path; the helper's default when `FANCONTROL_CLIENT_REQUIREMENT` is absent).
+    ///
+    /// Fails closed like `helperCodeSigningRequirement(teamID:helperIdentifier:)`.
+    /// Manual-install counterpart: `manualModeClientRequirement(cdhash:)`.
     public static func clientCodeSigningRequirement(teamID: String,
                                                     clientBundleIdentifier: String = FanControlHelperConstants.appBundleIdentifier) -> String {
-        "anchor apple generic and identifier \"\(clientBundleIdentifier)\" and certificate leaf[subject.OU] = \"\(teamID)\""
+        CodeSigningRequirement.teamPinned(identifier: clientBundleIdentifier, teamID: teamID) ?? CodeSigningRequirement.never
     }
 
     /// Regular expressions (anchored) for SMC keys the helper is willing to write.
@@ -75,6 +91,9 @@ public enum FanControlHelperConstants {
 
     /// Returns `true` if `key` is exactly 4 ASCII characters and matches one of
     /// `allowedWriteKeyPatterns`.
+    ///
+    /// The length check comes first on purpose: `$` in `NSRegularExpression` also
+    /// matches before a trailing newline, so `"F0Tg\n"` must be refused by length.
     public static func isWriteAllowed(key: String) -> Bool {
         guard key.utf8.count == 4, key.unicodeScalars.allSatisfy({ $0.isASCII }) else { return false }
         let range = NSRange(location: 0, length: (key as NSString).length)

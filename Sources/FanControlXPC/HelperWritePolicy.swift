@@ -163,7 +163,9 @@ public enum HelperWritePolicy {
 
     // MARK: - Helpers
 
-    /// `(fan index, two-character suffix)` for `F<digit><xx>` keys.
+    /// `(fan index, two-character suffix)` for `F<ASCII digit><xx>` keys, else `nil`.
+    /// Internal: shared with `PowerTransitionPolicy`; whether a key may be written is
+    /// decided by `FanControlHelperConstants.isWriteAllowed`, not by this parser.
     static func fanKeyParts(_ key: SMCKey) -> (fan: Int, suffix: String)? {
         let chars = Array(key.name)
         guard chars.count == 4, chars[0] == "F", let fan = chars[1].wholeNumberValue,

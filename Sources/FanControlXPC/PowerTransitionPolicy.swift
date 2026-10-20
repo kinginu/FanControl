@@ -97,7 +97,9 @@ public enum PowerTransitionPolicy {
         public var isModeOn: Bool { modeBytes?.contains { $0 != 0 } ?? false }
     }
 
+    /// `F<n>Md` / `F<n>Tg` of every fan at one instant (`snapshot(using:fanCount:)`).
     public struct Snapshot: Equatable, Sendable {
+        /// One entry per fan index read (ascending).
         public var fans: [FanState]
 
         public init(fans: [FanState]) {
@@ -133,18 +135,18 @@ public enum PowerTransitionPolicy {
             && lastWritten[.fanMode(fan)] == nil {
             controls[fan] = .targetOnly
         }
-        return controls.keys.sorted().map { fan in
+        return controls.sorted { $0.key < $1.key }.map { fan, control in
             let bytes = targets[fan]
             let rpm = bytes.flatMap { b in keyInfo(.fanTarget(fan)).flatMap { SMCCodec.decode(b, as: $0.dataType)?.doubleValue } }
-            return RememberedFan(fan: fan, control: controls[fan]!, targetBytes: rpm == nil ? nil : bytes,
+            return RememberedFan(fan: fan, control: control, targetBytes: rpm == nil ? nil : bytes,
                                  targetRPM: rpm.flatMap { $0.isFinite ? $0 : nil })
         }
     }
 
     // MARK: - Snapshot
 
-    /// Reads `F<n>Md` / `F<n>Tg` for fans `0..<fanCount`. Never throws:
-    /// unreadable values are `nil`.
+    /// Reads `F<n>Md` / `F<n>Tg` for fans `0..<fanCount` (clamped to 0...10: fan keys
+    /// have a single digit). Never throws: unreadable values are `nil`.
     public static func snapshot(using reader: SMCReader, fanCount: Int) -> Snapshot {
         var fans: [FanState] = []
         for fan in 0..<min(max(fanCount, 0), 10) {

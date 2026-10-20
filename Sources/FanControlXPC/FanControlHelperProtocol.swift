@@ -1,33 +1,91 @@
 import Foundation
 
-/// Return codes used in helper replies.
-public enum FanControlHelperErrorCode: Int, Sendable {
+/// Return codes carried as the first `Int` of every helper reply
+/// (`FanControlHelperErrorCode.rawValue`).
+///
+/// The raw values are part of the wire contract (`FanControlHelperConstants.protocolVersion`):
+/// never renumber or reuse a value; add new codes at the end. A client that receives
+/// an unknown code (`init(rawValue:)` returns `nil`) treats it as a failure.
+public enum FanControlHelperErrorCode: Int, CaseIterable, Sendable, CustomStringConvertible {
+    /// Success.
     case ok = 0
+    /// Another process owns the write session.
     case notSessionOwner = 1
+    /// A write or `closeSession` without an open session.
     case sessionNotOpen = 2
+    /// The key is not exactly 4 ASCII characters (`readKeyInfo`: or does not exist on this SMC).
     case invalidKey = 3
+    /// The key is not in the write allowlist (`FanControlHelperConstants.isWriteAllowed`).
     case keyNotAllowed = 4
+    /// The helper could not open AppleSMC.
     case smcUnavailable = 5
+    /// The SMC rejected the call, or a required value (e.g. fan limits) is unknown.
     case smcError = 6
+    /// The payload was rejected (`HelperWritePolicy.validate`: size, value, range, attribute).
     case badRequest = 7
+
+    public var description: String {
+        switch self {
+        case .ok: return "ok"
+        case .notSessionOwner: return "notSessionOwner"
+        case .sessionNotOpen: return "sessionNotOpen"
+        case .invalidKey: return "invalidKey"
+        case .keyNotAllowed: return "keyNotAllowed"
+        case .smcUnavailable: return "smcUnavailable"
+        case .smcError: return "smcError"
+        case .badRequest: return "badRequest"
+        }
+    }
 }
 
 #if os(macOS)
 
-/// XPC interface vended by FanControlHelper.
+/// XPC interface vended by FanControlHelper on `FanControlHelperConstants.machServiceName`.
 ///
-/// Every reply carries an `Int` return code (`FanControlHelperErrorCode.rawValue`)
-/// and a human-readable message. Only a single client (the session owner) may write.
+/// ## Wire contract
+///
+/// Only plain property-list types cross the connection (`Int`, `String`, `Data`,
+/// `UInt32`, `UInt8`); there are no archived / `Codable` / `NSSecureCoding` payloads,
+/// so no class allow-lists are needed on the interface and the whole contract is
+/// versioned by one number, `FanControlHelperConstants.protocolVersion`, returned
+/// by `version(reply:)`:
+///
+/// - every reply starts with an `Int` return code (`FanControlHelperErrorCode`) and
+///   ends with a human-readable message (for logs, not for parsing);
+/// - only a single client, the session owner, may write;
+/// - the helper is the safety authority: it re-validates every write
+///   (`isWriteAllowed`, `HelperWritePolicy.validate`) and restores automatic
+///   control when the owner closes the session or disappears.
+///
+/// Bump `protocolVersion` when a selector, an argument / reply type, the meaning of
+/// a return code or the allowlist semantics change. Adding a method is also a bump:
+/// an old helper would not implement it.
+///
+/// | Version | Change |
+/// |---|---|
+/// | 1 | Initial contract: `version`, `openSession`, `writeKey`, `closeSession`, `readKeyInfo`; allowlist `F<n>Tg`, `F<n>Md` |
+///
+/// The ObjC selectors (`versionWithReply:`, `openSessionWithReply:`,
+/// `writeKey:bytes:reply:`, `closeSessionWithReply:`, `readKeyInfo:reply:`) are
+/// pinned by `FanControlXPCTests` so a rename cannot slip through unversioned.
 @objc public protocol FanControlHelperProtocol {
-    /// Replies with (`FanControlHelperConstants.protocolVersion`, build string).
+    /// Replies with (`FanControlHelperConstants.protocolVersion` of the helper, build string).
+    /// Needs no session; the app calls it first on every new connection.
     func version(reply: @escaping (Int, String) -> Void)
-    /// Opens the exclusive write session for the calling process.
+    /// Opens the exclusive write session for the calling process (re-opening by the
+    /// owner, or by a new connection of the same pid, succeeds). Replies
+    /// (`FanControlHelperErrorCode`, message).
     func openSession(reply: @escaping (Int, String) -> Void)
-    /// Writes raw big-endian bytes to an allowlisted SMC key. Requires an open session.
+    /// Writes the raw SMC payload `bytes` (1…32 bytes, encoded for the key's data type
+    /// as `SMCCodec.encode` does; e.g. little-endian `flt` for `F<n>Tg` on Apple
+    /// Silicon) to an allowlisted key. Requires an open session. Replies
+    /// (`FanControlHelperErrorCode`, message).
     func writeKey(_ key: String, bytes: Data, reply: @escaping (Int, String) -> Void)
-    /// Closes the write session owned by the calling process.
+    /// Closes the write session owned by the calling process and restores automatic
+    /// control (`HelperWritePolicy.restore`). Replies (`FanControlHelperErrorCode`, message).
     func closeSession(reply: @escaping (Int, String) -> Void)
-    /// Replies with (rc, dataSize, dataType FourCC, attributes, message).
+    /// Replies with (return code, data size, data type FourCC, attribute byte, message)
+    /// of any key (read-only; needs no session).
     func readKeyInfo(_ key: String, reply: @escaping (Int, Int, UInt32, UInt8, String) -> Void)
 }
 
