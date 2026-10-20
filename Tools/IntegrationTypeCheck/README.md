@@ -1,8 +1,9 @@
 # IntegrationTypeCheck
 
-`FanControl/DynamicNotchIntegration/*.swift`（DynamicNotch アプリターゲットに追加するドロップイン SwiftUI ファイル 8 つ）を、
-実 macOS SDK（SwiftUI / AppKit）と実際のサードパーティパッケージ（[sindresorhus/Defaults](https://github.com/sindresorhus/Defaults)）に
-対して型検査するための作業用 SwiftPM パッケージ。2026-10-20 に sindresorhus/Settings への依存を撤去した（ホストの設定ウィンドウは
+`FanControl/DynamicNotchIntegration/*.swift`（DynamicNotch アプリターゲットに追加するドロップインファイル 9 つ。うち
+`FanControlSettingsStorage.swift` はアプリ全体の設定保存層 `SettingsStore`）を、実 macOS SDK（SwiftUI / AppKit）に対して型検査するための
+作業用 SwiftPM パッケージ。サードパーティ依存は無い（2026-10-20 に sindresorhus/Defaults 依存を撤去し、設定保存を
+`SettingsStore` に置換。保存形式は Defaults 8.2 と同一）。2026-10-20 に sindresorhus/Settings への依存を撤去した（ホストの設定ウィンドウは
 SwiftUI 標準の `Settings` シーン。PATCHES.md (d)）。
 DynamicNotch の実 Xcode プロジェクトが無い環境でも UI コードをコンパイルできるようにするためのもので、成果物は出荷しない。
 `FanControl/Package.swift` には含めていない（独立したパッケージ）。
@@ -15,15 +16,21 @@ swift build                      # Swift 5 言語モード
 TYPECHECK_SWIFT6=1 swift build   # この target だけ Swift 6 言語モード（strict concurrency complete）
 ```
 
-`Build complete!` で警告・エラー 0 なら合格。初回は GitHub から Defaults を取得する（ネットワークが必要）。
+`Build complete!` で警告・エラー 0 なら合格。ネットワーク不要。
+
+```
+swift test                       # FanControlSettingsCompatTests: Fan Control の設定キーが Defaults 8.2 の保存形式
+                                 # （JSON 文字列）のまま読めることを、ユーザー設定の写し（DynamicNotchApp/Tests/
+                                 # SettingsStorageTests/Fixtures）で確認。DN_SETTINGS_PLIST=<export> で別の写しを使う
+```
 Command Line Tools のみ（Xcode.app 無し）の環境で動く。
 
 ## 構成
 
 | パス | 内容 |
 |---|---|
-| `Package.swift` | ローカルパッケージ `../..`（`FanControlCore` / `FanControlKit`）、Defaults `from: 8.2.0` に依存 |
-| `Package.resolved` | 検証に使った版: **Defaults 8.2.0**（2026-10-19 時点の最新安定版。Defaults 9 は beta のみ） |
+| `Package.swift` | ローカルパッケージ `../..`（`FanControlCore` / `FanControlKit`）のみに依存（リモート依存なし。`Package.resolved` も無い） |
+| `Tests/FanControlSettingsCompatTests/` | 設定保存の互換性テスト（上記） |
 | `Sources/IntegrationTypeCheck/FanControl*.swift` | `../../../../DynamicNotchIntegration/*.swift` への **シンボリックリンク**（SwiftPM はリンク先をそのままコンパイルする）。ソースは複製しない |
 | `Sources/IntegrationTypeCheck/DynamicNotchStubs.swift` | DynamicNotch 側シンボルのスタブと、`PATCHES.md` の断片の書き写し（下記） |
 
@@ -36,7 +43,7 @@ for f in ../../../../DynamicNotchIntegration/*.swift; do ln -sf "$f" .; done
 
 ## スタブしているもの
 
-8 つのドロップインファイル自体は DynamicNotch 側のシンボルを（コメント以外で）参照しないため、スタブ無しでコンパイルできる。
+ドロップインファイル自体は DynamicNotch 側のシンボルを（コメント以外で）参照しないため、スタブ無しでコンパイルできる。
 `DynamicNotchStubs.swift` は `PATCHES.md` の断片を型検査するために、次を ホストアプリでの使い方に倣って最小限で宣言している:
 
 - `Preferences` / `WidgetPrefs` プロトコル（要件は資料に無いため、共通の準拠と `gridSizeType` のみ）

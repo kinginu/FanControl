@@ -363,7 +363,7 @@ still open): the session stays closed until the user acts.
 `ProfileStore` (the fixed six profiles, additional programmatic profiles and `activeProfileID`,
 `schemaVersion` 2) is stored as JSON (`ProfileStore.encodeJSON`) in `UserDefaults` under
 **`fanControl.profileStore`** (`FanControlManager.profileStoreDefaultsKey`) on every change. The
-real app may swap this for a sindresorhus `Defaults` key with the same name. See "Profiles" below.
+(Not a `SettingsStore` key: the kit owns this one and writes it as JSON *Data*.) See "Profiles" below.
 `pollingInterval`, `slowPollingOnBattery`, `batteryPollingInterval`, `reapplyProfileAfterWake` and
 `safetyPolicy` are not persisted by the kit; the app's settings layer owns them
 (`FanControlGeneralSettings.slowPollingOnBattery`, default `true`, decoded with `decodeIfPresent`
@@ -426,12 +426,12 @@ override (`SafetyPolicy`) still forces every fan to max when hot, whatever the p
 
 ## Settings owned by the app
 
-The kit does not depend on sindresorhus `Defaults`. The app copies its settings into these
+The kit does not depend on the app's settings store (`SettingsStore`, drop-in `FanControlSettingsStorage.swift`; sindresorhus `Defaults` until 2026-10-20). The app copies its settings into these
 settable properties (main thread), at launch before `startMonitoring()` and on every change. In
 the DynamicNotch drop-in UI this is `FanControlAlertCoordinator.syncManagerSettings()`, driven by
-`Defaults.updates(.fanControlGeneralSettings)` and `Defaults.updates(.fanControlThresholdSettings)`.
+`SettingsStore.updates(.fanControlGeneralSettings)` and `SettingsStore.updates(.fanControlThresholdSettings)`.
 
-The temperature thresholds have their own Defaults key, **`fanControlThresholdSettings`**
+The temperature thresholds have their own settings key, **`fanControlThresholdSettings`**
 (`FanControlThresholdSettings` in `FanControlGeneralTabView.swift`, not part of
 `FanControlGeneralSettings`): `highTemperatureAlert` 90, `emergencyTemperature` 95,
 `alertHysteresis` 5 (°C; missing keys decode to these). The General tab edits them with three

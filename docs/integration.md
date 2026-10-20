@@ -22,7 +22,8 @@ arm64 でない Mac ではアプリが `FanControlError.unsupportedPlatform` で
 
 | ファイル | 内容 |
 |---|---|
-| `FanControlWidgetSettings.swift` | `FanControlWidgetSettings` / `FanControlGeneralSettings`（Defaults 永続化）、`Defaults.Keys`、表示用フォーマッタ |
+| `FanControlSettingsStorage.swift` | アプリ全体の設定保存層（2026-10-20、sindresorhus/Defaults を置換。保存形式は Defaults 8.2 と同一）: キー名 `SettingKey`、型付きキー `StoredKeys`/`StoredKey<T>`、`SettingsStore`（`SettingsStore[.x]`、`updates(.x)`）、プロパティラッパー `@StoredSetting(.x)` |
+| `FanControlWidgetSettings.swift` | `FanControlWidgetSettings` / `FanControlGeneralSettings`（`SettingsStore` で永続化）、`StoredKeys` のキー、表示用フォーマッタ |
 | `FanControlWidgetSettingsView.swift` | 設定 ▸ ウィジェット ▸ Fan Control（グリッドサイズ、表示ファン/センサー、°C/°F、プロファイル選択・目標 RPM 表示） |
 | `FanControlSettingsView.swift` | 「Fan Control」設定ペイン（TabView: 一般/プロファイル/センサー＋エラーフッタ）。**全タブ共通の固定サイズ `contentSize` = 740×600 pt**（DynamicNotchApp ではホストが 760×640 の固定フレームで包む）（タブ切替でウィンドウが伸縮しない。伸びうる中身はスクロール） |
 | `FanControlGeneralTabView.swift` | 有効化、更新間隔、自動開始、非表示時停止、スリープ復帰再適用、警告、ヘルパー状態/インストール、自動制御復帰、SMC ダンプ書き出し |
@@ -37,7 +38,7 @@ arm64 でない Mac ではアプリが `FanControlError.unsupportedPlatform` で
    リポジトリ内に置く場合は `$(SRCROOT)/FanControl` を推奨（以降のパスはこの前提）。
 2. DynamicNotch アプリターゲットの **General ▸ Frameworks, Libraries, and Embedded Content** に
    `FanControlCore` と `FanControlKit` を追加する（`FanControlSMC` / `FanControlXPC` は Kit 経由で推移的にリンクされる）。
-3. DynamicNotch は既に sindresorhus の `Defaults` を使っているので、追加の依存は不要（設定ウィンドウは SwiftUI 標準の
+3. 設定保存はドロップイン `FanControlSettingsStorage.swift`（`SettingsStore`）で、追加の依存は不要（2026-10-20 に sindresorhus/Defaults を撤去）（設定ウィンドウは SwiftUI 標準の
    `Settings` シーン。DynamicNotchApp は 2026-10-20 に sindresorhus/Settings を撤去した。§5）。
 
 ## 2. ヘルパーターゲット
@@ -152,8 +153,8 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
 
 ## 5. UI ファイルとパッチ
 
-1. `FanControl/DynamicNotchIntegration/*.swift`（8 ファイル）を DynamicNotch アプリターゲットに追加する。
-   各ファイルは `#if os(macOS)` で囲まれ、`SwiftUI` / `Defaults` / `FanControlCore` / `FanControlKit` を import する
+1. `FanControl/DynamicNotchIntegration/*.swift`（9 ファイル。`FanControlSettingsStorage.swift` はアプリ全体の設定保存層）を DynamicNotch アプリターゲットに追加する。
+   各ファイルは `#if os(macOS)` で囲まれ、`SwiftUI` / `FanControlCore` / `FanControlKit` を import する（2026-10-20 まで `Defaults` も）
    （sindresorhus/Settings には依存しない。設定画面は標準の `Form` + `.formStyle(.grouped)`）。
    ホストの設定ウィンドウは SwiftUI 標準の `Settings` シーン + `TabView` を前提とし、Fan Control はそのタブの 1 つとして追加する（PATCHES.md (d)）。
    **履歴（2026-10-20 まで）:** sindresorhus/Settings を使っていた頃は、`import Settings` と `import SwiftUI` を同じファイルで使うと
@@ -173,7 +174,7 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
    `FanControlWidgetSettings` に `init()`（`Preferences` が `init()` を要求し、全引数既定値の init では満たせない。PATCHES.md (a)）、
    XcodeGen ではローカルパッケージ参照に `group:` を付けないと `../FanControl` のソースグループと衝突してドロップインがターゲットから落ちる
    （`DynamicNotchApp/project.yml`）。
-   8 ファイルと PATCHES.md の断片は `Tools/IntegrationTypeCheck`（実 SDK + Defaults 8.2.0、DynamicNotch 側はスタブ。
+   ドロップインと PATCHES.md の断片は `Tools/IntegrationTypeCheck`（実 SDK、2026-10-20 まで Defaults 8.2.0 も、DynamicNotch 側はスタブ。
    2026-10-20 まで Settings 3.1.2 にも依存）で警告・エラー 0 を確認済み（§7）。実プロジェクトで出る差分はスタブと実ソースの違いに起因する。
 
 ## 6. Mac での検証チェックリスト（Phase 1 → 5）
@@ -381,7 +382,7 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       次のポーリング（設定変更時に即時 1 回ポーリング）でウィジェットが赤表示・Live Activity「高温」になり、「ヒステリシス」分下回るまで解除されない。
       書込セッション中に「緊急（全ファン最大）」を現在温度以下（最小 71 °C）にすると全ファンが最大に強制され、戻すと（ヒステリシス分下がっていれば）プロファイル目標に戻る。
       「既定値に戻す」で 90 / 95 / 5 °C に戻り、ボタンが無効化される。ステッパー: 警告 70〜100、緊急（警告 + 1）〜105（警告を上げると緊急が押し上げられ、緊急を下げると警告が引き下げられる）、
-      ヒステリシス 1〜10。値は Defaults キー `fanControlThresholdSettings` に保存され、再起動後も維持される（`defaults read <bundle id> fanControlThresholdSettings`）。
+      ヒステリシス 1〜10。値は設定キー `fanControlThresholdSettings`（`SettingsStore`、JSON 文字列）に保存され、再起動後も維持される（`defaults read <bundle id> fanControlThresholdSettings`）。
       `emergencySensorPrefixes` は変わらない（UI なし）。
 - [ ] **センサー名のローカライズ**（§5.7、2026-10-20 実装）: 日本語環境で設定 ▸ Fan Control ▸ センサーの「名前」列が「CPU 高性能コア 09」「GPU 0f」「バッテリー 1」「NAND（SSD）」
       「センサー Tz11」のように表示され、「キー」列に SMC キーがそのまま残る。英語環境では従来と同じ名前（`SensorCatalog.displayName(for:)`）。
@@ -429,7 +430,7 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 - **新しい Apple Silicon の `Ftst` キー**（§5.7, helper.md §4）: 一部機種では `F<n>Md` だけでは目標値が効かず `Ftst` アンロックが必要との報告がある。現状ヘルパーの書込許可リスト外（2026-10-20 のレビューで `F<n>Mn` も許可リストから外した）。Phase 4 で実機確認後に追加を判断。
   Mac14,9（M2 Pro）/ macOS 26 には `Ftst` キー自体が存在しない（読取で keyNotFound、§6 Phase 1）。この機種では許可リストに足しても書けない。
 - **温度閾値**（§5.6）: 警告 90°C（ヒステリシス 5°C）、強制最大 95°C は暫定の既定値。**設定 UI は実装済み（2026-10-20）**: 一般タブ「温度しきい値」の
-  ステッパー 3 つと「既定値に戻す」（`FanControlThresholdSettings`、Defaults キー `fanControlThresholdSettings`。範囲は `ThresholdBounds`: 警告 70〜100、
+  ステッパー 3 つと「既定値に戻す」（`FanControlThresholdSettings`、設定キー `fanControlThresholdSettings`。範囲は `ThresholdBounds`: 警告 70〜100、
   緊急（警告 + 1）〜105、ヒステリシス 1〜10 °C）。`FanControlAlertCoordinator.syncManagerSettings()` が `FanControlManager.applySafetyThresholds(_:)` で
   `safetyPolicy` に反映（接頭辞と `enforceHardwareMinimum` は変えない）。残り: 既定値の機種別妥当性、警告と緊急で別々のヒステリシスが要るか、°F 表示時もステッパーは °C のまま（要判断）、実機確認（§6 Phase 5）。
   対象センサー接頭辞は実装済み: `Tp/Te/TC/Tg`（`SafetyPolicy.defaultEmergencySensorPrefixes`。Mac14,9 では `TG*` は GPU ではなく 33 °C 前後の `ioft` キー。

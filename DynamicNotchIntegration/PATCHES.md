@@ -8,10 +8,15 @@
 前提: 変更する各ファイルの先頭に必要に応じて次を追加する。
 
 ```swift
-import Defaults
 import FanControlCore
 import FanControlKit
 ```
+
+設定の保存はドロップイン `FanControlSettingsStorage.swift`（`SettingsStore`、2026-10-20 に sindresorhus/Defaults から置換。
+保存形式は Defaults と同一でキー名も不変）を使う。import は不要（同じアプリモジュール）。対応:
+`Defaults[.x]` → `SettingsStore[.x]`、`@Default(.x)` → `@StoredSetting(.x)`、`Defaults.updates(.x)` → `SettingsStore.updates(.x)`、
+`extension Defaults.Keys { static let x = Key<T>("x", …) }` → `extension StoredKeys { static let x = Key<T>(SettingKey.x, …) }`、
+`Defaults.Serializable`（Codable 構造体）→ `CodableStoredValue`。
 
 ---
 
@@ -42,14 +47,14 @@ enum NookWidget: … {
         // …
         case .fanControl:
             // 2x1 = .medium (100 pt) / 2w×1h = .doubleWide (250 pt)
-            return Defaults[.fanControlWidgetSettings].gridSize == .doubleWide ? .doubleWide : .medium
+            return SettingsStore[.fanControlWidgetSettings].gridSize == .doubleWide ? .doubleWide : .medium
         }
     }
 
     var prefs: WidgetPrefs {
         switch self {
         // …
-        case .fanControl: return Defaults[.fanControlWidgetSettings]
+        case .fanControl: return SettingsStore[.fanControlWidgetSettings]
         }
     }
 
@@ -91,7 +96,7 @@ case .fanControl: FanControlWidgetView()
 ```
 
 `RootView` が各ウィジェット設定を `.environment(\.xxxWidgetSettings, …)` で配っているが、Fan Control の View は
-`@Default(.fanControlWidgetSettings)` を直接読むので environment キーの追加は不要。
+`@StoredSetting(.fanControlWidgetSettings)` を直接読むので environment キーの追加は不要。
 
 ### (b-2) Nook の表示／非表示 → 監視の一時停止（「Nook 非表示中は一時停止」、2026-10-20 追加）
 
@@ -197,7 +202,7 @@ func applicationDidFinishLaunching(_ notification: Notification) {
     // （アプリがヘルパーの署名に要求する Team ID。docs/integration.md §4。アドホック署名の手動インストール
     // （個人利用）モードでは使われず、インストール済みヘルパーの cdhash が要件になる。docs/helper.md §6）:
     // FanControlManager.shared.clientTeamID = "<TeamID>"
-    let fanSettings = Defaults[.fanControlGeneralSettings]
+    let fanSettings = SettingsStore[.fanControlGeneralSettings]
     if fanSettings.isEnabled && fanSettings.autoStartMonitoring {
         FanControlManager.shared.startMonitoring()
     }
@@ -254,5 +259,5 @@ Live Activity 設定（`LiveActivitiesSettings` の有効/無効リスト）で�
 同様に、スリープ復帰時の再適用も `FanControlManager` が行う（復帰 5 秒後、セッション中のみ。セッションを新たに開くことはない。
 設定 OFF の場合は再適用せずセッションを閉じる）。アプリ側は
 「スリープ解除後にプロファイルを再適用」設定を `FanControlManager.reapplyProfileAfterWake` に同期するだけでよく、
-これは (e) で生成する `FanControlAlertCoordinator` が起動時と設定変更時（`Defaults.updates`）に自動で行う
+これは (e) で生成する `FanControlAlertCoordinator` が起動時と設定変更時（`SettingsStore.updates`）に自動で行う
 （同時に「いずれかの警告が ON」を `FanControlManager.keepAlertsWhilePaused` に同期し、Nook 非表示中も警告用の低頻度ポーリングを続ける）。
