@@ -233,9 +233,10 @@ enum FanControlFormatting {
     /// Display name for a reading: aggregate names ("CPU (max)", …, our own
     /// labels) go through Localizable.strings; SMC sensor names from
     /// `SensorCatalog` stay verbatim (community-sourced, not localized).
+    /// Localized display name for any sensor (aggregates and catalog names alike;
+    /// see `FanControlSensorNames` in FanControlSensorsTabView.swift).
     static func sensorName(_ sensor: SensorReading) -> String {
-        guard sensor.isAggregate else { return sensor.name }
-        return NSLocalizedString(sensor.name, comment: "Aggregate sensor name")
+        FanControlSensorNames.localized(sensor)
     }
 
     /// `readings` with the aggregates moved to the front (each part keeps its order).
