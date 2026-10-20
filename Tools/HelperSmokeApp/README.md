@@ -11,7 +11,7 @@
 アプリは Copy Files でヘルパーを `Contents/MacOS/`、`../../Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` を
 `Contents/Library/LaunchDaemons/` に入れる。bundle ID は DynamicNotch と同じ `com.example.dynamicnotch.DynamicNotch`
 （`FanControlHelperConstants.appBundleIdentifier` と launchd plist の `AssociatedBundleIdentifiers` に合わせるため）。
-macOS 14.0 以上、Swift 5 言語モード、App Sandbox なし、Hardened Runtime あり。
+macOS 26.0 以上、Swift 6 言語モード、App Sandbox なし、Hardened Runtime あり。
 
 ## 生成とビルド
 
@@ -67,7 +67,7 @@ codesign --verify --deep --strict -v "$APP"
 1. Team ID 付きでビルドした `FanControlSmoke.app` を `/Applications` にコピーして起動（`SMAppService` はバンドルの場所を見るため、
    DerivedData からではなく固定の場所から起動する）。メニューバーの扇アイコン ▸ Show Window。
 2. 表示: `HelperInstaller.status()` が `notRegistered`。plist の配置・名前が誤っていれば `notFound`。
-3. 「Install helper」→ `requiresApproval` になり、システム設定 ▸ 一般 ▸ ログイン項目と機能拡張（macOS 15+）/ ログイン項目（macOS 14）が開く。
+3. 「Install helper」→ `requiresApproval` になり、システム設定 ▸ 一般 ▸ ログイン項目と機能拡張が開く。
    アプリ名で表示される項目を許可 →「Refresh status」で `enabled`。
 4. 端末で確認:
    ```sh
