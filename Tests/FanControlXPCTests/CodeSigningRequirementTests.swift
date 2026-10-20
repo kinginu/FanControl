@@ -178,11 +178,11 @@ struct CodeSigningRequirementTests {
     #endif
 }
 
-/// The XPC wire contract (`FanControlHelperProtocol`, protocol version 1).
+/// The XPC wire contract (`FanControlHelperProtocol`, protocol version 2; F1: charge limit).
 struct HelperWireContractTests {
     @Test func protocolVersion() {
         // Bumping it requires updating the history table in FanControlHelperProtocol.swift.
-        #expect(C.protocolVersion == 1)
+        #expect(C.protocolVersion == 2)  // F1: v2 adds setChargeLimitEnabled
     }
 
     @Test func errorCodeRawValuesAreStable() {
