@@ -466,6 +466,14 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
         }
         return SMCKeyInfo(dataSize: size, dataType: SMCDataType(fourCC: type), attributes: attributes)
     }
+
+    // F2: Low Power Mode (protocol version 2, docs/helper.md "Low Power Mode request").
+    /// Asks the helper to run `pmset -a lowpowermode 0|1` (fixed argv). Needs no session.
+    /// Throws `.helperRejected` with `FanControlHelperErrorCode.commandFailed` /
+    /// `.rateLimited` when the helper refuses or pmset fails.
+    public func setLowPowerMode(_ enabled: Bool) async throws {
+        _ = try await callStatus { helper, reply in helper.setLowPowerMode(enabled, reply: reply) }
+    }
 }
 
 /// Transport-level failure of one call, classified for `HelperConnectionGate`
