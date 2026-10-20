@@ -72,10 +72,15 @@ extension FanControlWidgetSettings: Preferences, WidgetPrefs {
 
 `FanControlWidgetSettings.GridSizeChoice` の rawValue（medium = 2, doubleWide = 5）は `NookGridSizeType` と一致させてある。
 
+`Preferences` が `init()` を要求する場合（`DynamicNotchApp/` の `Preferences` はそう）、`FanControlWidgetSettings` の
+全引数既定値付き `init(gridSize:…)` ではその要件を満たさないので、同じ拡張に `init() { self.init(gridSize: .medium) }` を足す
+（2026-10-20、`DynamicNotchApp/Sources/NookWidget.swift` で実施）。
+
 ## (b) Nook グリッドのウィジェット → View 振り分け
 
 参照ソースでは振り分け箇所を特定できていない（`TimerWidgetView()` / `MediaPlayerWidgetView()` を返している
-switch を検索すること）。そこに 1 行追加する:
+switch を検索すること）。`DynamicNotchApp/` では振り分けが無かったので
+`Sources/Support/NookWidgetGrid.swift` の `NookWidgetContentView` として新設し、そこに追加した。1 行追加する:
 
 ```swift
 switch widget {
@@ -209,6 +214,8 @@ case .fanAlert:
     FanControlAlertView(part: .trailing)
     // 片側だけの場所では FanControlAlertView()
 ```
+
+`DynamicNotchApp/` では `LiveActivityView` を生成する箇所自体が未実装のため、(f) は適用済みだが表示は未確認（2026-10-20）。
 
 一時的な展開（バッテリー低下と同じ演出）を使う場合は、`"DynamicNotchBatteryLowTransient"` を購読している箇所に
 `FanControlAlertCoordinator.transientNotificationName`（= `"DynamicNotchFanAlertTransient"`）の購読を並べる。

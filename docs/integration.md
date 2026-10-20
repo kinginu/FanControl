@@ -166,7 +166,11 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
    `ja.lproj/Localizable.strings`（ソース側）にマージする。アプリ内に同梱されているのはコンパイル済み（バイナリ/UTF-16 plist）の
    `.strings` なので、ビルド成果物ではなくソースを編集する。String Catalog（`.xcstrings`）を使っている場合は
    ビルド後に自動抽出されたキーへ ja 訳を入力する（キーは英語文字列そのもの）。
-4. ビルドして警告/エラーを解消する。8 ファイルと PATCHES.md の断片は `Tools/IntegrationTypeCheck`（実 SDK + Defaults 8.2.0 +
+4. ビルドして警告/エラーを解消する。`DynamicNotchApp/` への適用（2026-10-20）で必要だった差分は 2 点:
+   `FanControlWidgetSettings` に `init()`（`Preferences` が `init()` を要求し、全引数既定値の init では満たせない。PATCHES.md (a)）、
+   XcodeGen ではローカルパッケージ参照に `group:` を付けないと `../FanControl` のソースグループと衝突してドロップインがターゲットから落ちる
+   （`DynamicNotchApp/project.yml`）。
+   8 ファイルと PATCHES.md の断片は `Tools/IntegrationTypeCheck`（実 SDK + Defaults 8.2.0 +
    Settings 3.1.2、DynamicNotch 側はスタブ）で警告・エラー 0 を確認済み（§7）。実プロジェクトで出る差分はスタブと実ソースの違いに起因する。
 
 ## 6. Mac での検証チェックリスト（Phase 1 → 5）
@@ -205,7 +209,7 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       `sensorReadings` の末尾に追加。`fanfi-probe` の各読取の後に「Aggregates」として表示される（2026-10-20、Mac14,9 で 4 つとも出ることを確認）。
       `.sensor(sensorKey: "agg:cpu", …)` が `plan` でそのまま解決されることはテストで確認。UI 上の表示は組込後に確認。
 - [x] 緊急判定の接頭辞: Apple Silicon では `TG` を除外（`SafetyPolicy.default(appleSilicon:)`、`FanControlPlatform.isAppleSilicon`）。Intel は従来どおり `TG` を含む。
-- [ ] 以下の UI 項目は未実施（Xcode.app が無いため DynamicNotch へ未組込）。
+- [x] 以下の UI 項目は 2026-10-20 にDynamicNotch（`DynamicNotchApp/`）へ組み込んで一部実施（下記「DynamicNotch UI」）。
 
 **Mac14,9 の所見（ダンプから読み取れる範囲）**
 
@@ -231,21 +235,36 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
   `Th0*`（48 °C 前後）、`TVM0`/`TVm0`/`TVm1`（60〜67 °C）、`TD*`（29〜34 °C、`TDBP` 等）、`TB1T`/`TB2T` は「Battery 1T/2T」と表示されていた（`TB0T` と同値。「Battery 1/2」に変更済み）。
   `TH0a`/`TH0b`/`TH0x`（「Storage」、38 °C 前後）は SSD と思われるが未確認。
 
-**DynamicNotch UI（未実施）**
+**DynamicNotch UI（2026-10-20、`DynamicNotchApp/`、Xcode 26.6 アドホック Debug、Mac14,9 / macOS 26.5.2）**
 
-- [ ] 設定 ▸ Fan Control ▸ 一般で「ファン制御を有効にする」を ON → センサー タブに温度が並ぶ（キー/名前/温度、ソート可）。
-- [ ] Nook にウィジェット（設定 ▸ ウィジェットで Fan Control を追加）→ ファン名・現在 RPM・RPM バー・温度 3 件が表示され、更新間隔どおりに変わる。
-- [ ] 集約センサー: センサー タブの先頭に「CPU（最大）」「CPU 高性能コア（最大）」「CPU 高効率コア（最大）」「GPU（最大）」が Σ アイコン付きで並び（ソート順に関係なく先頭）、
-      値が同タブの `Tp*`/`Te*`/`TC*`/`Tg*` の最大値と一致する。`Tp*` が 0 °C 付近を読んでいる間も「CPU 高性能コア（最大）」が下がらない。
-      Apple Silicon で `TG*` が「GPU（最大）」に含まれない。ファンレス機・Intel 機では存在するグループの集約だけが出る（Intel では P/E コアの集約は出ない）。
-- [ ] ウィジェットの温度（「最も高温の 3 センサーを表示」ON）: CPU/GPU は個別コアではなく「CPU（最大）」「GPU（最大）」として出て、同じコアが二重に並ばない。
-      OFF にすると選択リストの先頭に集約センサーが並び、選んだ集約が表示される。CPU/GPU 集約が 90 °C 以上で赤くなる。
-- [ ] プロファイル タブのセンサー連動: センサーのピッカーに「集約」セクション（集約センサー）→「個別センサー」セクションの順で並ぶ。
-      新たに「センサー連動」を選んだときの既定センサーが「CPU（最大）」（`agg:cpu`）になる。
-- [ ] 2x1 / ダブルワイド切替で幅が 100pt / 250pt になる。°C/°F 切替が反映される。
-- [ ] ファンレス機では「ファンが見つかりません」、SMC が開けない環境では「SMC を利用できません」。
-- [ ] 機能 OFF でウィジェットに「ファン制御は無効です」。Nook を閉じるとポーリングが止まる（Activity Monitor で CPU 使用がほぼ 0）。
-- [ ] 「SMC ダンプを書き出す…」で保存したテキストにキー一覧が出る（未知機種のセンサー名調査用）。ダンプ作成中も UI が固まらず、ボタンが無効化されインジケータが出る。
+前提と方法: DynamicNotch のプロジェクト `DynamicNotchApp/` に §1〜§5 を適用して確認した
+（`DynamicNotchApp/README.md`「FanControl 統合」）。シェルに画面収録・アクセシビリティ権限が無いため、DEBUG ビルドのフック
+（`DynamicNotchApp/Sources/Support/DebugHooks.swift`）でアプリ内からウィンドウを PNG 化し、実ウィンドウに `NSEvent` のクリックを合成して
+操作した（トグル・タブ・ラジオは本物の UI をクリック）。証跡: `DynamicNotchApp/.derivedData/shots/fc1/`（英語）、`fc-ja/`（日本語、`-AppleLanguages (ja)`）。
+ヘルパーには一度も接続していない（ヘルパーログの `Accepted connection` は同時に動いていた HelperSmokeApp の pid のみ）。書込・登録・適用ボタンは押していない。
+**注意**: 確認中、別プロセス（HelperSmokeApp、`.derivedData-next`）が書込セッションを持ちファンを手動で回していた（`fanfi-probe` で
+`F0Md`=`F1Md`=1、`Tg`=6800）。ウィジェットの 6,7xx RPM はそのため。このアプリは同じバンドル ID なので UserDefaults を共有し、
+スモークアプリのプロファイル「Custom」がアクティブとして表示された。
+
+- [x] 設定 ▸ Fan Control ▸ 一般で「ファン制御を有効にする」を ON（チェックボックスをクリック、`fanControlGeneralSettings.isEnabled` = true）→ センサー タブに温度が並ぶ
+      （キー/名前/温度、温度の降順）。ヘルパー状態は「手動インストール済み（個人利用モード）」「未接続」と表示（状態取得のみ）。（`fc1/enabled/`, `fc1/sensors/`）
+- [x] Nook にウィジェット（`nookSettings.widgets` に `fanControl`）→ 「Fans」見出し、Fan 1 / Fan 2 と現在 RPM、RPM バー、温度、プロファイルメニュー（「Custom」）が表示され、
+      約 2 秒の更新間隔で値が変わった（6,730 → 6,858 RPM）。**2x1 では温度が 2 件しか入らない**（ダブルワイドでは 3 件）。（`fc1/widget/`, `fc1/widget2/`）
+      機能 OFF の間は「Fan control disabled」と表示（`fc1/open-disabled/`）。
+- [x] 集約センサー: センサー タブの先頭に `agg:cpu`「CPU (max)」/`agg:cpu.p`/`agg:cpu.e`/`agg:gpu` が Σ 付きで並ぶ（温度ソートでも先頭）。
+      `agg:cpu` = 75 °C が同時刻の `Tp*` の最大値（`Tp1K` 75 °C）と一致、`TCMz` とも一致。`Tp*` が 0 °C 付近を読む瞬間と `TG*` の除外は画面では確認していない。
+- [ ] ウィジェットの温度（「最も高温の 3 センサーを表示」ON、既定）: **CPU/GPU 集約ではなく `Tf06` 105 °C / `Tf16` 93 °C / `Tf26` 89 °C が出た**。
+      `Tf0x/1x/2x` は §6 の所見で「一定値、閾値等の可能性」とした群（2026-10-19 の probe では `Tf06` 94.50）で、温度ではない可能性が高い。
+      これが常に最上位を占めるので、集約の二重表示防止は確認できない。対策案: `Tf*` を「最も高温」の候補から外す（判断待ち）。赤表示も未確認（集約が 90 °C 未満だった）。
+- [ ] プロファイル タブのセンサー連動ピッカー: 未確認（プロファイル編集を避けた）。
+- [x] 2x1 / ダブルワイド切替（設定 ▸ Nook ▸ Widgets ▸ fanControl のラジオをクリック、`gridSize` 2 → 5）で幅が 100 pt → 250 pt になり、ダブルワイドは
+      「Fans」「Temperatures」の 2 列表示。（`fc1/widgets-fc/`, `fc1/widget-wide/`）°C/°F 切替は未確認。
+- [ ] ファンレス機 / SMC 不可環境: 該当機なし。
+- [ ] Nook を閉じるとポーリングが止まる: 未計測。
+- [ ] 「SMC ダンプを書き出す…」: 未実施（保存パネル操作が必要）。
+- [x] 日本語: `ja.lproj`（生成物、`DynamicNotchApp/Support/merge-strings.py`）で「ファン制御」ペイン、「一般 / プロファイル / センサー」、「CPU（最大）」等の集約名、
+      ウィジェットの「ファン」「温度」が日本語になる（`fc-ja/`）。プロファイル名「Custom」はユーザー作成名なので英語のまま。
+- DynamicNotchApp の制約: Live Activity をノッチ左右に出す経路（`LiveActivityView`）がDynamicNotchApp では使われていないため、PATCHES.md (f) の `fanAlert` 表示は確認できない。
 
 ### Phase 2/3: ヘルパー登録
 - [ ] 一般タブのヘルパー状態が「未インストール」→「ヘルパーをインストール…」→「承認待ち」になり、案内文と「ログイン項目を開く」が表示される。
