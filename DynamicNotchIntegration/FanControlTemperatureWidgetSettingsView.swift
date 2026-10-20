@@ -1,5 +1,6 @@
 #if os(macOS)
-// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
+// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package): host-specific
+// glue on top of FanControlUI.
 //
 // Per-widget options shown in Settings ▸ Widgets when "Temperature" is selected (wired in
 // `WidgetsSettingsTabView`, PATCHES.md (c)). Added 2026-10-20 with the Temperature widget.
@@ -7,12 +8,13 @@
 import SwiftUI
 import FanControlCore
 import FanControlKit
+import FanControlUI
 
 struct FanControlTemperatureWidgetSettingsView: View {
 
-    @StoredSetting(.fanControlTemperatureWidgetSettings) private var settings
+    @FanControlSetting(.temperatureWidget) private var settings
     /// The temperature unit is shared with the Fan Control widget.
-    @StoredSetting(.fanControlWidgetSettings) private var fanWidgetSettings
+    @FanControlSetting(.widget) private var fanWidgetSettings
 
     private var manager: FanControlManager { FanControlManager.shared }
 
@@ -39,7 +41,7 @@ struct FanControlTemperatureWidgetSettingsView: View {
                     Toggle(isOn: isVisible(key)) {
                         HStack(spacing: 6) {
                             Circle()
-                                .fill(FanControlTemperatureWidgetView.color(for: key))
+                                .fill(FanControlTemperatureSeries.color(for: key))
                                 .frame(width: 8, height: 8)
                             Text(verbatim: label(for: key))
                             Spacer()

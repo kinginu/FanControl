@@ -1,1 +1,0 @@
-../../../../DynamicNotchIntegration/FanControlCurveEditorView.swift

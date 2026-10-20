@@ -1,11 +1,15 @@
 #if os(macOS)
-// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
+// FanControlUI's settings storage: a first-party store on top of `UserDefaults`
+// (replaced sindresorhus/Defaults on 2026-10-20). Everything here is `internal`:
+// hosts read and write the Fan Control settings through the public
+// `FanControlSettingKey` / `@FanControlSetting` (FanControlSettingKey.swift).
 //
-// First-party settings storage on top of `UserDefaults`, replacing the
-// sindresorhus/Defaults package (removed 2026-10-20). Shared by the whole app:
-// DynamicNotchApp compiles this file in place (project.yml) and through the
-// symlink `DynamicNotchApp/Sources/Support/SettingsStorage.swift` (CLT harness);
-// FanControl/Tools/IntegrationTypeCheck symlinks it as well.
+// Shared source: DynamicNotchApp compiles this same file into its own module through
+// the symlink `DynamicNotchApp/Sources/Support/SettingsStorage.swift` (its app-wide
+// settings use the same store; its key names are in `Sources/Support/SettingKey.swift`).
+// Keep the file free of host keys and access modifiers so both modules compile it.
+// Both copies observe `UserDefaults.standard` by KVO, so a write from either reaches
+// the other's views.
 //
 // Storage format — byte-compatible with what Defaults 8.2 wrote, so existing
 // user settings load unchanged:
@@ -34,47 +38,6 @@
 import Foundation
 import Observation
 import SwiftUI
-
-// MARK: - Key names
-
-/// UserDefaults key names of every stored setting. These strings are the
-/// on-disk identity of the user's settings: never rename one (the names are
-/// the former `Defaults.Keys` names, unchanged).
-enum SettingKey {
-    // DynamicNotch settings structs (DynamicNotchApp/Sources/Support/SettingsKeys.swift)
-    static let generalSettings = "generalSettings"
-    static let gestureControlSettings = "gestureControlSettings"
-    static let liquidGlassSettings = "liquidGlassSettings"
-    static let liquidBasicSettings = "liquidBasicSettings"
-    static let liveActivitiesSettings = "liveActivitiesSettings"
-    static let batteryLiveActivitySettings = "batteryLiveActivitySettings"
-    static let calendarLiveActivitySettings = "calendarLiveActivitySettings"
-    static let mediaLiveActivitySettings = "mediaLiveActivitySettings"
-    static let dropAreaSettings = "dropAreaSettings"
-    static let traySettings = "traySettings"
-    static let nookSettings = "nookSettings"
-    static let calendarWidgetSettings = "calendarWidgetSettings"
-    static let mediaWidgetSettings = "mediaWidgetSettings"
-    static let mirrorWidgetSettings = "mirrorWidgetSettings"
-    static let notesWidgetSettings = "notesWidgetSettings"
-    static let quickAppsWidgetSettings = "quickAppsWidgetSettings"
-    static let shortcutsWidgetSettings = "shortcutsWidgetSettings"
-    static let timerWidgetSettings = "timerWidgetSettings"
-    static let clipboardWidgetSettings = "clipboardWidgetSettings"
-    static let remindersWidgetSettings = "remindersWidgetSettings"
-    // DynamicNotch scalar settings
-    static let intro = "intro"
-    static let quickAppsPaths = "quickAppsPaths"
-    static let shortcutsWidgetSelection = "shortcutsWidgetSelection"
-    static let defaultMirrorDevice = "defaultMirrorDevice"
-    static let mirrorCameraInputWhenAvail = "mirrorCameraInputWhenAvail"
-    // Fan Control (FanControlWidgetSettings.swift, FanControlGeneralTabView.swift)
-    static let fanControlWidgetSettings = "fanControlWidgetSettings"
-    static let fanControlGeneralSettings = "fanControlGeneralSettings"
-    static let fanControlThresholdSettings = "fanControlThresholdSettings"
-    // Temperature widget (FanControlTemperatureWidgetSettings.swift, 2026-10-20)
-    static let fanControlTemperatureWidgetSettings = "fanControlTemperatureWidgetSettings"
-}
 
 // MARK: - Value encoding
 
@@ -167,7 +130,7 @@ extension Optional: StoredValue where Wrapped: StoredValue {
 /// Namespace of the typed setting keys. Declare keys in extensions, Defaults-style:
 ///
 ///     extension StoredKeys {
-///         static let nookSettings = Key<NookSettings>(SettingKey.nookSettings, default: .init())
+///         static let nookSettings = Key<NookSettings>("nookSettings", default: .init())
 ///     }
 ///
 /// and use them as `.nookSettings` (`SettingsStore[.nookSettings]`,
@@ -177,7 +140,7 @@ extension Optional: StoredValue where Wrapped: StoredValue {
 class StoredKeys: @unchecked Sendable {
     typealias Key<Value: StoredValue> = StoredKey<Value>
 
-    /// The UserDefaults key name (one of `SettingKey`).
+    /// The UserDefaults key name (the on-disk identity of the setting: never rename one).
     let name: String
 
     fileprivate init(name: String) {
@@ -380,7 +343,7 @@ private final class DefaultsKeyObserver: NSObject, @unchecked Sendable {
 /// A stored setting as a property (the former `@Default(.x)`):
 ///
 ///     @StoredSetting(.nookSettings) private var nookSettings
-///     @StoredSetting(SettingKey.intro) private var intro = true   // untyped name + default
+///     @StoredSetting("intro") private var intro = true   // untyped name + default
 ///
 /// In SwiftUI views the view re-renders when the setting changes (through the
 /// store's Observation tracking); `$x` is a `Binding`. Also usable in non-view code.
@@ -394,7 +357,7 @@ struct StoredSetting<Value: StoredValue>: DynamicProperty {
         self.store = store
     }
 
-    /// `@StoredSetting(SettingKey.x) var x = defaultValue`
+    /// `@StoredSetting("x") var x = defaultValue`
     init(wrappedValue defaultValue: Value, _ name: String, store: SettingsStore = .shared) {
         self.init(StoredKey(name, default: defaultValue), store: store)
     }

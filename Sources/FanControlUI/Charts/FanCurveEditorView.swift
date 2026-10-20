@@ -1,6 +1,4 @@
 #if os(macOS)
-// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
-//
 // Multi-point fan curve editor (Settings ▸ Fan Control ▸ Profiles, sensor-based mode of a
 // Custom 1 / Custom 2 fan; 2026-10-20). Replaces the old start / maximum temperature steppers:
 // the curve's first / last points are the mode's start / maximum temperature
@@ -28,7 +26,7 @@ import Charts
 import FanControlCore
 import FanControlKit
 
-struct FanCurveEditorView: View {
+public struct FanCurveEditorView: View {
 
     let fan: FanDevice
     /// Colour of this fan in `FanCurveView` (fan order).
@@ -43,9 +41,22 @@ struct FanCurveEditorView: View {
     /// `false` for the read-only presets: chart + point summary only.
     var isEditable: Bool = true
 
+    public init(fan: FanDevice, color: Color, sensorKey: String, curve: Binding<FanCurve>,
+                unit: TemperatureUnit, emergencyTemperature: Double, currentRPM: Int?,
+                isEditable: Bool = true) {
+        self.fan = fan
+        self.color = color
+        self.sensorKey = sensorKey
+        _curve = curve
+        self.unit = unit
+        self.emergencyTemperature = emergencyTemperature
+        self.currentRPM = currentRPM
+        self.isEditable = isEditable
+    }
+
     /// Grid of the editor (°C).
-    static let gridTemperatures = FanCurve.gridTemperatures(from: 30, through: 100)
-    static let rpmStep = 50
+    public static let gridTemperatures = FanCurve.gridTemperatures(from: 30, through: 100)
+    public static let rpmStep = 50
 
     @State private var draggedIndex: Int? = nil
 
@@ -64,7 +75,7 @@ struct FanCurveEditorView: View {
         manager.controlTemperature(for: sensorKey).flatMap { $0.isFinite ? $0 : nil }
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if isEditable {
                 toolbar
@@ -111,7 +122,7 @@ struct FanCurveEditorView: View {
         }
     }
 
-    static func presetName(_ preset: FanCurve.GridPreset) -> String {
+    public static func presetName(_ preset: FanCurve.GridPreset) -> String {
         switch preset {
         case .quiet: return String(localized: "Quiet")
         case .balanced: return String(localized: "Balanced")
@@ -390,21 +401,21 @@ struct FanCurveEditorView: View {
 
     // MARK: Validation
 
-    struct Message: Hashable {
-        enum Severity { case error, warning }
-        let severity: Severity
-        let text: String
+    public struct Message: Hashable, Sendable {
+        public enum Severity: Sendable { case error, warning }
+        public let severity: Severity
+        public let text: String
     }
 
     /// Errors block Save / Apply.
-    static func hasErrors(_ curve: FanCurve, fan: FanDevice) -> Bool {
+    public static func hasErrors(_ curve: FanCurve, fan: FanDevice) -> Bool {
         messages(for: curve, fan: fan, emergencyTemperature: .infinity, unit: .celsius)
             .contains { $0.severity == .error }
     }
 
     /// Validation of the curve as the editor stores it (the stored points with their RPMs
     /// clamped into the fan's range, i.e. fan-agnostic presets are fine).
-    static func messages(for curve: FanCurve, fan: FanDevice, emergencyTemperature: Double,
+    public static func messages(for curve: FanCurve, fan: FanDevice, emergencyTemperature: Double,
                          unit: TemperatureUnit) -> [Message] {
         let range = fan.rpmRange
         let clamped = FanCurve(points: curve.points.map {

@@ -12,6 +12,10 @@ let package = Package(
         .library(name: "FanControlSMC", targets: ["FanControlSMC"]),
         .library(name: "FanControlXPC", targets: ["FanControlXPC"]),
         .library(name: "FanControlKit", targets: ["FanControlKit"]),
+        // SwiftUI settings pane, profile / curve editors, temperature chart and the stored
+        // Fan Control settings (docs/kit.md "UI layer"). Host-specific glue (DynamicNotch's
+        // Nook widgets, Live Activity, visibility hook) stays in DynamicNotchIntegration/.
+        .library(name: "FanControlUI", targets: ["FanControlUI"]),
         .executable(name: "FanControlHelper", targets: ["FanControlHelper"]),
         .executable(name: "fanfi-probe", targets: ["FanControlProbe"]),
     ],
@@ -20,12 +24,14 @@ let package = Package(
         .target(name: "FanControlXPC", dependencies: ["FanControlCore"]),
         .target(name: "FanControlSMC", dependencies: ["FanControlCore"]),
         .target(name: "FanControlKit", dependencies: ["FanControlCore", "FanControlSMC", "FanControlXPC"]),
+        .target(name: "FanControlUI", dependencies: ["FanControlCore", "FanControlKit"]),
         .executableTarget(name: "FanControlHelper", dependencies: ["FanControlCore", "FanControlSMC", "FanControlXPC"]),
         .executableTarget(name: "FanControlProbe", dependencies: ["FanControlCore", "FanControlSMC"]),
         .testTarget(name: "FanControlCoreTests", dependencies: ["FanControlCore"]),
         .testTarget(name: "FanControlSMCTests", dependencies: ["FanControlSMC", "FanControlCore"]),
         .testTarget(name: "FanControlXPCTests", dependencies: ["FanControlXPC", "FanControlCore"]),
         .testTarget(name: "FanControlKitTests", dependencies: ["FanControlKit", "FanControlCore"]),
+        .testTarget(name: "FanControlUITests", dependencies: ["FanControlUI", "FanControlCore"]),
     ],
     swiftLanguageModes: [.v6]
 )

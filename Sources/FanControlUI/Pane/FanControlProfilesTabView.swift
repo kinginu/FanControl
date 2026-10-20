@@ -1,12 +1,10 @@
 #if os(macOS)
-// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
-//
 // "Profiles" tab of the Fan Control settings pane (replaces the earlier
 // profile editor dialogs, design doc §4.4).
 // The profile set is fixed (`ProfileStore`): the presets Automatic,
 // Constant Quiet, Constant High, Boost and Max are shown read-only with their
 // parameters (Boost with its real multi-point curve); Custom 1 / Custom 2 are
-// editable (per-fan mode, sensor, multi-point fan curve — FanControlCurveEditorView.swift,
+// editable (per-fan mode, sensor, multi-point fan curve — `FanCurveEditorView`,
 // 2026-10-20, replaces the start / maximum temperature steppers —, constant RPM; rename)
 // and can be reset to their default. No profiles are created or deleted. This is the only
 // place where profiles are edited (the notch widget only selects one).
@@ -15,12 +13,17 @@ import SwiftUI
 import FanControlCore
 import FanControlKit
 
-struct FanControlProfilesTabView: View {
+public struct FanControlProfilesTabView: View {
 
     @Binding var actionError: String?
     /// Profile selected when the tab first appears (e.g. a deep link or the
     /// app's DEBUG preview hook); `nil` = the active profile.
     var initialSelection: UUID? = nil
+
+    public init(actionError: Binding<String?>, initialSelection: UUID? = nil) {
+        _actionError = actionError
+        self.initialSelection = initialSelection
+    }
 
     @StoredSetting(.fanControlWidgetSettings) private var widgetSettings
     /// Apply is disabled while the feature is off: applying a manual profile
@@ -39,7 +42,7 @@ struct FanControlProfilesTabView: View {
         selectedID.flatMap { manager.profileStore.profile(id: $0) }?.resolved(for: manager.fans)
     }
 
-    var body: some View {
+    public var body: some View {
         HStack(alignment: .top, spacing: 12) {
             ProfileList(selectedID: $selectedID,
                         profiles: FanControlProfiles.all,
@@ -331,10 +334,14 @@ private struct ProfileEditor: View {
 }
 
 /// Colour key of `FanCurveView` (one swatch per fan).
-struct FanCurveLegend: View {
+public struct FanCurveLegend: View {
     let fans: [FanDevice]
 
-    var body: some View {
+    public init(fans: [FanDevice]) {
+        self.fans = fans
+    }
+
+    public var body: some View {
         HStack(spacing: 12) {
             ForEach(Array(fans.enumerated()), id: \.element.id) { index, fan in
                 HStack(spacing: 4) {

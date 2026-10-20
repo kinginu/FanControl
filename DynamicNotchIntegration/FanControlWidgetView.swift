@@ -1,5 +1,6 @@
 #if os(macOS)
-// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
+// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package): host-specific
+// glue on top of FanControlUI (`import FanControlUI`).
 //
 // The Fan Control Nook widget (design doc §4.1). Dispatched from the Nook grid
 // for `NookWidget.fanControl` (PATCHES.md (b)).
@@ -22,16 +23,19 @@
 // Curves and targets come from the engine (`FanProfile.curve(for:)`, PCHIP; 
 // `FanControlEngine.targetRPM(for: profile, …)`) at the smoothed control temperature
 // (`FanControlManager.controlTemperature(for:)`), so Boost draws its real curve.
-// `FanCurveView` and `FanControlKeyTemperaturesView` are also used by the settings pane.
+// `FanCurveView`, `FanControlSelectionPill`, `FanControlProfiles` and `FanControlFormatting` come
+// from FanControlUI (shared with the settings pane); the appear / disappear fallback for "Pause
+// When Nook Is Hidden" is `FanControlWidgetPresence` (FanControlNookHooks.swift).
 
 import SwiftUI
 import FanControlCore
 import FanControlKit
+import FanControlUI
 
 struct FanControlWidgetView: View {
 
-    @StoredSetting(.fanControlWidgetSettings) private var settings
-    @StoredSetting(.fanControlGeneralSettings) private var general
+    @FanControlSetting(.widget) private var settings
+    @FanControlSetting(.general) private var general
 
     /// Preview / debug rendering only (e.g. the app's DEBUG `preview:` hook):
     /// select this profile in the list and show its details instead of the
@@ -320,31 +324,6 @@ private struct FanProfileListRow: View {
     }
 }
 
-/// The selection highlight: a Liquid Glass capsule on macOS 26 (Apple's selection style),
-/// else an ultra-thin material capsule. Mirrors the host's `nookGlass` (NookWidgetChrome),
-/// which the drop-in files cannot reference. `DN_DEBUG_NOGLASS=1` (DEBUG) forces the
-/// fallback, because glass is not captured by offscreen `cacheDisplay` snapshots.
-struct FanControlSelectionPill: View {
-    #if DEBUG
-    private static let forceFallback = ProcessInfo.processInfo.environment["DN_DEBUG_NOGLASS"] == "1"
-    #else
-    private static let forceFallback = false
-    #endif
-
-    var body: some View {
-        if #available(macOS 26, *), !Self.forceFallback {
-            Color.clear
-                .glassEffect(.regular, in: Capsule())
-                .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 0.5))
-        } else {
-            Capsule()
-                .fill(.ultraThinMaterial)
-                .overlay(Capsule().fill(.tertiary))
-                .overlay(Capsule().strokeBorder(.white.opacity(0.28), lineWidth: 0.5))
-        }
-    }
-}
-
 // MARK: - Profile details
 
 /// Name and type of a profile: "Controlled by macOS", "Constant · 3,000 RPM",
@@ -462,48 +441,6 @@ private struct FanTargetsView: View {
     }
 }
 
-// MARK: - Presence (pause fallback)
-
-/// How many Fan Control widgets are on screen (one per screen whose Nook is open), and whether
-/// the host reports Nook visibility itself. `hostReportsVisibility` is meant to be set by the
-/// host hook (`FanControlNookVisibility.nookVisibilityChanged`, FanControlSettingsView.swift —
-/// one line: `FanControlWidgetPresence.hostReportsVisibility = true`); until then the widget's
-/// fallback pause only fires when the last visible widget disappears.
-/// Shared by the Fan Control and Temperature widgets (both need live readings).
-@MainActor
-enum FanControlWidgetPresence {
-    static var visibleCount = 0
-    static var hostReportsVisibility = false
-
-    /// A Fan Control / Temperature widget appeared: count it and (when the feature is on) make
-    /// sure monitoring runs and is not paused. With "Start Monitoring at Launch" off, monitoring
-    /// starts the first time a widget is shown (design doc §5.5 (b)).
-    static func widgetAppeared(isPreview: Bool) {
-        if !isPreview { visibleCount += 1 }
-        guard SettingsStore[.fanControlGeneralSettings].isEnabled else { return }
-        let manager = FanControlManager.shared
-        if !manager.isMonitoring {
-            manager.startMonitoring()
-        }
-        manager.setMonitoringPaused(false)
-    }
-
-    /// Fallback only (PATCHES.md (b-2)): pausing is driven by the host's
-    /// FanControlNookVisibility hook, which sees every screen's Nook. A widget's own disappear
-    /// runs after that hook (the Nook content fades out), so it must never re-pause while a
-    /// Fan Control / Temperature widget is still shown on another screen, and it stays out of
-    /// the way once a host has reported Nook visibility.
-    static func widgetDisappeared(isPreview: Bool) {
-        guard !isPreview else { return }
-        visibleCount = max(visibleCount - 1, 0)
-        if SettingsStore[.fanControlGeneralSettings].pauseWhenNookHidden,
-           !hostReportsVisibility,
-           visibleCount == 0 {
-            FanControlManager.shared.setMonitoringPaused(true)
-        }
-    }
-}
-
 // MARK: - Fan row
 
 private struct FanRow: View {
@@ -566,281 +503,6 @@ private struct RPMBar: View {
         }
         .frame(height: 4)
         .animation(.easeOut(duration: 0.3), value: fraction)
-    }
-}
-
-// MARK: - Key temperatures
-
-/// Rows of "label · temperature" (CPU / GPU / SSD, or the user's sensors).
-/// CPU/GPU values at or above the high-temperature alert are red, within 10 °C below it orange.
-struct FanControlKeyTemperaturesView: View {
-    enum Style { case compact, regular }
-
-    let sensors: [SensorReading]
-    let unit: TemperatureUnit
-    let policy: SafetyPolicy
-    var style: Style = .regular
-
-    var body: some View {
-        switch style {
-        case .compact:
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(sensors) { sensor in
-                    HStack(spacing: 4) {
-                        Text(verbatim: FanControlFormatting.keyTemperatureLabel(sensor))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: 2)
-                        value(sensor)
-                    }
-                    .font(.caption2)
-                }
-            }
-        case .regular:
-            HStack(spacing: 24) {
-                ForEach(sensors) { sensor in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(verbatim: FanControlFormatting.keyTemperatureLabel(sensor))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        value(sensor)
-                            .font(.title2.weight(.semibold))
-                    }
-                    .help(Text(verbatim: "\(FanControlFormatting.sensorName(sensor)) (\(sensor.id))"))
-                }
-                if sensors.isEmpty {
-                    Text("No sensors found")
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    private func value(_ sensor: SensorReading) -> some View {
-        Text(verbatim: FanControlFormatting.temperature(sensor, unit: unit))
-            .monospacedDigit()
-            .foregroundStyle(FanControlFormatting.temperatureColor(sensor, policy: policy))
-    }
-}
-
-extension FanControlFormatting {
-    /// Red at/above the high-temperature alert, orange within `warmTemperatureMargin`
-    /// below it (CPU/GPU sensors only), else primary.
-    static func temperatureColor(_ sensor: SensorReading, policy: SafetyPolicy) -> Color {
-        if isAlertTemperature(sensor, policy: policy) { return .red }
-        if isWarmTemperature(sensor, policy: policy) { return .orange }
-        return .primary
-    }
-}
-
-// MARK: - Fan curve
-
-/// The fan curve of `profile`: x = temperature 30…100 °C (wider when a curve point lies
-/// outside), y = RPM from the lowest fan minimum to the highest fan maximum. One line per fan,
-/// straight from the engine: a `.sensor` mode draws its `FanProfile.curve(for:)` (the stored
-/// multi-point PCHIP curve, or the two-point linear ramp) sampled with
-/// `FanCurve.sample(count: 48, rpmRange:temperatureDomain:)`, a constant mode a horizontal
-/// line (`FanControlEngine.targetRPM(for: profile, …)`), automatic no line. Curve points are
-/// marked (regular style). The dot is the live operating point: the fan's measured RPM at the
-/// smoothed control temperature of the sensor its mode follows
-/// (`FanControlManager.controlTemperature(for:)`; CPU (max) for constant / automatic modes).
-/// A dashed red line marks the emergency temperature. Before the emergency override.
-struct FanCurveView: View {
-    enum Style { case compact, regular }
-
-    /// Default temperature axis (°C).
-    static let temperatureDomain: ClosedRange<Double> = 30...100
-    /// Samples per curve (plus the curve's own points).
-    static let sampleCount = 48
-
-    let profile: FanProfile
-    let fans: [FanDevice]
-    let sensors: [SensorReading]
-    let currentRPMs: [Int: Int]
-    let unit: TemperatureUnit
-    var emergencyTemperature: Double? = nil
-    var style: Style = .regular
-
-    /// Per-fan colours (fan order).
-    static let palette: [Color] = [.accentColor, .orange, .green, .pink]
-
-    static func color(forFanAt index: Int) -> Color { palette[index % palette.count] }
-
-    private var manager: FanControlManager { FanControlManager.shared }
-
-    private var rpmDomain: ClosedRange<Double> {
-        let low = Double(fans.map(\.rpmRange.lowerBound).min() ?? 0)
-        let high = Double(fans.map(\.rpmRange.upperBound).max() ?? 1)
-        return high > low ? low...high : (low - 1)...(low + 1)
-    }
-
-    /// 30…100 °C, widened to every drawn curve point.
-    private var domain: ClosedRange<Double> {
-        let temperatures = fans.compactMap { profile.curve(for: $0) }.flatMap { $0.normalized().points.map(\.temperature) }
-        let low = min(Self.temperatureDomain.lowerBound, temperatures.min() ?? .infinity)
-        let high = max(Self.temperatureDomain.upperBound, temperatures.max() ?? -.infinity)
-        return low...high
-    }
-
-    private var isAllAutomatic: Bool {
-        fans.allSatisfy { !profile.mode(for: $0).isManual }
-    }
-
-    /// What is drawn for one fan (computed on the main actor, drawn by the Canvas).
-    private struct FanTrace {
-        var color: Color
-        var line: [(temperature: Double, rpm: Double)]
-        var points: [(temperature: Double, rpm: Double)]
-        var operatingPoint: (temperature: Double, rpm: Double)?
-    }
-
-    private var traces: [FanTrace] {
-        let domain = domain
-        return fans.enumerated().map { index, fan in
-            let mode = profile.mode(for: fan)
-            var trace = FanTrace(color: Self.color(forFanAt: index), line: [], points: [], operatingPoint: nil)
-            if let curve = profile.curve(for: fan) {
-                trace.line = curve.sample(count: Self.sampleCount, rpmRange: fan.rpmRange, temperatureDomain: domain)
-                    .map { ($0.temperature, $0.rpm) }
-                trace.points = curve.resolved(for: fan).points.map { ($0.temperature, Double($0.rpm)) }
-            } else if mode.isManual {
-                trace.line = Self.samples(for: mode, domain: domain).map { temperature in
-                    (temperature, Double(FanControlEngine.targetRPM(for: profile, fan: fan, sensorTemperature: temperature,
-                                                                    policy: manager.safetyPolicy) ?? 0))
-                }
-            }
-            if let rpm = currentRPMs[fan.id], let temperature = operatingTemperature(for: mode) {
-                trace.operatingPoint = (temperature, Double(rpm))
-            }
-            return trace
-        }
-    }
-
-    var body: some View {
-        let traces = traces
-        let domain = domain
-        let rpmDomain = rpmDomain
-        VStack(alignment: .leading, spacing: 2) {
-            Canvas { context, size in
-                draw(traces, domain: domain, rpmDomain: rpmDomain, in: &context, size: size)
-            }
-            .overlay {
-                if isAllAutomatic {
-                    Text("Controlled by macOS")
-                        .font(style == .compact ? .caption2 : .callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 4)
-                        .background(.background.opacity(0.6), in: Capsule())
-                }
-            }
-            HStack(spacing: 0) {
-                Text(verbatim: FanControlFormatting.temperature(domain.lowerBound, unit: unit))
-                Spacer(minLength: 2)
-                if style == .regular {
-                    Text("Temperature")
-                    Spacer(minLength: 2)
-                }
-                Text(verbatim: FanControlFormatting.temperature(domain.upperBound, unit: unit))
-            }
-            .font(style == .compact ? .system(size: 8) : .caption2)
-            .foregroundStyle(.secondary)
-            .monospacedDigit()
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text("Fan Curve"))
-    }
-
-    private func point(temperature: Double, rpm: Double, domain t: ClosedRange<Double>,
-                       rpmDomain r: ClosedRange<Double>, size: CGSize) -> CGPoint {
-        let x = (min(max(temperature, t.lowerBound), t.upperBound) - t.lowerBound) / (t.upperBound - t.lowerBound)
-        let y = (min(max(rpm, r.lowerBound), r.upperBound) - r.lowerBound) / (r.upperBound - r.lowerBound)
-        let inset: CGFloat = 3
-        return CGPoint(x: inset + x * (size.width - 2 * inset),
-                       y: size.height - inset - y * (size.height - 2 * inset))
-    }
-
-    private func draw(_ traces: [FanTrace], domain: ClosedRange<Double>, rpmDomain: ClosedRange<Double>,
-                      in context: inout GraphicsContext, size: CGSize) {
-        func p(_ temperature: Double, _ rpm: Double) -> CGPoint {
-            point(temperature: temperature, rpm: rpm, domain: domain, rpmDomain: rpmDomain, size: size)
-        }
-        // Frame + grid (every 10 °C).
-        let frame = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 4)
-        context.stroke(frame, with: .color(.primary.opacity(0.15)), lineWidth: 1)
-        var t = (domain.lowerBound / 10).rounded(.up) * 10
-        while t < domain.upperBound {
-            if t > domain.lowerBound {
-                var grid = Path()
-                grid.move(to: CGPoint(x: p(t, rpmDomain.lowerBound).x, y: 0))
-                grid.addLine(to: CGPoint(x: p(t, rpmDomain.lowerBound).x, y: size.height))
-                context.stroke(grid, with: .color(.primary.opacity(0.07)), lineWidth: 0.5)
-            }
-            t += 10
-        }
-        if style == .regular {
-            context.draw(Text(verbatim: "\(Int(rpmDomain.upperBound).formatted()) RPM").font(.caption2).foregroundStyle(.secondary),
-                         at: CGPoint(x: 6, y: 6), anchor: .topLeading)
-            context.draw(Text(verbatim: "\(Int(rpmDomain.lowerBound).formatted()) RPM").font(.caption2).foregroundStyle(.secondary),
-                         at: CGPoint(x: 6, y: size.height - 6), anchor: .bottomLeading)
-        }
-        if let emergencyTemperature, domain.contains(emergencyTemperature) {
-            var line = Path()
-            line.move(to: p(emergencyTemperature, rpmDomain.upperBound))
-            line.addLine(to: p(emergencyTemperature, rpmDomain.lowerBound))
-            context.stroke(line, with: .color(.red.opacity(0.5)), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
-        }
-
-        let lineWidth: CGFloat = style == .compact ? 1.5 : 2
-        for (index, trace) in traces.enumerated() {
-            // Offset overlapping curves of later fans by a hair so both stay visible.
-            let dy = CGFloat(index) * 1.0
-            if !trace.line.isEmpty {
-                var curve = Path()
-                for (n, sample) in trace.line.enumerated() {
-                    let q = p(sample.temperature, sample.rpm)
-                    if n == 0 { curve.move(to: q) } else { curve.addLine(to: q) }
-                }
-                context.stroke(curve.offsetBy(dx: 0, dy: dy), with: .color(trace.color),
-                               style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
-            }
-            if style == .regular {
-                for point in trace.points where domain.contains(point.temperature) {
-                    let q = p(point.temperature, point.rpm)
-                    let r: CGFloat = 2.5
-                    let marker = Path(ellipseIn: CGRect(x: q.x - r, y: q.y - r + dy, width: 2 * r, height: 2 * r))
-                    context.fill(marker, with: .style(.background))
-                    context.stroke(marker, with: .color(trace.color), lineWidth: 1.25)
-                }
-            }
-            if let operating = trace.operatingPoint {
-                let q = p(operating.temperature, operating.rpm)
-                let radius: CGFloat = style == .compact ? 2.5 : 4
-                let dot = Path(ellipseIn: CGRect(x: q.x - radius, y: q.y - radius, width: 2 * radius, height: 2 * radius))
-                context.fill(dot, with: .color(trace.color))
-                context.stroke(dot, with: .color(.primary.opacity(0.8)), lineWidth: 0.75)
-            }
-        }
-    }
-
-    /// Temperatures at which a mode without a curve (constant, degenerate sensor ramp) changes
-    /// value, plus the ends of `domain`.
-    static func samples(for mode: FanControlMode, domain: ClosedRange<Double> = temperatureDomain) -> [Double] {
-        var points = [domain.lowerBound, domain.upperBound]
-        if case .sensor(_, let start, let maxTemperature) = mode {
-            let epsilon = 0.001
-            points += [start, maxTemperature, start - epsilon, maxTemperature - epsilon]
-        }
-        return Array(Set(points.filter { domain.contains($0) })).sorted()
-    }
-
-    /// The temperature the operating point is drawn at: the smoothed control temperature of the
-    /// followed sensor, else CPU (max) (or the hottest key temperature).
-    private func operatingTemperature(for mode: FanControlMode) -> Double? {
-        if case .sensor(let key, _, _) = mode, let value = manager.controlTemperature(for: key), value.isFinite {
-            return value
-        }
-        if let cpu = manager.controlTemperature(for: SensorAggregator.ID.cpu), cpu.isFinite { return cpu }
-        return FanControlFormatting.keyTemperatures(sensors).first?.temperature
     }
 }
 

@@ -1,5 +1,7 @@
 #if os(macOS)
-// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
+// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package): host-specific
+// glue on top of FanControlUI (the chart and its series are `FanControlTemperatureChart` /
+// `FanControlTemperatureSeries`).
 //
 // The Temperature Nook widget (2026-10-20, user decision: temperatures move out of the Fan
 // Control widget). Dispatched from the Nook grid for `NookWidget.temperature`
@@ -23,15 +25,15 @@
 // the alert is active (icon + colour, never colour alone).
 
 import SwiftUI
-import Charts
 import FanControlCore
 import FanControlKit
+import FanControlUI
 
 struct FanControlTemperatureWidgetView: View {
 
-    @StoredSetting(.fanControlTemperatureWidgetSettings) private var settings
-    @StoredSetting(.fanControlWidgetSettings) private var fanWidgetSettings
-    @StoredSetting(.fanControlGeneralSettings) private var general
+    @FanControlSetting(.temperatureWidget) private var settings
+    @FanControlSetting(.widget) private var fanWidgetSettings
+    @FanControlSetting(.general) private var general
 
     /// Preview / debug rendering only: draw this history instead of the manager's (and do not
     /// count as a shown widget; window chips do nothing).
@@ -114,7 +116,7 @@ struct FanControlTemperatureWidgetView: View {
 
     // MARK: Values
 
-    private func values(_ series: [Series]) -> some View {
+    private func values(_ series: [FanControlTemperatureSeries]) -> some View {
         HStack(alignment: .top, spacing: 6) {
             ForEach(series) { item in
                 VStack(alignment: .leading, spacing: 1) {
@@ -158,14 +160,14 @@ struct FanControlTemperatureWidgetView: View {
     }
 
     /// The window maximum is coloured with the same rule as the current value (secondary below it).
-    private func maxColor(_ item: Series, _ value: Double) -> Color {
+    private func maxColor(_ item: FanControlTemperatureSeries, _ value: Double) -> Color {
         let reading = SensorReading(id: item.key, name: item.label, temperature: value,
                                     sensorType: item.key.hasPrefix("agg:") ? .greatest : .smc)
         let color = FanControlFormatting.temperatureColor(reading, policy: manager.safetyPolicy)
         return color == .primary ? .secondary : color
     }
 
-    private func accessibilityValue(_ item: Series) -> String {
+    private func accessibilityValue(_ item: FanControlTemperatureSeries) -> String {
         var parts = [item.current.map { FanControlFormatting.temperature($0.temperature, unit: unit) } ?? "--"]
         if let range = item.range {
             parts.append(String(localized: "highest \(FanControlFormatting.temperature(range.upperBound, unit: unit)), lowest \(FanControlFormatting.temperature(range.lowerBound, unit: unit))"))
@@ -175,187 +177,17 @@ struct FanControlTemperatureWidgetView: View {
 
     // MARK: Chart
 
-    @ViewBuilder
-    private func chart(_ series: [Series], now: Date) -> some View {
+    private func chart(_ series: [FanControlTemperatureSeries], now: Date) -> some View {
         let threshold = manager.safetyPolicy.highTemperatureAlert
-        let showsThreshold = settings.showsAlertThreshold && threshold.isFinite
-        let hasData = series.contains { !$0.segments.isEmpty }
-        VStack(spacing: 1) {
-            Chart {
-                if showsThreshold {
-                    RuleMark(y: .value("Alert", threshold))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .foregroundStyle(Color.red.opacity(0.75))
-                        .annotation(position: .top, alignment: .leading, spacing: 0) {
-                            Text(verbatim: FanControlFormatting.temperature(threshold, unit: unit))
-                                .font(.system(size: 8, weight: .semibold))
-                                .monospacedDigit()
-                                .foregroundStyle(Color.red.opacity(0.9))
-                        }
-                }
-                ForEach(series) { item in
-                    ForEach(Array(item.segments.enumerated()), id: \.offset) { index, segment in
-                        ForEach(segment, id: \.date) { sample in
-                            LineMark(x: .value("Time", sample.date),
-                                     y: .value("Temperature", sample.temperature),
-                                     series: .value("Series", "\(item.key)#\(index)"))
-                                .foregroundStyle(item.color)
-                                .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                                .interpolationMethod(.monotone)
-                        }
-                    }
-                }
-            }
-            .chartXScale(domain: now.addingTimeInterval(-window.seconds)...now)
-            .chartYScale(domain: yDomain(series, threshold: showsThreshold ? threshold : nil))
-            .chartXAxis(.hidden)
-            .chartYAxis {
-                AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { value in
-                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
-                        .foregroundStyle(.quaternary)
-                    AxisValueLabel {
-                        if let celsius = value.as(Double.self) {
-                            Text(verbatim: FanControlFormatting.temperature(celsius, unit: unit))
-                                .font(.system(size: 8))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            .chartLegend(.hidden)
-            .overlay {
-                if !hasData {
-                    Text("Collecting temperatures…")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxHeight: .infinity)
-            .accessibilityLabel(Text("Temperature history"))
-
-            HStack {
-                Text(verbatim: "−\(window.rawValue.formatted()) \(String(localized: "min"))")
-                Spacer()
-                Text("now")
-            }
-            .font(.system(size: 8))
-            .foregroundStyle(.tertiary)
-            .monospacedDigit()
-            .padding(.trailing, 22)
-        }
-    }
-
-    /// Visible values of the window, the threshold included; padded to 5 °C steps.
-    private func yDomain(_ series: [Series], threshold: Double?) -> ClosedRange<Double> {
-        var values = series.flatMap { $0.segments.flatMap { $0.map(\.temperature) } }
-        if let threshold { values.append(threshold) }
-        guard let low = values.min(), let high = values.max() else { return 30...100 }
-        let lower = ((low - 2) / 5).rounded(.down) * 5
-        let upper = max(((high + 2) / 5).rounded(.up) * 5, lower + 10)
-        return lower...upper
+        return FanControlTemperatureChart(series: series, window: window.seconds, now: now, unit: unit,
+                                          alertThreshold: settings.showsAlertThreshold ? threshold : nil)
     }
 
     // MARK: Series
 
-    fileprivate struct Series: Identifiable {
-        let key: String
-        let label: String
-        let color: Color
-        /// The latest reading (current value; drives the colour rule).
-        let current: SensorReading?
-        /// Lowest / highest raw value of the window.
-        let range: ClosedRange<Double>?
-        /// Downsampled history of the window, split at gaps.
-        let segments: [[TemperatureHistory.Sample]]
-
-        var id: String { key }
-    }
-
-    /// Series colours (categorical slots blue / aqua / violet; red and orange stay reserved
-    /// for the alert / warm status).
-    static func color(for key: String) -> Color {
-        switch key {
-        case SensorAggregator.ID.cpu: return Color(red: 0x39 / 255, green: 0x87 / 255, blue: 0xE5 / 255)
-        case SensorAggregator.ID.gpu: return Color(red: 0x19 / 255, green: 0x9E / 255, blue: 0x70 / 255)
-        default: return Color(red: 0x90 / 255, green: 0x85 / 255, blue: 0xE9 / 255)
-        }
-    }
-
-    /// A gap longer than this breaks the line (sleep, paused Nook, battery polling is ≤ 10 s).
-    static let gapThreshold: TimeInterval = 25
-    /// Points per series drawn at most (bucket means; min / max use the raw samples).
-    static let maximumPoints = 180
-
-    private func makeSeries(now: Date) -> [Series] {
-        let history = history
-        return settings.shownKeys.map { key in
-            let samples = history.history(for: key, window: window.seconds, now: now)
-            let reading = previewHistory == nil
-                ? manager.sensorReadings.first { $0.id == key && $0.temperature.isFinite }
-                : history.latest(for: key).map {
-                    SensorReading(id: key, name: key, temperature: $0.temperature,
-                                  sensorType: key.hasPrefix("agg:") ? .greatest : .smc)
-                }
-            let label = reading.map(FanControlFormatting.keyTemperatureLabel) ?? Self.label(for: key)
-            let temperatures = samples.map(\.temperature)
-            let range = temperatures.min().flatMap { low in temperatures.max().map { low...$0 } }
-            return Series(key: key, label: label, color: Self.color(for: key), current: reading, range: range,
-                          segments: Self.segments(Self.downsample(samples, window: window.seconds, now: now)))
-        }
-    }
-
-    static func label(for key: String) -> String {
-        switch key {
-        case SensorAggregator.ID.cpu: return String(localized: "CPU")
-        case SensorAggregator.ID.gpu: return String(localized: "GPU")
-        case "TH0x": return String(localized: "SSD")
-        default: return key
-        }
-    }
-
-    /// Bucket means over `maximumPoints` equal time buckets of the window (samples already
-    /// sparser than that are kept as they are).
-    static func downsample(_ samples: [TemperatureHistory.Sample], window: TimeInterval,
-                           now: Date) -> [TemperatureHistory.Sample] {
-        guard samples.count > maximumPoints, window > 0 else { return samples }
-        let bucket = window / Double(maximumPoints)
-        let start = now.addingTimeInterval(-window)
-        var result: [TemperatureHistory.Sample] = []
-        var currentIndex = -1
-        var sumT = 0.0, sumDate = 0.0, n = 0.0
-        func flush() {
-            guard n > 0 else { return }
-            result.append(.init(date: Date(timeIntervalSinceReferenceDate: sumDate / n), temperature: sumT / n))
-        }
-        for sample in samples {
-            let index = Int(sample.date.timeIntervalSince(start) / bucket)
-            if index != currentIndex {
-                flush()
-                currentIndex = index
-                sumT = 0; sumDate = 0; n = 0
-            }
-            sumT += sample.temperature
-            sumDate += sample.date.timeIntervalSinceReferenceDate
-            n += 1
-        }
-        flush()
-        return result
-    }
-
-    /// Splits at gaps longer than `gapThreshold`.
-    static func segments(_ samples: [TemperatureHistory.Sample]) -> [[TemperatureHistory.Sample]] {
-        var result: [[TemperatureHistory.Sample]] = []
-        var current: [TemperatureHistory.Sample] = []
-        for sample in samples {
-            if let last = current.last, sample.date.timeIntervalSince(last.date) > gapThreshold {
-                result.append(current)
-                current = []
-            }
-            current.append(sample)
-        }
-        if !current.isEmpty { result.append(current) }
-        return result
+    private func makeSeries(now: Date) -> [FanControlTemperatureSeries] {
+        FanControlTemperatureSeries.make(keys: settings.shownKeys, history: history, window: window.seconds,
+                                         now: now, readings: previewHistory == nil ? manager.sensorReadings : nil)
     }
 }
 

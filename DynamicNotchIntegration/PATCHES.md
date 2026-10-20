@@ -1,6 +1,25 @@
 # DynamicNotch 本体ソースへの手作業パッチ
 
-このディレクトリの `*.swift` はそのまま DynamicNotch ターゲットに追加できる「ドロップイン」ファイルだが、
+このディレクトリの `*.swift` は DynamicNotch ターゲットに追加する「ドロップイン」ファイルで、DynamicNotch 固有の
+グルーだけを含む（2026-10-20 以降。ホスト非依存の UI は SwiftPM ライブラリ **`FanControlUI`** に移した）:
+
+| ファイル | 内容 |
+|---|---|
+| `FanControlWidgetView.swift` | Nook の Fan Control ウィジェット（(b)） |
+| `FanControlWidgetSettingsView.swift` | 設定 ▸ ウィジェットの Fan Control 用オプション（(c)） |
+| `FanControlTemperatureWidgetView.swift` | Nook の温度ウィジェット（(a-2)。グラフ本体は `FanControlUI.FanControlTemperatureChart`） |
+| `FanControlTemperatureWidgetSettingsView.swift` | 設定 ▸ ウィジェットの温度ウィジェット用オプション（(c)） |
+| `FanControlLiveActivity.swift` | Live Activity の表示 `FanControlAlertView`（(f)。状態は `FanControlUI.FanControlAlertCoordinator`） |
+| `FanControlNookHooks.swift` | Nook の開閉フック `FanControlNookVisibility` とウィジェット表示数 `FanControlWidgetPresence`（(b-2)） |
+
+`FanControlUI`（`FanControl/Sources/FanControlUI/`、docs/kit.md「UI layer」）が提供するもの: 設定ペイン
+`FanControlSettingsView`（一般／プロファイル／センサーの各タブも単体で公開）、カーブ表示 `FanCurveView`・編集
+`FanCurveEditorView`、温度グラフ `FanControlTemperatureChart`、主要温度 `FanControlKeyTemperaturesView`、
+`FanControlSelectionPill`、警告コーディネータ `FanControlAlertCoordinator`、整形 `FanControlFormatting` /
+`FanControlSensorNames` / `FanControlProfiles`、設定モデル（`FanControlWidgetSettings` ほか）と保存
+（`FanControlSettingKey` / `@FanControlSetting`）。アプリターゲットに `FanControlCore` / `FanControlKit` に加えて
+**`FanControlUI` をリンク**する（DynamicNotchApp は `DynamicNotchApp/project.yml`）。
+
 以下は既存ファイルの switch / enum / 起動処理に手を入れる必要があり、ドロップインでは提供できない
 （ホストアプリごとに行・シグネチャが異なるため）。
 各項目のコードは「追加する断片」であり、周辺の既存コードは実ソースに合わせて読み替えること。
@@ -10,13 +29,34 @@
 ```swift
 import FanControlCore
 import FanControlKit
+import FanControlUI
 ```
 
-設定の保存はドロップイン `FanControlSettingsStorage.swift`（`SettingsStore`、2026-10-20 に sindresorhus/Defaults から置換。
-保存形式は Defaults と同一でキー名も不変）を使う。import は不要（同じアプリモジュール）。対応:
-`Defaults[.x]` → `SettingsStore[.x]`、`@Default(.x)` → `@StoredSetting(.x)`、`Defaults.updates(.x)` → `SettingsStore.updates(.x)`、
-`extension Defaults.Keys { static let x = Key<T>("x", …) }` → `extension StoredKeys { static let x = Key<T>(SettingKey.x, …) }`、
-`Defaults.Serializable`（Codable 構造体）→ `CodableStoredValue`。
+`DynamicNotchApp/` では、`import FanControlUI` の無い既存ファイル（`SettingsRootView`、`NookWidget`、`DebugHooks` 等）の
+ために `Sources/Support/FanControl-Patches.swift` がモジュール内 typealias（`FanControlSettingsView`、`FanControlProfilesTabView`、
+`FanControlProfiles`、`FanControlWidgetSettings`、`FanControlTemperatureWidgetSettings`）を宣言している。
+
+**設定の保存**: Fan Control の設定は `FanControlUI` が `UserDefaults.standard` に保存する（`SettingsStore`、2026-10-20 に
+sindresorhus/Defaults から置換。保存形式は Defaults と同一でキー名も不変）。ストア本体は `FanControlUI` の internal で、
+ホストは公開 API を使う:
+
+```swift
+@FanControlSetting(.widget) private var settings            // SwiftUI（変更で再描画、$settings は Binding）
+FanControlSettingKey.general.value.isEnabled                 // どこからでも読み書き
+for await general in FanControlSettingKey.general.updates() { … }
+// キー: .widget / .general / .thresholds / .temperatureWidget（.name が UserDefaults のキー名）
+```
+
+ホストが自前の `SettingsStore` を持つ場合（`DynamicNotchApp/` はアプリ全体の設定に同じ実装を使う。
+`Sources/Support/SettingsStorage.swift` は `FanControlUI/Storage/SettingsStore.swift` へのシンボリックリンクで、各モジュールに
+internal なコピーができる）、ホスト側でも Fan Control の設定を読むなら、同じキー名で型付きキーを宣言する（同じ
+`UserDefaults` を KVO で監視するので、どちらのストアからの書込も互いに届く）:
+
+```swift
+extension StoredKeys {   // ホストのストア
+    static let fanControlWidgetSettings = Key<FanControlWidgetSettings>(FanControlSettingKey.widget.name, default: .init())
+}
+```
 
 ---
 
@@ -47,14 +87,14 @@ enum NookWidget: … {
         // …
         case .fanControl:
             // 2x1 = .medium (100 pt) / 2w×1h = .doubleWide (250 pt)
-            return SettingsStore[.fanControlWidgetSettings].gridSize == .doubleWide ? .doubleWide : .medium
+            return FanControlSettingKey.widget.value.gridSize == .doubleWide ? .doubleWide : .medium
         }
     }
 
     var prefs: WidgetPrefs {
         switch self {
         // …
-        case .fanControl: return SettingsStore[.fanControlWidgetSettings]
+        case .fanControl: return FanControlSettingKey.widget.value
         }
     }
 
@@ -76,6 +116,9 @@ extension FanControlWidgetSettings: Preferences, WidgetPrefs {
 ```
 
 `FanControlWidgetSettings.GridSizeChoice` の rawValue（medium = 2, doubleWide = 5）は `NookGridSizeType` と一致させてある。
+`WidgetPrefs` / `Preferences` がホストのストアの `CodableStoredValue` を要求する場合、`FanControlWidgetSettings`（`Codable`）は
+その既定実装で準拠する。DynamicNotchApp  `NookWidget.swift` は上記の `FanControlSettingKey.widget.value` ではなく、ホストのストアに
+宣言した同名キー（`SettingsStore[.fanControlWidgetSettings]`、前提の節）で読んでいる。どちらも同じ値を返す。
 
 ### (a-2) ウィジェット種別 `temperature` を追加（tag 11、2026-10-20）
 
@@ -88,7 +131,7 @@ CPU / GPU / SSD の温度は Fan Control ウィジェットから独立した「
     // icon:         case .temperature: return "thermometer.medium"
     // name:         case .temperature: return "Temperature"     // Localizable.strings にキーあり
     // gridSizeType: case .temperature: return .doubleWide        // 常に 5 セル = 250 pt
-    // prefs:        case .temperature: return SettingsStore[.fanControlTemperatureWidgetSettings]
+    // prefs:        case .temperature: return FanControlSettingKey.temperatureWidget.value
     // rawValue:     case .temperature: return "temperature"   /  init?(rawValue:): case "temperature": self = .temperature
 ```
 
@@ -99,14 +142,13 @@ extension FanControlTemperatureWidgetSettings: Preferences, WidgetPrefs {
 }
 ```
 
-設定キーは `SettingKey.fanControlTemperatureWidgetSettings`（= `"fanControlTemperatureWidgetSettings"`、`FanControlSettingsStorage.swift`）、
-型付きキー `StoredKeys.fanControlTemperatureWidgetSettings` は `FanControlTemperatureWidgetSettings.swift` で宣言済み。°C/°F は
+設定キーは `FanControlSettingKey.temperatureWidget`（UserDefaults のキー名 `"fanControlTemperatureWidgetSettings"`、`FanControlUI`）。°C/°F は
 Fan Control ウィジェットの `temperatureUnit` を共用する。ウィジェットの表示は Fan Control ウィジェットと同じく `FanControlWidgetPresence`
 （監視の開始・一時停止解除）に数えられる。
 
 `Preferences` が `init()` を要求する場合（`DynamicNotchApp/` の `Preferences` はそう）、`FanControlWidgetSettings` の
 全引数既定値付き `init(gridSize:…)` ではその要件を満たさないので、同じ拡張に `init() { self.init(gridSize: .medium) }` を足す
-（2026-10-20、`DynamicNotchApp/Sources/NookWidget.swift` で実施）。
+（2026-10-20、`DynamicNotchApp/Sources/NookWidget.swift` で実施。`FanControlUI` の型への拡張なので、指定イニシャライザへの委譲が必須）。
 
 ## (b) Nook グリッドのウィジェット → View 振り分け
 
@@ -128,7 +170,7 @@ case .temperature: FanControlTemperatureWidgetView()   // (a-2)
 ダブルワイド 175 pt、温度 93 pt + 伸縮するグラフ）。
 
 `RootView` が各ウィジェット設定を `.environment(\.xxxWidgetSettings, …)` で配っているが、Fan Control の View は
-`@StoredSetting(.fanControlWidgetSettings)` を直接読むので environment キーの追加は不要。
+`@FanControlSetting(.widget)` を直接読むので environment キーの追加は不要。
 
 ### (b-2) Nook の表示／非表示 → 監視の一時停止（「Nook 非表示中は一時停止」、2026-10-20 追加）
 
@@ -142,17 +184,17 @@ Nook が開いた／閉じたことが分かる箇所（NotchViewModel の状態
 FanControlNookVisibility.nookVisibilityChanged(isVisible: notchState == .nook)
 ```
 
-`FanControlNookVisibility`（`FanControlSettingsView.swift`）は機能が有効かつ `pauseWhenNookHidden` のときだけ
+`FanControlNookVisibility`（ドロップイン `FanControlNookHooks.swift`）は機能が有効かつ `pauseWhenNookHidden` のときだけ
 `FanControlManager.shared.setMonitoringPaused(!isVisible)` を呼び、それ以外は一時停止を解除する。補足:
 
 - ウィジェット自身の `onAppear`（解除）/ `onDisappear`（一時停止）はホストのフックが無い場合の代替として残している。フックがあれば
   Nook を開くたびに確実に解除される。`onDisappear` の一時停止は、表示中の Fan Control ウィジェットが 0 個になったときだけ
   （`FanControlWidgetPresence.visibleCount`。複数画面で片方の Nook を閉じても、もう片方が開いていれば止めない。Nook の中身は
   フェードで消えるので `onDisappear` はフックより後に走る）、かつ `FanControlWidgetPresence.hostReportsVisibility` が false のとき
-  だけ行う（2026-10-20 レビュー指摘）。ホストのフックを入れたら `nookVisibilityChanged` の先頭で
-  `FanControlWidgetPresence.hostReportsVisibility = true` を立てること（未実施: `FanControlSettingsView.swift` の担当）。
+  だけ行う（2026-10-20 レビュー指摘）。`hostReportsVisibility` は `nookVisibilityChanged` の初回呼出しで立つ
+  （`FanControlNookHooks.swift`）。
   プレビュー描画（`previewProfile` / `previewGridSize` 指定時）は数に入れない。
-- 設定ペイン（`FanControlSettingsView`）は表示中 `FanControlManager.setLiveDataHold(true, for:)` で一時停止を保留し（Nook が閉じていても
+- 設定ペイン（`FanControlUI.FanControlSettingsView`）は表示中 `FanControlManager.setLiveDataHold(true, for:)` で一時停止を保留し（Nook が閉じていても
   通常間隔でポーリング）、閉じると保留を外す。ホストの要求（`isMonitoringPaused`）は書き換えないので、元の状態を覚えて戻す必要は無い。
 - 一般設定で「Nook 非表示中は一時停止」をオフにする（または機能を無効にする）と、`FanControlAlertCoordinator.syncManagerSettings()` が
   一時停止を解除する。
@@ -179,8 +221,8 @@ settings: { widget in
 
 ホストの設定ウィンドウは SwiftUI 標準の `Settings` シーン（`App` の `body` に `Settings { … }`）で、中身はペインごとに
 1 タブの `TabView`（`.tabItem { Label(タイトル, systemImage: SF Symbol) }`。macOS がツールバー型のタブとして表示する）である前提。
-そこへ Fan Control のタブを 1 つ足す。ドロップインファイル側はどれも sindresorhus/Settings に依存しない（2026-10-20 に撤去。
-各タブは標準の `Form` + `.formStyle(.grouped)`）。
+そこへ Fan Control のタブを 1 つ足す。ペインは `FanControlUI` の `FanControlSettingsView`（sindresorhus/Settings には依存しない。
+2026-10-20 に撤去。各タブは標準の `Form` + `.formStyle(.grouped)`）。
 
 ```swift
 // ペイン ID（AppKit 側から特定のタブを開くため。ホストが別の選択型を使うならそれに合わせる）
@@ -236,7 +278,7 @@ func applicationDidFinishLaunching(_ notification: Notification) {
     // （アプリがヘルパーの署名に要求する Team ID。docs/integration.md §4。アドホック署名の手動インストール
     // （個人利用）モードでは使われず、インストール済みヘルパーの cdhash が要件になる。docs/helper.md §6）:
     // FanControlManager.shared.clientTeamID = "<TeamID>"
-    let fanSettings = SettingsStore[.fanControlGeneralSettings]
+    let fanSettings = FanControlSettingKey.general.value
     if fanSettings.isEnabled && fanSettings.autoStartMonitoring {
         FanControlManager.shared.startMonitoring()
     }
@@ -247,43 +289,36 @@ func applicationDidFinishLaunching(_ notification: Notification) {
 
 ## (f) `LiveActivity` enum と `LiveActivityView`
 
-```swift
-enum LiveActivity: … {
-    // 既存 case …
-    case fanAlert
-
-    var icon: String { switch self { /* … */ case .fanAlert: return "fan" } }
-    var id: String   { switch self { /* … */ case .fanAlert: return "fanAlert" } }
-    var name: String { switch self { /* … */ case .fanAlert: return "Fan Alert" } }
-
-    init?(rawValue: String) {
-        switch rawValue {
-        // …
-        case "fanAlert": self = .fanAlert
-        default: return nil
-        }
-    }
-}
-```
-
-`LiveActivityView`（ノッチ左右に表示するコンテンツの分岐）:
+`DynamicNotchApp/`（2026-10-21、`Sources/LiveActivities/`）では Live Activity の性質を
+`LiveActivityDescriptor` に集約したため、追加するのは case 1 つと descriptor 1 件、表示の 2 分岐だけ:
 
 ```swift
+// LiveActivity.swift
+#if canImport(FanControlKit)
+case fanAlert
+#endif
+
+// LiveActivityDescriptor.swift（LiveActivity.descriptor の switch）
+#if canImport(FanControlKit)
 case .fanAlert:
-    // 左側
-    FanControlAlertView(part: .leading)
-    // 右側
-    FanControlAlertView(part: .trailing)
-    // 片側だけの場所では FanControlAlertView()
+    return .init(id: "fanAlert", icon: "fan", name: "Fan Alert", priority: 100,
+                 sideWidth: .fixed(132), isConfigurable: false, gate: .always)
+#endif
+
+// LiveActivityView.swift（ノッチ左右の分岐）
+case (.fanAlert, .leading):  FanControlAlertView(part: .leading)
+case (.fanAlert, .trailing): FanControlAlertView(part: .trailing)
 ```
 
-`DynamicNotchApp/` では `LiveActivityView` を生成する箇所自体が未実装のため、(f) は適用済みだが表示は未確認（2026-10-20）。
+`gate: .always` は安全警告なので Live Activities 設定のオン／オフに関係なく表示する意味。`priority: 100` は
+他の Activity（タイマー終了 90 など）より優先して閉じたノッチを占有する。既存の `icon` / `id` / `name` /
+`init?(rawValue:)` を個別の switch で持つ構成なら、上の値をそれぞれの switch に書く。
 
 一時的な展開（バッテリー低下と同じ演出）を使う場合は、`"DynamicNotchBatteryLowTransient"` を購読している箇所に
 `FanControlAlertCoordinator.transientNotificationName`（= `"DynamicNotchFanAlertTransient"`）の購読を並べる。
 
 Live Activity 設定（`LiveActivitiesSettings` の有効/無効リスト）で個別に切り替えられるようにする場合は、
-既存 case と同様に `fanAlert` を一覧に追加する。
+`isConfigurable: true` / `gate: .liveActivitiesSettings` にする（安全警告を消せるようになるためDynamicNotchApp では採らない）。
 
 ## (g) 終了処理 — パッチ不要
 
@@ -293,5 +328,5 @@ Live Activity 設定（`LiveActivitiesSettings` の有効/無効リスト）で�
 同様に、スリープ復帰時の再適用も `FanControlManager` が行う（復帰 5 秒後、セッション中のみ。セッションを新たに開くことはない。
 設定 OFF の場合は再適用せずセッションを閉じる）。アプリ側は
 「スリープ解除後にプロファイルを再適用」設定を `FanControlManager.reapplyProfileAfterWake` に同期するだけでよく、
-これは (e) で生成する `FanControlAlertCoordinator` が起動時と設定変更時（`SettingsStore.updates`）に自動で行う
+これは (e) で生成する `FanControlAlertCoordinator`（`FanControlUI`）が起動時と設定変更時（設定の変更ストリーム）に自動で行う
 （同時に「いずれかの警告が ON」を `FanControlManager.keepAlertsWhilePaused` に同期し、Nook 非表示中も警告用の低頻度ポーリングを続ける）。

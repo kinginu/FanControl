@@ -1,6 +1,4 @@
 #if os(macOS)
-// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
-//
 // "General" tab of the Fan Control settings pane: feature switch, polling,
 // lifecycle options, alerts, temperature thresholds (FanControlThresholdSettings,
 // own stored-setting key), privileged helper and maintenance actions.
@@ -11,9 +9,13 @@ import UniformTypeIdentifiers
 import FanControlCore
 import FanControlKit
 
-struct FanControlGeneralTabView: View {
+public struct FanControlGeneralTabView: View {
 
     @Binding var actionError: String?
+
+    public init(actionError: Binding<String?>) {
+        _actionError = actionError
+    }
 
     @StoredSetting(.fanControlGeneralSettings) private var general
     @StoredSetting(.fanControlThresholdSettings) private var thresholdSettings
@@ -25,7 +27,7 @@ struct FanControlGeneralTabView: View {
 
     private var manager: FanControlManager { FanControlManager.shared }
 
-    var body: some View {
+    public var body: some View {
         // Grouped form (System Settings style); scrolls inside the pane's fixed size
         // (FanControlSettingsView.contentSize).
         Form {
@@ -214,55 +216,6 @@ struct FanControlGeneralTabView: View {
             }
         }
     }
-}
-
-// MARK: - Temperature thresholds (design doc §5.6)
-
-/// User-set alert / emergency / hysteresis thresholds, persisted under their own
-/// stored-setting key (`fanControlThresholdSettings`, separate from
-/// `FanControlGeneralSettings`). Values are whole °C in practice; they are
-/// clamped by `ThresholdBounds` when edited and again when mirrored into
-/// `FanControlManager.safetyPolicy` (`applySafetyThresholds`). Missing keys
-/// decode to the defaults (90 / 95 / 5 °C = `SafetyThresholds.default`).
-struct FanControlThresholdSettings: CodableStoredValue, Equatable, Hashable {
-    var highTemperatureAlert: Double = SafetyThresholds.default.highTemperatureAlert
-    var emergencyTemperature: Double = SafetyThresholds.default.emergencyTemperature
-    var alertHysteresis: Double = SafetyThresholds.default.alertHysteresis
-
-    init() {}
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let defaults = FanControlThresholdSettings()
-        highTemperatureAlert = try container.decodeIfPresent(Double.self, forKey: .highTemperatureAlert)
-            ?? defaults.highTemperatureAlert
-        emergencyTemperature = try container.decodeIfPresent(Double.self, forKey: .emergencyTemperature)
-            ?? defaults.emergencyTemperature
-        alertHysteresis = try container.decodeIfPresent(Double.self, forKey: .alertHysteresis)
-            ?? defaults.alertHysteresis
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case highTemperatureAlert, emergencyTemperature, alertHysteresis
-    }
-
-    /// The stored values as `SafetyThresholds` (unclamped).
-    var thresholds: SafetyThresholds {
-        get {
-            SafetyThresholds(highTemperatureAlert: highTemperatureAlert, emergencyTemperature: emergencyTemperature,
-                             alertHysteresis: alertHysteresis)
-        }
-        set {
-            highTemperatureAlert = newValue.highTemperatureAlert
-            emergencyTemperature = newValue.emergencyTemperature
-            alertHysteresis = newValue.alertHysteresis
-        }
-    }
-}
-
-extension StoredKeys {
-    static let fanControlThresholdSettings = Key<FanControlThresholdSettings>(SettingKey.fanControlThresholdSettings,
-                                                                              default: .init())
 }
 
 // MARK: - Rows

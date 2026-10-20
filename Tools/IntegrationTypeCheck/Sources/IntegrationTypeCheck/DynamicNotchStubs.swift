@@ -1,25 +1,32 @@
 // Type-check scaffolding only. NOT shipped, NOT a drop-in file.
 //
-// Part 1 declares the minimal DynamicNotch-side symbols that the PATCHES.md
-// snippets need, modelled on the host app.
-// The 8 drop-in files themselves reference none of these symbols (only in
-// comments), so they compile without any stub.
+// This module plays the host app: it compiles the drop-in files (symlinks), the host's own
+// settings store (`HostSettingsStore.swift`, a symlink to FanControlUI's internal
+// Storage/SettingsStore.swift — DynamicNotchApp compiles the same file as
+// Sources/Support/SettingsStorage.swift) and this file.
 //
-// Part 2 transcribes the code from DynamicNotchIntegration/PATCHES.md (a)(c)(d)(e)(f)
-// against those stubs, so the snippets are type-checked against the real
-// SettingsStore (FanControlSettingsStorage.swift) / SwiftUI APIs. Keep it in sync with PATCHES.md by hand.
+// Part 1 declares the minimal DynamicNotch-side symbols that the PATCHES.md
+// snippets need, modelled on DynamicNotchApp/. The drop-in files themselves
+// reference none of these symbols (only in comments), so they compile without any stub.
+//
+// Part 2 transcribes the code from DynamicNotchIntegration/PATCHES.md (a)–(f) and the app glue
+// (DynamicNotchApp/Sources/Support/FanControl-Patches.swift) against those stubs, so the
+// snippets are type-checked against the real FanControlUI / SwiftUI APIs. Keep it in sync
+// with PATCHES.md by hand.
 
 import SwiftUI
 import AppKit
 import FanControlCore
 import FanControlKit
+import FanControlUI
 
 // MARK: - Part 1: DynamicNotch stubs
 
-/// host app *Settings.swift: every settings struct conforms to `DynamicNotch.Preferences`.
-/// Requirements are unknown (not visible from the host sources); modelled as the conformances all
-/// settings structs share.
-protocol Preferences: CodableStoredValue, Equatable, Hashable {}
+/// DynamicNotchApp/Sources/Support/SharedDeclarations.swift: every settings struct conforms to
+/// `Preferences` (the host store's `CodableStoredValue` + a bare `init()`).
+protocol Preferences: CodableStoredValue, Hashable {
+    init()
+}
 
 /// host app *WidgetSettings.swift: `DynamicNotch.WidgetPrefs`. NookSettings.swift reads
 /// `widget.prefs.gridSizeType` (existential dispatch), which is the only requirement modelled here.
@@ -31,6 +38,7 @@ protocol WidgetPrefs {
 enum NookWidget: String, CaseIterable, Codable, Hashable, Identifiable {
     case timer
     case fanControl            // PATCHES.md (a)
+    case temperature           // PATCHES.md (a-2)
 
     var id: String { rawValue }
 
@@ -68,12 +76,22 @@ struct TimerWidgetSettingsView: View { var body: some View { EmptyView() } }
 
 // MARK: - Part 2: PATCHES.md snippets
 
+// App glue (FanControl-Patches.swift): the host store's typed keys for the Fan Control settings
+// the host reads itself (NookWidget, NotchView), named after FanControlUI's key names.
+extension StoredKeys {
+    static let fanControlWidgetSettings = Key<FanControlWidgetSettings>(
+        FanControlSettingKey.widget.name, default: .init())
+    static let fanControlTemperatureWidgetSettings = Key<FanControlTemperatureWidgetSettings>(
+        FanControlSettingKey.temperatureWidget.name, default: .init())
+}
+
 // (a) NookWidget additions
 extension NookWidget {
     var icon: String {
         switch self {
         case .timer: return "timer"
         case .fanControl: return "fan"
+        case .temperature: return "thermometer.medium"
         }
     }
 
@@ -81,6 +99,7 @@ extension NookWidget {
         switch self {
         case .timer: return "Timer"
         case .fanControl: return "Fan Control"
+        case .temperature: return "Temperature"
         }
     }
 
@@ -89,6 +108,7 @@ extension NookWidget {
         case .timer: return .small
         case .fanControl:
             return SettingsStore[.fanControlWidgetSettings].gridSize == .doubleWide ? .doubleWide : .medium
+        case .temperature: return .doubleWide
         }
     }
 
@@ -96,14 +116,23 @@ extension NookWidget {
         switch self {
         case .timer: return SettingsStore[.fanControlWidgetSettings] // placeholder for TimerWidgetSettingsKey()
         case .fanControl: return SettingsStore[.fanControlWidgetSettings]
+        case .temperature: return SettingsStore[.fanControlTemperatureWidgetSettings]
         }
     }
 }
 
 extension FanControlWidgetSettings: Preferences, WidgetPrefs {
+    init() { self.init(gridSize: .medium) }
+
     var gridSizeType: NookWidget.NookGridSizeType {
         gridSize == .doubleWide ? .doubleWide : .medium
     }
+}
+
+extension FanControlTemperatureWidgetSettings: Preferences, WidgetPrefs {
+    init() { self.init(historyWindow: .fiveMinutes) }
+
+    var gridSizeType: NookWidget.NookGridSizeType { .doubleWide }
 }
 
 /// `NookGridSizeType` raw values must match `GridSizeChoice` (PATCHES.md (a)).
@@ -118,6 +147,7 @@ struct _PatchB_WidgetDispatch: View {
         switch widget {
         case .timer: TimerWidgetView()
         case .fanControl: FanControlWidgetView()
+        case .temperature: FanControlTemperatureWidgetView()
         }
     }
 }
@@ -129,6 +159,7 @@ struct _PatchC_WidgetSettingsDispatch: View {
         switch widget {
         case .timer: TimerWidgetSettingsView()
         case .fanControl: FanControlWidgetSettingsView()
+        case .temperature: FanControlTemperatureWidgetSettingsView()
         }
     }
 }
@@ -183,7 +214,7 @@ final class _PatchE_AppDelegate: NSObject, NSApplicationDelegate {
                 activeLiveActivitiesManager.removeSync(.fanAlert)
             }
         }
-        let fanSettings = SettingsStore[.fanControlGeneralSettings]
+        let fanSettings = FanControlSettingKey.general.value
         if fanSettings.isEnabled && fanSettings.autoStartMonitoring {
             FanControlManager.shared.startMonitoring()
         }
@@ -208,3 +239,13 @@ struct _PatchF_LiveActivityView: View {
         }
     }
 }
+
+// (b-2) Nook open / close hook
+@MainActor func _PatchB2_nookStateChanged(isNookOpen: Bool) {
+    FanControlNookVisibility.nookVisibilityChanged(isVisible: isNookOpen)
+}
+
+// Host-side reads through its own store and through FanControlUI agree on the key names.
+private let _hostKeyNamesMatch: Bool =
+    StoredKeys.fanControlWidgetSettings.name == FanControlSettingKey.widget.name
+    && StoredKeys.fanControlTemperatureWidgetSettings.name == FanControlSettingKey.temperatureWidget.name

@@ -1,5 +1,6 @@
 #if os(macOS)
-// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
+// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package): host-specific
+// glue on top of FanControlUI.
 //
 // Per-widget options shown in Settings ▸ Widgets when "Fan Control" is selected
 // (wired in `WidgetsSettingsTabView`, see PATCHES.md (c)). Design doc §4.3.
@@ -9,10 +10,11 @@
 import SwiftUI
 import FanControlCore
 import FanControlKit
+import FanControlUI
 
 struct FanControlWidgetSettingsView: View {
 
-    @StoredSetting(.fanControlWidgetSettings) private var settings
+    @FanControlSetting(.widget) private var settings
 
     /// `@Observable`, so SwiftUI tracks the properties read in `body`.
     private var manager: FanControlManager { FanControlManager.shared }

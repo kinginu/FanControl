@@ -1,11 +1,9 @@
 #if os(macOS)
-// Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
-//
 // "Sensors" tab of the Fan Control settings pane: the key temperatures
 // (CPU (max), GPU (max), SSD `TH0x`) at the top, then every discovered sensor
 // with its SMC key, name and temperature (replaces the earlier sensor table,
 // design doc §4.4). Sensor names are community-sourced (`SensorCatalog`) and
-// localized by `FanControlSensorNames` (label from Localizable.strings + the
+// localized by `FanControlSensorNames` (FanControlFormatting.swift; label from Localizable.strings + the
 // verbatim suffix, design doc §5.7); the raw SMC key stays in its own column.
 // Aggregate sensors ("CPU (max)", …; `SensorAggregator`) are listed first,
 // whatever the sort order, with a "sum" icon in the key column. Keys excluded
@@ -17,13 +15,15 @@ import SwiftUI
 import FanControlCore
 import FanControlKit
 
-struct FanControlSensorsTabView: View {
+public struct FanControlSensorsTabView: View {
 
     @StoredSetting(.fanControlWidgetSettings) private var widgetSettings
 
     @State private var sortOrder = [KeyPathComparator(\SensorReading.temperature, order: .reverse)]
 
     private var manager: FanControlManager { FanControlManager.shared }
+
+    public init() {}
 
     private var rows: [SensorReading] {
         let sorted = manager.sensorReadings.sorted(using: sortOrder)
@@ -32,7 +32,7 @@ struct FanControlSensorsTabView: View {
             sortedByTemperature ? FanControlFormatting.rankableFirst(sorted) : sorted)
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             GroupBox {
                 FanControlKeyTemperaturesView(sensors: FanControlFormatting.keyTemperatures(manager.sensorReadings),
@@ -105,29 +105,6 @@ struct FanControlSensorsTabView: View {
 
     private func isHot(_ sensor: SensorReading) -> Bool {
         FanControlFormatting.isAlertTemperature(sensor, policy: manager.safetyPolicy)
-    }
-}
-
-// MARK: - Localized sensor names
-
-/// Localized sensor names (design doc §5.7), built from
-/// `SensorCatalog.nameComponents(for:)`: the label key ("CPU Performance Core",
-/// "Battery", …, "Sensor" for unknown keys, or an aggregate name such as
-/// "CPU (max)") goes through Localizable.strings, the suffix (rest of the SMC
-/// key, sensor index or raw key) is appended verbatim, e.g. `Tp09` →
-/// "CPU 高性能コア 09". `SensorReading.name` / `SensorCatalog.displayName(for:)`
-/// stay English (stored, legacy key).
-///
-/// Supersedes `FanControlFormatting.sensorName(_:)`, which localizes aggregate
-/// names only; the widget files still call that one.
-enum FanControlSensorNames {
-    static func localized(_ sensor: SensorReading) -> String {
-        localized(key: sensor.id)
-    }
-
-    static func localized(key: String) -> String {
-        let components = SensorCatalog.nameComponents(for: key)
-        return components.name(label: NSLocalizedString(components.labelKey, comment: "Sensor name label (SensorCatalog)"))
     }
 }
 #endif
