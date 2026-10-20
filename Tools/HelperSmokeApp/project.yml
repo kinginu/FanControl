@@ -1,17 +1,21 @@
-# XcodeGen spec for a minimal app that validates the FanControlHelper embedding recipe
-# (docs/integration.md §1–§4, docs/helper.md §1–§2). See README.md.
+# XcodeGen spec for FanControlSmoke, the sample host app of the FanControl package: a minimal app
+# that embeds FanControlHelper with the recipe of docs/integration.md §1–§4 / docs/helper.md §1–§2
+# and drives the real FanControlKit API. See README.md (SMAppService and manual-install modes).
 #
-# Identifiers (docs/helper.md "Configuring identifiers"): the three FANCONTROL_* settings below are
-# the only place to change them. Helper-Info.plist (embedded into the helper) is the runtime source;
-# the app's Run Script copies its FanControl* keys into the app's Info.plist and generates the
-# LaunchDaemon plist (Support/embed-helper-config.sh). A host with other identifiers, e.g.
-#   xcodebuild ... FANCONTROL_APP_ID=com.acme.Notch FANCONTROL_HELPER_ID=com.acme.Notch.helper \
-#                  FANCONTROL_HELPER_INFO_PLIST=/path/to/acme-Helper-Info.plist
-# needs no Swift changes (the Helper-Info.plist must name the same identifiers; the build fails otherwise).
+#   xcodegen generate && xcodebuild -project FanControlSmoke.xcodeproj -scheme FanControlSmoke …
 #
-# Signing: ad-hoc by default. Once a Team ID exists, build with
-#   xcodebuild ... DEVELOPMENT_TEAM=<TeamID> CODE_SIGN_IDENTITY="Apple Development"   (or "Developer ID Application")
-# or set DEVELOPMENT_TEAM under settings.base below.
+# Identifiers (docs/helper.md "Configuring identifiers") live in the three FANCONTROL_* settings
+# below and nowhere else. Helper-Info.plist (embedded into the helper) is the runtime source; the
+# app's Run Script copies its FanControl* keys into the app's Info.plist, checks the embedded
+# helper, and generates the SMAppService LaunchDaemon plist (Support/embed-helper-config.sh).
+# Another host only overrides them, e.g.
+#   xcodebuild … FANCONTROL_APP_ID=com.acme.Notch FANCONTROL_HELPER_ID=com.acme.Notch.helper \
+#                FANCONTROL_HELPER_INFO_PLIST=/path/to/acme-Helper-Info.plist
+# (that plist must name the same identifiers; the build fails otherwise).
+#
+# Signing: ad-hoc ("-") by default, which is what manual-install mode uses. For SMAppService mode
+# pass DEVELOPMENT_TEAM=<TeamID> CODE_SIGN_IDENTITY="Apple Development" (or "Developer ID
+# Application") on the command line, or set them under settings.base.
 name: FanControlSmoke
 options:
   bundleIdPrefix: com.example.dynamicnotch
@@ -23,11 +27,14 @@ packages:
     path: ../..
 settings:
   base:
+    # --- Identifiers (must match FANCONTROL_HELPER_INFO_PLIST) ---
     FANCONTROL_APP_ID: com.example.dynamicnotch.DynamicNotch
     FANCONTROL_HELPER_ID: com.example.dynamicnotch.DynamicNotch.fanfi
     FANCONTROL_HELPER_INFO_PLIST: "$(SRCROOT)/../../Support/Helper-Info.plist"
+    # --- Toolchain ---
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "26.0"
+    # --- Signing ---
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
@@ -39,8 +46,7 @@ settings:
     # Debug builds otherwise split the app into a stub + FanControlSmoke.debug.dylib (SwiftUI
     # previews). With ad-hoc signing + Hardened Runtime, library validation refuses to load that
     # dylib ("mapping process and mapped file (non-platform) have different Team IDs": ad-hoc code
-    # has no Team ID), so the Debug app would not launch. Manual-install mode needs a launchable
-    # ad-hoc build (README「手動インストールモードでのテスト」).
+    # has no Team ID), so the Debug app would not launch.
     ENABLE_DEBUG_DYLIB: NO
 targets:
   FanControlHelper:
@@ -60,32 +66,19 @@ targets:
         PRODUCT_NAME: FanControlHelper
         # Code-signing identifier; must equal FanControlHelperIdentifier in the embedded Info.plist.
         PRODUCT_BUNDLE_IDENTIFIER: $(FANCONTROL_HELPER_ID)
+        # A bare executable: its Info.plist is the __TEXT,__info_plist section (Bundle.main reads it).
         GENERATE_INFOPLIST_FILE: NO
         CREATE_INFOPLIST_SECTION_IN_BINARY: NO
         INFOPLIST_FILE: ""
         OTHER_LDFLAGS: "$(inherited) -sectcreate __TEXT __info_plist $(FANCONTROL_HELPER_INFO_PLIST)"
-        ENABLE_HARDENED_RUNTIME: YES
         SKIP_INSTALL: YES
   FanControlSmoke:
     type: application
     platform: macOS
     sources:
       - path: Sources
-    postBuildScripts:
-      # Copies the FanControl* identifiers from Helper-Info.plist into the app's Info.plist and
-      # writes Contents/Library/LaunchDaemons/<FanControlMachServiceName>.plist (SMAppService).
-      # Runs before code signing. Needs ENABLE_USER_SCRIPT_SANDBOXING = NO (the output name
-      # depends on the plist's contents).
-      - name: Embed FanControl identifiers
-        script: |
-          "${SRCROOT}/../../Support/embed-helper-config.sh" "${FANCONTROL_HELPER_INFO_PLIST}"
-        # The processed Info.plist is listed so the script runs after ProcessInfoPlistFile;
-        # otherwise the two can race and the generated plist overwrites the keys.
-        inputFiles:
-          - $(FANCONTROL_HELPER_INFO_PLIST)
-          - $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)
-        basedOnDependencyAnalysis: false
     dependencies:
+      # Copied to Contents/MacOS/FanControlHelper ("Embed Dependencies", before the Run Script).
       - target: FanControlHelper
         embed: true
         codeSign: true
@@ -95,6 +88,23 @@ targets:
         product: FanControlCore
       - package: FanControl
         product: FanControlKit
+    postBuildScripts:
+      # Copies the FanControl* identifiers from Helper-Info.plist into the app's Info.plist, checks
+      # that the embedded helper carries the same ones, and writes
+      # Contents/Library/LaunchDaemons/<FanControlMachServiceName>.plist (SMAppService). Runs
+      # before code signing. Needs ENABLE_USER_SCRIPT_SANDBOXING = NO (the output name depends on
+      # the plist's contents, so it cannot be declared).
+      - name: Embed FanControl identifiers
+        script: |
+          "${SRCROOT}/../../Support/embed-helper-config.sh" "${FANCONTROL_HELPER_INFO_PLIST}" \
+            --app "${TARGET_BUILD_DIR}/${WRAPPER_NAME}"
+        # The processed Info.plist and the embedded helper are inputs so the script runs after
+        # ProcessInfoPlistFile and the helper copy; otherwise they can race.
+        inputFiles:
+          - $(FANCONTROL_HELPER_INFO_PLIST)
+          - $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)
+          - $(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/FanControlHelper
+        basedOnDependencyAnalysis: false
     settings:
       base:
         PRODUCT_NAME: FanControlSmoke
@@ -106,5 +116,4 @@ targets:
         INFOPLIST_KEY_LSUIElement: YES
         INFOPLIST_KEY_CFBundleDisplayName: FanControlSmoke
         ENABLE_APP_SANDBOX: NO
-        ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: ""

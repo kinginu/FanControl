@@ -1,9 +1,7 @@
 #!/bin/bash
 # Manual (personal use) installation of FanControlHelper as a LaunchDaemon, for ad-hoc
 # signed builds without a Team ID (no SMAppService). See docs/helper.md
-# 「手動インストール（個人利用モード）」.
-#
-#   sudo ./install.sh [--dry-run] /path/to/DynamicNotch.app
+# 「手動インストール（個人利用モード）」 and README.md.
 #
 # - verifies the app and its embedded helper (Contents/MacOS/FanControlHelper),
 # - reads the identifiers (label = Mach service, helper and app identifiers) from the helper's
@@ -11,51 +9,47 @@
 # - pins the app's cdhash into the LaunchDaemon's FANCONTROL_CLIENT_REQUIREMENT,
 # - installs the helper to /Library/PrivilegedHelperTools/<label> (root:wheel 0755) and the
 #   plist to /Library/LaunchDaemons/<label>.plist (root:wheel 0644), then bootstraps it.
-# Idempotent: re-run after every rebuild of the app (its cdhash changes).
-# --dry-run: no root needed, changes nothing; prints the generated plist and the commands.
+# Idempotent: re-run after every rebuild of the app (its cdhash changes). When the installed
+# files are already exactly what it would install and the job is loaded, it changes nothing
+# (the running helper is not restarted) unless --force is given.
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR source=common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
-usage() { printf 'usage: sudo %s [--dry-run] /path/to/App.app\n' "$(basename "$0")" >&2; exit 64; }
+usage() {
+    cat <<USAGE
+usage: sudo $FC_PROG [--dry-run] [--force] [--app] /path/to/App.app
 
-DRY_RUN=0
-APP=""
-for arg in "$@"; do
-    case "$arg" in
-        --dry-run|-n) DRY_RUN=1 ;;
-        -h|--help) usage ;;
-        -*) printf 'unknown option: %s\n' "$arg" >&2; usage ;;
-        *) [[ -z "$APP" ]] || usage; APP="$arg" ;;
-    esac
-done
-[[ -n "$APP" ]] || usage
+Installs the FanControlHelper embedded in App.app as a LaunchDaemon pinned to App.app's cdhash.
 
-run() {
-    if (( DRY_RUN )); then
-        printf '[dry-run]'; printf ' %q' "$@"; printf '\n'
-    else
-        "$@"
-    fi
+  -n, --dry-run   verify and print the generated plist and the commands; change nothing (no root)
+  -f, --force     reinstall and restart the helper even if the installed files are current
+      --app PATH  the app (same as the positional argument)
+  -h, --help      show this help
+USAGE
 }
 
-if (( ! DRY_RUN )) && [[ "$(id -u)" != 0 ]]; then
-    die "must be run as root: sudo $0 $APP   (or --dry-run to preview)"
-fi
-[[ -f "$TEMPLATE" ]] || die "template not found: $TEMPLATE"
+FORCE=0
+handle_option() {
+    case "$1" in
+        -f|--force) FORCE=1 ;;
+        *) return 1 ;;
+    esac
+}
+
+parse_cli "$@"
+take_app_argument required
+require_root
 
 # --- 1. Check the app and the embedded helper -------------------------------------------
-[[ -d "$APP" ]] || die "not a directory: $APP"
-APP="$(cd "$APP" && pwd -P)"
+APP="$(resolve_app "$APP")"
 HELPER_SRC="$APP/$HELPER_IN_APP"
-[[ -f "$HELPER_SRC" ]] || die "helper not found inside the app: $HELPER_SRC"
 load_identifiers_from_app "$APP"
-[[ "$LABEL" != com.apple.* ]] || die "refusing to install a job labelled $LABEL"
-info "Identifiers (from the helper's embedded Info.plist): label/Mach service $LABEL, helper $HELPER_ID, app $APP_BUNDLE_ID"
+assert_label_allowed
+info "Identifiers (from the helper's embedded Info.plist): $(describe_identifiers)"
 
-bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist" 2>/dev/null)" \
-    || die "cannot read CFBundleIdentifier of $APP"
-[[ "$bundle_id" == "$APP_BUNDLE_ID" ]] || die "bundle identifier is '$bundle_id', expected '$APP_BUNDLE_ID'"
+bundle_id="$(bundle_identifier "$APP")"
+[[ "$bundle_id" == "$APP_BUNDLE_ID" ]] || die "the app's CFBundleIdentifier is '$bundle_id', expected '$APP_BUNDLE_ID' (FanControlClientBundleIdentifier)"
 
 info "Verifying signatures"
 codesign --verify --strict --verbose=1 "$APP" || die "app signature is invalid: $APP"
@@ -66,7 +60,7 @@ app_ident="$(signing_identifier "$APP")"
 helper_ident="$(signing_identifier "$HELPER_SRC")"
 [[ "$helper_ident" == "$HELPER_ID" ]] || die "helper signing identifier is '$helper_ident', expected '$HELPER_ID' (FanControlHelperIdentifier)"
 
-if codesign -d --entitlements - --xml "$HELPER_SRC" 2>/dev/null | grep -q 'com.apple.application-identifier'; then
+if has_entitlement_key "$HELPER_SRC" com.apple.application-identifier; then
     warn "the helper carries com.apple.application-identifier (injected by Xcode). If launchd/AMFI refuses to"
     warn "start it (see 'log show --predicate \"process == \\\"amfid\\\" OR sender == \\\"AppleMobileFileIntegrity\\\"\"'),"
     warn "see docs/helper.md 「手動インストール（個人利用モード）」."
@@ -96,57 +90,50 @@ info "Helper: $HELPER_SRC"
 info "        identifier $helper_ident, cdhash $HELPER_CDHASH"
 info "Client requirement: $REQUIREMENT"
 
-# --- 2. Refuse to clobber an SMAppService registration ---------------------------------
+# --- 2. Refuse to clobber an SMAppService registration or another vendor's job ------------
 existing_path="$(loaded_service_path)"
 if [[ -n "$existing_path" && "$existing_path" != "$PLIST_DEST" ]]; then
     die "system/$LABEL is already loaded from '$existing_path' (SMAppService?). Unregister it first (app / System Settings ▸ Login Items), then re-run."
 fi
-# Never overwrite a LaunchDaemon plist that this script did not write.
 if [[ -e "$PLIST_DEST" && -z "$(pinned_requirement "$PLIST_DEST")" ]]; then
     die "$PLIST_DEST exists but has no ${ENV_KEY}; it was not installed by this script. Remove it yourself if it is stale."
 fi
 
-# --- 3. Generate the LaunchDaemon plist ---------------------------------------------
-TMP_PLIST="$(mktemp -t fanfi-manual-plist)"
-trap 'rm -f "$TMP_PLIST"' EXIT
-cp "$TEMPLATE" "$TMP_PLIST"
-plutil -replace Label -string "$LABEL" "$TMP_PLIST"
-plutil -replace Program -string "$HELPER_DEST" "$TMP_PLIST"
-plutil -replace MachServices -json "{\"${LABEL}\":true}" "$TMP_PLIST"   # LABEL is a validated reverse-DNS name
-plutil -replace "EnvironmentVariables.${ENV_KEY}" -string "$REQUIREMENT" "$TMP_PLIST"
-plutil -convert xml1 "$TMP_PLIST"
-plutil -lint -s "$TMP_PLIST" || die "generated plist is invalid"
-[[ "$(pinned_requirement "$TMP_PLIST")" == "$REQUIREMENT" ]] || die "generated plist does not contain the requirement"
-[[ "$(plutil -extract Label raw -o - "$TMP_PLIST")" == "$LABEL" ]] || die "generated plist has the wrong Label"
-[[ "$(plutil -extract MachServices json -o - "$TMP_PLIST" | tr -d '[:space:]')" == "{\"${LABEL}\":true}" ]] \
-    || die "generated plist has the wrong MachServices"
+# --- 3. Generate the LaunchDaemon plist ---------------------------------------------------
+NEW_PLIST="$(fc_tmpfile launchdaemon.plist)"
+generate_manual_plist "$NEW_PLIST" "$REQUIREMENT"
 if (( DRY_RUN )); then
     info "Generated $PLIST_DEST (preview):"
-    cat "$TMP_PLIST"
+    cat "$NEW_PLIST"
 fi
 
-# --- 4. Install -------------------------------------------------------------------
-if is_loaded; then
-    info "Stopping the loaded helper (fans return to automatic on SIGTERM)"
-    if (( DRY_RUN )); then
-        run launchctl bootout "system/$LABEL"
-    else
-        launchctl bootout "system/$LABEL" || warn "bootout returned $? (continuing)"
-        for _ in 1 2 3 4 5 6 7 8 9 10; do is_loaded || break; sleep 0.5; done
-        is_loaded && die "system/$LABEL is still loaded after bootout"
+# --- 4. Install (skipped when already current) --------------------------------------------
+state="$(install_state "$HELPER_SRC" "$NEW_PLIST")"
+loaded=0
+job_state="not loaded"
+if is_loaded; then loaded=1; job_state=loaded; fi
+info "Installed files: $state; system/$LABEL: $job_state"
+
+if [[ "$state" == current ]] && (( loaded && ! FORCE )); then
+    info "Already installed and up to date; nothing to do (--force reinstalls and restarts the helper)."
+    exit 0
+fi
+
+if [[ "$state" != current ]] || (( FORCE )); then
+    bootout_job
+
+    info "Installing helper to $HELPER_DEST"
+    run install -d -o root -g wheel -m 0755 /Library/PrivilegedHelperTools
+    run install -o root -g wheel -m 0755 "$HELPER_SRC" "$HELPER_DEST"
+    if (( ! DRY_RUN )); then
+        codesign --verify --strict "$HELPER_DEST" || die "installed helper fails codesign --verify"
+        installed_hash="$(cdhash_of "$HELPER_DEST")"
+        [[ "$installed_hash" == "$HELPER_CDHASH" ]] || die "installed helper cdhash $installed_hash differs from the source ($HELPER_CDHASH)"
     fi
-fi
 
-info "Installing helper to $HELPER_DEST"
-run install -d -o root -g wheel -m 0755 /Library/PrivilegedHelperTools
-run install -o root -g wheel -m 0755 "$HELPER_SRC" "$HELPER_DEST"
-if (( ! DRY_RUN )); then
-    codesign --verify --strict "$HELPER_DEST" || die "installed helper fails codesign --verify"
-    [[ "$(cdhash_of "$HELPER_DEST")" == "$HELPER_CDHASH" ]] || die "installed helper cdhash differs from the source"
+    info "Installing $PLIST_DEST"
+    run install -o root -g wheel -m 0644 "$NEW_PLIST" "$PLIST_DEST"
 fi
-
-info "Installing $PLIST_DEST"
-run install -o root -g wheel -m 0644 "$TMP_PLIST" "$PLIST_DEST"
 
 info "Bootstrapping system/$LABEL (on demand via its Mach service; RunAtLoad false)"
 run launchctl enable "system/$LABEL"
@@ -158,10 +145,10 @@ if (( DRY_RUN )); then
 fi
 
 info "launchctl print system/$LABEL (summary)"
-launchctl print "system/$LABEL" | grep -E '^[[:space:]]*(state|path|program|pid|last exit code|runs|FANCONTROL_CLIENT_REQUIREMENT)( =|=>|:)' || true
+print_job_summary
 cat <<MSG
 
 Installed. Launch the app and use "Helper version" (or open a write session) to connect.
 After rebuilding or replacing the app, run this script again (the pinned cdhash changes).
-Remove with: sudo $(dirname "$0")/uninstall.sh
+Remove with: sudo $SCRIPT_DIR/uninstall.sh --app "$APP"
 MSG

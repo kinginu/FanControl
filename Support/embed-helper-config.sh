@@ -3,9 +3,6 @@
 # embedded into FanControlHelper with -sectcreate) to the host app, so app, helper and launchd
 # agree without editing Swift. docs/helper.md "Configuring identifiers".
 #
-#   embed-helper-config.sh <Helper-Info.plist> [/path/to/App.app]
-#   embed-helper-config.sh --launchd-plist-only <Helper-Info.plist> <output-dir>
-#
 # As an Xcode Run Script phase of the APP target (after "Copy Files"/embedding, before signing,
 # with ENABLE_USER_SCRIPT_SANDBOXING = NO and $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH) as an input
 # file so it runs after ProcessInfoPlistFile), omit the app: it uses $TARGET_BUILD_DIR/$WRAPPER_NAME.
@@ -13,22 +10,41 @@
 #   1. resolves FanControlHelperIdentifier / FanControlMachServiceName /
 #      FanControlClientBundleIdentifier / FanControlClientTeamID with the same fallbacks as
 #      FanControlIdentifiers.swift (Support/identifiers.sh),
-#   2. checks the app's CFBundleIdentifier against FanControlClientBundleIdentifier (the helper's
-#      code-signing identifier is checked by install.sh and, at connect time, by the app),
+#   2. checks the app's CFBundleIdentifier against FanControlClientBundleIdentifier, and that the
+#      helper embedded at Contents/MacOS/FanControlHelper carries the same identifiers in its
+#      __TEXT,__info_plist (its code-signing identifier is checked by install.sh and, at connect
+#      time, by the app),
 #   3. writes the four keys into <App>/Contents/Info.plist (FanControlHelperConstants reads them
 #      in the app),
 #   4. writes the SMAppService LaunchDaemon plist <App>/Contents/Library/LaunchDaemons/<label>.plist
 #      (Label, BundleProgram, MachServices, AssociatedBundleIdentifiers).
+# Idempotent: running it twice leaves the same files.
 set -euo pipefail
-SUPPORT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=identifiers.sh
-source "${SUPPORT_DIR}/identifiers.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/identifiers.sh"
 
 usage() {
-    printf 'usage: %s <Helper-Info.plist> [App.app]\n       %s --launchd-plist-only <Helper-Info.plist> <output-dir>\n' \
-        "$(basename "$0")" "$(basename "$0")" >&2
-    exit 64
+    cat <<USAGE
+usage: $FC_PROG [--dry-run] <Helper-Info.plist> [[--app] App.app]
+       $FC_PROG [--dry-run] --launchd-plist-only <Helper-Info.plist> <output-dir>
+
+Copies the FanControl* identifiers of Helper-Info.plist into App.app's Info.plist and writes
+App.app/Contents/Library/LaunchDaemons/<label>.plist. Without an app (Xcode Run Script phase),
+the app is \$TARGET_BUILD_DIR/\$WRAPPER_NAME.
+
+  -n, --dry-run             print what would be written; change nothing
+      --app PATH            the app (same as the second positional argument)
+      --launchd-plist-only  only write <output-dir>/<label>.plist and print its path
+  -h, --help                show this help
+USAGE
+}
+
+LAUNCHD_ONLY=0
+handle_option() {
+    case "$1" in
+        --launchd-plist-only) LAUNCHD_ONLY=1 ;;
+        *) return 1 ;;
+    esac
 }
 
 # write_launchd_plist <output-file>: the SMAppService LaunchDaemon (values are validated
@@ -59,37 +75,78 @@ write_launchd_plist() {
 </dict>
 </plist>
 PLIST
-    plutil -lint -s "$1" || die "generated $1 is invalid"
+    plutil -lint -s "$1" >/dev/null || die "generated $1 is invalid"
 }
 
-if [[ "${1:-}" == "--launchd-plist-only" ]]; then
-    [[ $# == 3 ]] || usage
-    resolve_identifiers_from_plist "$2"
-    mkdir -p "$3"
-    write_launchd_plist "$3/${LABEL}.plist"
-    printf '%s\n' "$3/${LABEL}.plist"
+parse_cli "$@"
+(( FC_NARGS >= 1 )) || usage_error "no Helper-Info.plist given"
+HELPER_INFO="${FC_ARGS[0]}"
+resolve_identifiers_from_plist "$HELPER_INFO"
+
+# --- --launchd-plist-only ------------------------------------------------------------------
+if (( LAUNCHD_ONLY )); then
+    [[ -z "$APP" ]] || usage_error "--launchd-plist-only takes no app"
+    (( FC_NARGS == 2 )) || usage_error "--launchd-plist-only needs <Helper-Info.plist> <output-dir>"
+    out="${FC_ARGS[1]}/${LABEL}.plist"
+    if (( DRY_RUN )); then
+        preview="$(fc_tmpfile launchd.plist)"
+        write_launchd_plist "$preview"
+        info "Would write $out:" >&2
+        cat "$preview"
+        exit 0
+    fi
+    mkdir -p "${FC_ARGS[1]}"
+    write_launchd_plist "$out"
+    printf '%s\n' "$out"
     exit 0
 fi
 
-[[ $# == 1 || $# == 2 ]] || usage
-HELPER_INFO="$1"
-if [[ $# == 2 ]]; then
-    APP="$2"
-else
-    [[ -n "${TARGET_BUILD_DIR:-}" && -n "${WRAPPER_NAME:-}" ]] || die "no app given and not running inside Xcode"
+# --- App mode ------------------------------------------------------------------------------
+(( FC_NARGS <= 2 )) || usage_error "unexpected arguments: ${FC_ARGS[*]:2}"
+if (( FC_NARGS == 2 )); then
+    [[ -z "$APP" ]] || usage_error "more than one app given"
+    APP="${FC_ARGS[1]}"
+fi
+if [[ -z "$APP" ]]; then
+    [[ -n "${TARGET_BUILD_DIR:-}" && -n "${WRAPPER_NAME:-}" ]] || usage_error "no app given and not running inside Xcode"
     APP="${TARGET_BUILD_DIR}/${WRAPPER_NAME}"
 fi
+APP="$(resolve_app "$APP")"
 APP_INFO="$APP/Contents/Info.plist"
-[[ -f "$APP_INFO" ]] || die "not an app bundle (no Contents/Info.plist): $APP"
 
-resolve_identifiers_from_plist "$HELPER_INFO"
-
-bundle_id="$(plist_string "$APP_INFO" CFBundleIdentifier)"
+bundle_id="$(bundle_identifier "$APP")"
 [[ "$bundle_id" == "$APP_BUNDLE_ID" ]] \
     || die "the app's CFBundleIdentifier is '$bundle_id' but $HELPER_INFO sets FanControlClientBundleIdentifier '$APP_BUNDLE_ID' (the helper would reject this app)"
 helper_bundle_id="$(plist_string "$HELPER_INFO" CFBundleIdentifier)"
 if [[ -n "$helper_bundle_id" && "$helper_bundle_id" != "$HELPER_ID" ]]; then
-    printf 'warning: %s: CFBundleIdentifier %s != FanControlHelperIdentifier %s\n' "$HELPER_INFO" "$helper_bundle_id" "$HELPER_ID" >&2
+    warn "$HELPER_INFO: CFBundleIdentifier $helper_bundle_id != FanControlHelperIdentifier $HELPER_ID"
+fi
+
+# The helper already copied into the app must carry the same identifiers (a stale helper from
+# an earlier build, or one built with another Helper-Info.plist, would serve another label).
+EMBEDDED_HELPER="$APP/Contents/MacOS/FanControlHelper"
+if [[ -f "$EMBEDDED_HELPER" ]]; then
+    expected="$(describe_identifiers)"
+    embedded="$(fc_tmpfile embedded-helper-info.plist)"
+    embedded_info_plist "$EMBEDDED_HELPER" "$embedded"
+    resolve_identifiers_from_plist "$embedded"
+    actual="$(describe_identifiers)"
+    [[ "$actual" == "$expected" ]] \
+        || die "$EMBEDDED_HELPER embeds identifiers ($actual) that differ from $HELPER_INFO ($expected); rebuild the helper with the same Helper-Info.plist"
+else
+    warn "$EMBEDDED_HELPER not found (yet); embed the helper before this phase"
+fi
+
+DAEMONS="$APP/Contents/Library/LaunchDaemons"
+DAEMON_PLIST="$DAEMONS/${LABEL}.plist"
+
+if (( DRY_RUN )); then
+    info "Would set in $APP_INFO: FanControlHelperIdentifier=$HELPER_ID FanControlMachServiceName=$LABEL FanControlClientBundleIdentifier=$APP_BUNDLE_ID FanControlClientTeamID=${TEAM_ID:-<removed>}"
+    preview="$(fc_tmpfile launchd.plist)"
+    write_launchd_plist "$preview"
+    info "Would write $DAEMON_PLIST:"
+    cat "$preview"
+    exit 0
 fi
 
 plutil -replace FanControlHelperIdentifier -string "$HELPER_ID" "$APP_INFO"
@@ -101,12 +158,10 @@ else
     plutil -remove FanControlClientTeamID "$APP_INFO" >/dev/null 2>&1 || true
 fi
 
-DAEMONS="$APP/Contents/Library/LaunchDaemons"
 mkdir -p "$DAEMONS"
-write_launchd_plist "$DAEMONS/${LABEL}.plist"
+write_launchd_plist "$DAEMON_PLIST"
 for other in "$DAEMONS"/*.plist; do
-    [[ "$other" == "$DAEMONS/${LABEL}.plist" ]] && continue
-    printf 'warning: %s is not the FanControl LaunchDaemon (%s.plist); stale copy?\n' "$other" "$LABEL" >&2
+    [[ -e "$other" && "$other" != "$DAEMON_PLIST" ]] || continue
+    warn "$other is not the FanControl LaunchDaemon (${LABEL}.plist); stale copy?"
 done
-printf 'FanControl identifiers: helper %s, Mach service %s, client %s%s\n' \
-    "$HELPER_ID" "$LABEL" "$APP_BUNDLE_ID" "${TEAM_ID:+, Team ID $TEAM_ID}"
+printf 'FanControl identifiers: %s\n' "$(describe_identifiers)"
