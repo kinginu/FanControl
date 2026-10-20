@@ -1,6 +1,7 @@
 # DynamicNotch への Fan Control 統合手順
 
-対象: DynamicNotch の実 Xcode プロジェクト（最小 macOS 14.6、バンドル ID `com.example.dynamicnotch.DynamicNotch`）。
+対象: DynamicNotch の実 Xcode プロジェクト（バンドル ID `com.example.dynamicnotch.DynamicNotch`）。
+FanControl パッケージは `swift-tools-version: 6.0`・Swift 6 言語モード・**デプロイメントターゲット macOS 26**（2026-10-20）。アプリターゲットも macOS 26 以上にする。
 設計: `docs/integration-design.md`（§4 UI/ウィジェット/Live Activity/設定、§6 段階案 = 案C）。
 ヘルパーの詳細: `docs/helper.md`。
 対応プラットフォーム: **Apple Silicon のみ（Intel は 2026-10-20 に廃止）**。書込は `F<n>Md` + `F<n>Tg` だけで、Intel の `FS! ` 経路は削除済み。
@@ -287,7 +288,7 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 
 ### Phase 2/3: ヘルパー登録
 - [ ] 一般タブのヘルパー状態が「未インストール」→「ヘルパーをインストール…」→「承認待ち」になり、案内文と「ログイン項目を開く」が表示される。
-- [ ] システム設定 ▸ 一般 ▸ ログイン項目と機能拡張（macOS 15）/ ログイン項目（macOS 14）で DynamicNotch を許可 →「再確認」で「インストール済み」。
+- [ ] システム設定 ▸ 一般 ▸ ログイン項目と機能拡張で DynamicNotch を許可 →「再確認」で「インストール済み」。
 - [ ] `.notFound`（plist 配置ミス）では「アプリバンドル内に見つかりません」と案内のみ表示され、インストールボタンは出ない。
 - [ ] `sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi` でサービスが見える。
 - [ ] `log stream --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'` に接続ログ。
@@ -384,8 +385,9 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
   - ドロップイン 8 ファイル本体の型エラーは無かった。
   `FanControlKit` の macOS 依存部は実 SDK でビルド済み（README「検証状況」）。
 - UI が参照する Kit/Core の API（メンバー名、引数ラベル、`async`/`throws`、読み取り専用か否か、static か否か、
-  `HelperInstallStatus` / `HelperConnectionState` の case）は実装と突き合わせ済み。`FanControlManager` は `@MainActor` ではない
-  （`@unchecked Sendable`、状態はメインスレッドで更新）。UI はメインスレッドから呼び、async メソッドは `Task { @MainActor in … }` で待つ。
+  `HelperInstallStatus` / `HelperConnectionState` の case）は実装と突き合わせ済み。`FanControlManager` は 2026-10-20 から `@MainActor`
+  （SMC I/O は専用キュー上の actor `FanControlPoller`。`docs/kit.md`「Threading model」）。UI は main actor から同期メソッドを直接呼び、
+  async メソッドは `Task { @MainActor in … }` で待つ（ドロップインは変更不要。両言語モードで型検査済み）。
 - `Settings.Section(label:content:)` / `Settings.Container(contentWidth:)` / `Settings.Pane(identifier:title:toolbarIcon:)` /
   `Settings.PaneHostingController(pane:)` は Settings 3.1.2 の実 API で型検査済み。DynamicNotch が古い Settings（2.x）を
   固定していれば差異がありうるので、実プロジェクトの Package.resolved を確認する（参照ソースでは `Section { … }`）。

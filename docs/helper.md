@@ -13,11 +13,15 @@ arm64 でないハードウェア（`sysctl hw.optional.arm64` ≠ 1、`FanContr
 | `Sources/FanControlXPC/FanControlHelperConstants.swift` | Mach サービス名、plist 名、Team ID プレースホルダ、書込許可リスト |
 | `Sources/FanControlXPC/FanControlHelperProtocol.swift` | `@objc` XPC プロトコル、エラーコード、`makeHelperInterface()` |
 | `Sources/FanControlSMC/` | IOKit AppleSMC アクセス（`SMCConnection`, `SMCClient`） |
-| `Sources/FanControlHelper/` | デーモン本体（`main.swift`, `HelperListenerDelegate`, `HelperService`, `SessionRegistry`） |
+| `Sources/FanControlHelper/` | デーモン本体（`main.swift`, `HelperListenerDelegate`, `HelperService`, `SessionRegistry`, `PowerObserver`） |
 | `Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` | launchd plist（唯一の正本） |
 | `Support/Helper-Info.plist` | ヘルパー実行ファイルに埋め込む Info.plist テンプレート |
 | `Sources/FanControlXPC/ManualInstallMode.swift` | 手動インストール（個人利用）モードの定数・要件文字列ビルダー・検証（§6） |
 | `Support/manual-install/` | 手動インストール用スクリプト `install.sh` / `uninstall.sh` / `status.sh` と LaunchDaemon plist テンプレート（§6） |
+
+ビルド設定（2026-10-20）: `swift-tools-version: 6.0`、Swift 6 言語モード（strict concurrency complete）、デプロイメントターゲット macOS 26。
+並行性: `SessionRegistry` は全状態を `Synchronization.Mutex` に入れた checked `Sendable`（XPC の各呼出しと電源通知はミューテックスで直列化され、SMC I/O もその中で行う）、
+`PowerObserver` は電源通知キューを executor とする actor（§5「スリープ／復帰」）。`@unchecked Sendable` はヘルパー側に残っていない。
 
 ## 1. バンドル配置
 
@@ -81,7 +85,7 @@ case .notFound: /* plist がバンドルに無い・配置ミス */ break
 }
 ```
 
-- `register()` 直後は通常 `.requiresApproval` になり、ユーザーが「システム設定 > 一般 > ログイン項目と機能拡張」（macOS 15）/「ログイン項目」（macOS 14）で許可するまで起動しない。`openSystemSettingsLoginItems()` で該当画面を開ける。`AssociatedBundleIdentifiers` により設定画面には DynamicNotch として表示される。
+- `register()` 直後は通常 `.requiresApproval` になり、ユーザーが「システム設定 > 一般 > ログイン項目と機能拡張」で許可するまで起動しない。`openSystemSettingsLoginItems()` で該当画面を開ける。`AssociatedBundleIdentifiers` により設定画面には DynamicNotch として表示される。
 - 承認後はオンデマンド起動（`RunAtLoad` = false、`MachServices` で接続時に launchd が起動）。
 - 接続: `NSXPCConnection(machServiceName: FanControlHelperConstants.machServiceName, options: .privileged)`、`remoteObjectInterface = makeHelperInterface()`。
 - アプリ側の各呼び出しは `HelperClient.callTimeout`（既定 8 秒）で打ち切られる。タイムアウト時は
@@ -203,6 +207,7 @@ codesign -d -r- DynamicNotch.app
 
 実装: `PowerObserver`（`Sources/FanControlHelper/PowerObserver.swift`、IOKit の薄い糊）が `IORegisterForSystemPower` を登録する。
 ヘルパーは `dispatchMain()` で動き main の CFRunLoop を回さないため、通知ポートは run loop source ではなく `IONotificationPortSetDispatchQueue` で専用キューに載せる。
+`PowerObserver` はこの専用シリアルキュー（`DispatchSerialQueue`）を executor とする actor で、IOKit コールバックはそのキュー上で `assumeIsolated` して処理する（`start()` は `queue.sync` で同期的に登録）。
 判断はすべて `FanControlXPC.PowerTransitionPolicy`（純粋関数、`PowerTransitionPolicyTests`）にあり、`SessionRegistry` がロック下で実行する。書込は通常のクライアント書込と同じ検証経路（許可リスト、`HelperWritePolicy.validate`、初回書込前の記録）を通る。
 
 | 通知 | 動作 |

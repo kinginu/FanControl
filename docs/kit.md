@@ -13,7 +13,8 @@ Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (intern
 
 | File | Contents |
 |---|---|
-| `FanControlManager.swift` | `@Observable` singleton `FanControlManager.shared` (design doc §3.1) |
+| `FanControlManager.swift` | `@MainActor @Observable` singleton `FanControlManager.shared` (design doc §3.1) |
+| `FanControlPoller.swift` | internal actor on the poll queue: SMC reads, polling, write planning, `WriteSerializer` |
 | `HelperInstaller.swift` | `SMAppService.daemon(plistName:)` wrapper aware of the manual installation, `HelperInstallStatus` |
 | `HelperClient.swift` | async `NSXPCConnection` client (`SMCWriter`), `HelperConnectionState`, helper requirement selection |
 | `ManualHelperSigning.swift` | own Team ID lookup and cdhash of the root-owned manually installed helper (manual-install mode) |
@@ -23,31 +24,57 @@ Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (intern
 
 ## Threading model
 
-- All observable properties of `FanControlManager` are mutated on the **main thread** only.
-  Synchronous public methods (`startMonitoring`, `stopMonitoring`, `refreshNow`,
-  `setMonitoringPaused`, `setLiveDataHold`, `saveProfile`, `deleteProfile`, `clearLastError`) hop to main if called elsewhere.
-  `FanControlManager` is **not** `@MainActor`; it is `@unchecked Sendable`, so views may call it
-  directly from the main thread and `await` its async methods from a `Task`.
-  Async methods can be awaited from any context; they publish via `MainActor.run`.
+Swift 6 language mode with complete strict concurrency (`swift-tools-version: 6.0`,
+`swiftLanguageModes: [.v6]`, deployment target macOS 26; 2026-10-20). The isolation below is
+checked by the compiler; no `nonisolated(unsafe)` is used and the only `@unchecked Sendable` left
+is `HelperClient` (lock-protected, justified in its doc comment).
+
+- **`FanControlManager` is `@MainActor`** (and therefore `Sendable`). Every observable property,
+  the poll timer, the profile store, the pause / live-data-hold state and the wake bookkeeping
+  are main-actor isolated. Views call its synchronous methods (`startMonitoring`,
+  `stopMonitoring`, `refreshNow`, `setMonitoringPaused`, `setLiveDataHold`, `saveProfile`,
+  `deleteProfile`, `clearLastError`, `refreshHelperStatus`) directly and `await` its async
+  methods; code that is not on the main actor must `await` both (the former "hop to main if
+  called elsewhere" fallback is gone: the compiler now enforces the main-actor call sites).
+  `nonisolated`: the static constants (`profileStoreDefaultsKey`, `customProfileID`,
+  `writeThresholdRPM`, `wakeReapplyDelays`, `helperApprovalInstructions`), `clientTeamID`
+  (forwards to the lock-protected `HelperClient`), `sensorAggregateDefinitions` and both
+  `exportSMCDump()` overloads. `shared` and `init` are main-actor isolated.
+- Async methods run on the main actor between their awaits (state is read and published directly,
+  no `MainActor.run`); the SMC work they need is awaited on the poll queue, and
+  `SMAppService.register()` (`installHelper`) runs off the main actor.
+- **`FanControlPoller`** (internal actor, `FanControlPoller.swift`) owns all poll state: the
+  `SMCClient`, the discovered fans, the cached temperature key list
+  (`SensorCatalog.discoverTemperatureSensors` runs once; later polls use `readTemperatures(keys:)`),
+  the `AlertEvaluator`, the `TemperatureSampleFilter`, the `FanWriteStrategy`, the write-throttle
+  baseline, the unsettled set, the apply generation (`ApplyGenerationGate`), its own copy of the
+  monitoring flag and the sleep flag. Its executor is a private serial `DispatchSerialQueue`
+  (QoS utility, the former `pollQueue`), so SMC I/O never runs on the main thread. The manager
+  enters it in two FIFO-compatible ways: `enqueue { … }` (`queue.async` + `assumeIsolated`) for
+  ordered fire-and-forget work (monitoring flag, polls, sleep/wake flags) and `await run { … }`
+  for results. Poll results are published back with `DispatchQueue.main.async` in the order they
+  were produced (the published properties are `public internal(set)` for this).
 - A `Timer` on the main run loop (`.common` mode, 10 % tolerance) fires every `pollingInterval`
   (effective range 0.5 to 300 s). Each tick snapshots the active profile, `safetyPolicy` and the
-  session flag, then runs the poll on a private serial `DispatchQueue` (`pollQueue`, QoS utility).
-- `pollQueue` owns the `SMCClient`, the discovered fans, the cached temperature key list
-  (`SensorCatalog.discoverTemperatureSensors` runs once; later polls use `readTemperatures(keys:)`),
-  the `AlertEvaluator`, the `TemperatureSampleFilter`, the `FanWriteStrategy`, the write-throttle baseline, the apply generation
-  (`ApplyGenerationGate`) and its own copy of the monitoring flag.
+  session flag on the main actor (`PollContext`), then enqueues the poll on the poller.
 - Helper writes go through a FIFO `WriteSerializer` actor, so a write list (mode key first,
-  then target) is never interleaved with another list.
-- `HelperClient` is lock-protected; its `onStateChange` callback is mirrored onto
+  then target) is never interleaved with another list. `FanControlPoller.applyTargets` is
+  `nonisolated`: it plans on the poller, writes through the serializer and never touches the main
+  actor (the termination restore blocks the main thread for up to 2 s while it runs).
+- `HelperClient` is lock-protected; its `onStateChange` callback (`@Sendable`) is mirrored onto
   `helperConnectionState` / `isSMCWriteSessionOpen` on main. Every XPC call races against
   `HelperClient.callTimeout` (8 s): on timeout it throws `.helperConnectionFailed("timeout")` and
   invalidates the connection (which ends the session; the helper restores the pre-session values),
-  so a hung helper cannot block the `WriteSerializer` forever.
+  so a hung helper cannot block the `WriteSerializer` forever. `ResumeOnce` (one XPC reply or the
+  timeout, whichever comes first) is a checked `Sendable` built on `Synchronization.Mutex`.
 - `stopMonitoring()` cancels pending wake re-apply attempts; polls that were queued while monitoring and
   run after `stopMonitoring()` are dropped and do not reopen the reader. `refreshNow()` while not
   monitoring opens the SMC for that one poll and closes it again (unless a write session is open).
-- `exportSMCDump()` (sync) blocks the caller until the in-flight poll and the whole dump finish;
-  UIs must use the async overload `await exportSMCDump()`, which runs on `pollQueue`.
+- `exportSMCDump()` (sync, `nonisolated`) blocks the caller (`queue.sync`) until the in-flight poll
+  and the whole dump finish; never call it on the main thread or the poll queue. UIs must use the
+  async overload `await exportSMCDump()`, which runs on the poller.
+- `FanControlSMC`: `SMCConnection` (handle in a `Mutex`) and `SMCClient` (key-info cache in a
+  `Mutex`) are checked `Sendable`.
 
 ## Polling and control
 
@@ -108,10 +135,10 @@ notification if no wake notification arrives.
 
 **Apply generation (no poll can undo a user apply):** `applyProfile` / `setFanControlMode` /
 `setFanRPM` first store (user profiles, `upsert`) and select the profile on main, *then* bump the
-apply generation on `pollQueue`, then plan and write. Polls snapshot the active profile on main
+apply generation on the poller, then plan and write. Polls snapshot the active profile on main
 and record the generation when they plan a batch; when that batch reaches the front of the
 `WriteSerializer` it is dropped if a newer apply started (`ApplyGenerationGate.isStale`). Because
-the selection changes before the bump and `pollQueue` is FIFO, every poll planned from the old
+the selection changes before the bump and the poll queue is FIFO, every poll planned from the old
 profile carries an old generation. If the apply's writes fail, the previous selection and the
 previously stored version of the profile are restored (a newly created profile is removed).
 `restoreDefaultControl`, `closeSMCSession` and the termination restore bump the generation too.
@@ -133,7 +160,7 @@ baseline depend on polling); the drop-in UI disables Apply while the feature swi
 `openSMCSession` (like `startMonitoring`) registers the termination/wake observers (idempotent),
 so a session opened without monitoring is still restored on quit. The installation flow
 follows design doc §3.3: first write → `installHelper()` → `SMAppService.register()`; if the
-status is `.requiresApproval`, Login Items (& Extensions on macOS 15) is opened and `.helperNotInstalled` is thrown (show
+status is `.requiresApproval`, Login Items & Extensions is opened and `.helperNotInstalled` is thrown (show
 `FanControlManager.helperApprovalInstructions`, since that error case carries no message).
 `openSMCSession` checks `version()` against `FanControlHelperConstants.protocolVersion` and
 re-registers a mismatched helper once.
@@ -194,7 +221,7 @@ fans whose `F<i>Md` the session never wrote, clamped into `Mn...Mx`).
 (P-core) keys read either their real value or a fixed near-zero pattern (`0.00 / 6.70 / 8.43`,
 `0.00 / 4.63 / 5.32`, `0.00 / 6.03 / 7.43`), alternating per read or for a whole power-gated
 cluster. Every sensor batch (discovery, each poll, and the fresh read of a user apply) is filtered
-on `pollQueue` before alerts, `plan` and publishing, so `sensorReadings` (UI) and the planned
+on the poll queue before alerts, `plan` and publishing, so `sensorReadings` (UI) and the planned
 targets see the same values. For keys starting with `Tp`/`Te`/`Tg`/`TC`, a finite sample below
 10 °C is rejected and replaced by the key's last accepted value for up to 5 consecutive rejections,
 then by the hottest accepted sample of the same prefix group in that batch, and passed through raw
@@ -507,9 +534,9 @@ Mode writes always come before target writes.
 ## Not verifiable without a Mac
 
 The code was first written on Linux against SDK-signature stubs. It now builds against the real
-macOS SDK (macOS 26, Swift 6.3.3) with 0 diagnostics in the package's Swift 5 mode and with
-`-swift-version 6` (`ResumeOnce` requires `T: Sendable` for the latter; `SMCConnection` uses
-`mach_task_self_` because the `mach_task_self()` macro is not importable). This does not prove
+macOS SDK (macOS 26 SDK, Xcode 26.6, Swift 6.3.3) in the Swift 6 language mode (tools 6.0,
+deployment target macOS 26) with 0 diagnostics (`SMCConnection` uses `mach_task_self_` because the
+`mach_task_self()` macro is not importable). This does not prove
 runtime behaviour. Still to verify on hardware:
 
 - `SMAppService` register/approval flow, including the error `register()` throws while approval is pending.
