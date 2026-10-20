@@ -220,6 +220,8 @@
 "History" = "History";
 "Time Window" = "Time Window";
 "%lld min" = "%lld min";
+"1 minute" = "1 minute";
+"%lld minutes" = "%lld minutes";
 "highest %@, lowest %@" = "highest %@, lowest %@";
 "Temperature history" = "Temperature history";
 "Collecting temperatures…" = "Collecting temperatures…";

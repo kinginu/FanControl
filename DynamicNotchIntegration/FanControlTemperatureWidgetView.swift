@@ -7,8 +7,9 @@
 //
 // Layout (Apple-style, like the other Nook widgets — NookWidgetChrome: 8 pt vertical inset,
 // subheadline-semibold secondary header, system text styles, quaternary grid):
-//   header   thermometer + "Temperature", window chips 1 · 5 · 15 · 30 min (glass pill on the
-//            selected one; click = change the window, stored in the widget settings)
+//   header   thermometer + "Temperature", window chips "1  5 min  15  30" (only the selected
+//            chip shows "min" and sits on the sliding glass pill; click = change the window,
+//            stored in the widget settings)
 //   values   one column per series (CPU (max), GPU (max), SSD `TH0x`): series dot + label,
 //            current value (title3, monospaced), "↑ max ↓ min" of the window
 //   chart    Swift Charts history of `FanControlManager.temperatureHistory` over the window
@@ -45,6 +46,8 @@ struct FanControlTemperatureWidgetView: View {
     private var window: FanControlTemperatureWidgetSettings.HistoryWindow { previewWindow ?? settings.historyWindow }
     private var unit: TemperatureUnit { fanWidgetSettings.temperatureUnit }
     private var history: TemperatureHistory { previewHistory ?? manager.temperatureHistory }
+
+    @Namespace private var windowNamespace
 
     var body: some View {
         content
@@ -90,21 +93,21 @@ struct FanControlTemperatureWidgetView: View {
         .foregroundStyle(manager.highTempAlertActive ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
     }
 
-    /// 1 · 5 · 15 · 30 min chips; the selected one on the glass pill (bold, white).
+    /// "1  5 min  15  30" chips: only the selected chip carries the unit and sits on the
+    /// glass pill (one pill, shared `matchedGeometryEffect`, slides with `.snappy`). Every
+    /// number is reserved two digits wide, so the row keeps its width whichever is selected.
     private var windowPicker: some View {
         HStack(spacing: 1) {
             ForEach(FanControlTemperatureWidgetSettings.HistoryWindow.allCases) { choice in
-                WindowChip(title: choice.shortLabel, isSelected: choice == window) {
+                WindowChip(title: choice.shortLabel, isSelected: choice == window,
+                           namespace: windowNamespace) {
                     guard !preview else { return }
                     withAnimation(.snappy(duration: 0.25)) { settings.historyWindow = choice }
                 }
-                .accessibilityLabel(Text("\(choice.rawValue) min"))
+                .accessibilityLabel(choice.rawValue == 1 ? Text("1 minute") : Text("\(choice.rawValue) minutes"))
             }
-            Text("min")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .padding(.leading, 2)
         }
+        .animation(.snappy(duration: 0.25), value: window)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("History"))
     }
@@ -361,6 +364,7 @@ struct FanControlTemperatureWidgetView: View {
 private struct WindowChip: View {
     let title: String
     let isSelected: Bool
+    let namespace: Namespace.ID
     let action: () -> Void
 
     @State private var isHovering = false
@@ -368,22 +372,36 @@ private struct WindowChip: View {
 
     var body: some View {
         Button(action: action) {
-            Text(verbatim: title)
-                .font(.caption2.weight(isSelected ? .bold : .medium))
-                .monospacedDigit()
-                .foregroundStyle(isSelected
-                                 ? (colorScheme == .dark ? AnyShapeStyle(Color.white) : AnyShapeStyle(.primary))
-                                 : AnyShapeStyle(.secondary))
-                .frame(minWidth: 17, minHeight: 16)
-                .padding(.horizontal, 2)
-                .contentShape(Capsule())
-                .background {
-                    if isSelected {
-                        FanControlSelectionPill()
-                    } else if isHovering {
-                        Capsule().fill(.quinary)
-                    }
+            HStack(spacing: 2) {
+                // Two-digit slot ("88" hidden), so 1 and 30 take the same width.
+                ZStack {
+                    Text(verbatim: "88").hidden()
+                    Text(verbatim: title)
                 }
+                if isSelected {
+                    Text("min")
+                        .fontWeight(.medium)
+                        .transition(.opacity.combined(with: .scale(scale: 0.8, anchor: .leading)))
+                }
+            }
+            .font(.caption2.weight(isSelected ? .bold : .medium))
+            .monospacedDigit()
+            .foregroundStyle(isSelected
+                             ? (colorScheme == .dark ? AnyShapeStyle(Color.white) : AnyShapeStyle(.primary))
+                             : AnyShapeStyle(.secondary))
+            .lineLimit(1)
+            .fixedSize()
+            .frame(minHeight: 16)
+            .padding(.horizontal, 3)
+            .contentShape(Capsule())
+            .background {
+                if isSelected {
+                    FanControlSelectionPill()
+                        .matchedGeometryEffect(id: "windowSelection", in: namespace)
+                } else if isHovering {
+                    Capsule().fill(.quinary)
+                }
+            }
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
