@@ -1,9 +1,12 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
+// Swift 6 language mode for every target (tests included), which implies complete
+// strict concurrency checking. Deployment target macOS 26: `.v26` needs tools 6.2, so
+// the string form is used to stay on tools 6.0.
 let package = Package(
     name: "FanControl",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("26.0")],
     products: [
         .library(name: "FanControlCore", targets: ["FanControlCore"]),
         .library(name: "FanControlSMC", targets: ["FanControlSMC"]),
@@ -23,5 +26,6 @@ let package = Package(
         .testTarget(name: "FanControlSMCTests", dependencies: ["FanControlSMC", "FanControlCore"]),
         .testTarget(name: "FanControlXPCTests", dependencies: ["FanControlXPC", "FanControlCore"]),
         .testTarget(name: "FanControlKitTests", dependencies: ["FanControlKit", "FanControlCore"]),
-    ]
+    ],
+    swiftLanguageModes: [.v6]
 )

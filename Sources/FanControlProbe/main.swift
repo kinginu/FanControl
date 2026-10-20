@@ -40,7 +40,8 @@ func sysctlString(_ name: String) -> String {
     guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return "?" }
     var buffer = [CChar](repeating: 0, count: size)
     guard sysctlbyname(name, &buffer, &size, nil, 0) == 0 else { return "?" }
-    return String(cString: buffer)
+    let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+    return String(decoding: bytes, as: UTF8.self)
 }
 
 func pad(_ s: String, _ width: Int) -> String {
@@ -128,6 +129,8 @@ print("")
 var sampleFilter = TemperatureSampleFilter()
 let aggregateDefinitions = SensorAggregator.definitions
 
+// Top-level code (and its globals, such as `sampleFilter`) is main-actor isolated in Swift 6.
+@MainActor
 func readout() {
     let current = FanDiscovery.readCurrentRPMs(fans: fans, using: client)
     let target = FanDiscovery.readTargetRPMs(fans: fans, using: client)
