@@ -57,7 +57,8 @@ Supporting material:
 
 ```swift
 // Package.swift of your app, or File ▸ Add Package Dependencies… ▸ Add Local… in Xcode
-.package(path: "../FanControl"),   // or a URL once it is published
+.package(url: "https://github.com/kinginu/FanControl.git", from: "1.0.0"),
+// or a local checkout: .package(path: "../FanControl")
 // app target
 .product(name: "FanControlCore", package: "FanControl"),
 .product(name: "FanControlKit",  package: "FanControl"),

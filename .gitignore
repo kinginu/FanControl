@@ -1,0 +1,12 @@
+# SwiftPM / Xcode build artifacts
+.build/
+.swiftpm/
+DerivedData/
+.derivedData*/
+*.xcodeproj/
+xcuserdata/
+*.xcuserstate
+
+# Editor / OS
+.DS_Store
+*.swp
