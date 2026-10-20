@@ -297,7 +297,7 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 
 ### Phase 5: 高度機能
 - [ ] 負荷をかけて CPU/GPU センサーが 90°C（`SafetyPolicy.highTemperatureAlert`）以上 → ウィジェットが赤表示、Live Activity「高温」とノッチの一時展開。85°C 以下で解除。
-- [ ] 書込セッション中、95°C（`emergencyTemperature`）以上で全ファン最大に強制される（自動プロファイルでも）。
+- [x] 書込セッション中、95°C（`emergencyTemperature`）以上で全ファン最大に強制される（自動プロファイルでも）。（2026-10-20 HelperSmokeApp: 閾値を 55 °C に下げて検証。automatic だった Fan 2 も 6800 に強制され、既定閾値に戻すと即座にプロファイル目標へ復帰。`verification/first-write-2026-10-20.md`）
       90°C（95 − `alertHysteresis`）以下に下がるまで解除されない（`FanControlManager.emergencyOverrideActive`）。
 - [ ] ファン停止（目標 > 0 で実測 0 が 3 回連続）→ 該当ファン行に警告アイコン、Live Activity「ファン停止」（テストは固定モードで物理的に止める等、注意して行う）。
 - [ ] 警告トグルを OFF にすると Live Activity が出ない。
