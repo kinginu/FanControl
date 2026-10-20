@@ -170,3 +170,25 @@
 "Slow Down Polling on Battery (10 s)" = "Slow Down Polling on Battery (10 s)";
 "Another fan control app (%@) is running. If both write at the same time they will override each other." = "Another fan control app (%@) is running. If both write at the same time they will override each other.";
 "%@ is running" = "%@ is running";
+
+/* MARK: Sensor names and temperature thresholds (Sensors tab, General tab; design doc §5.6 / §5.7)
+   Sensor name labels: SensorCatalog.nameComponents(for:).labelKey, localized by
+   FanControlSensorNames (FanControlSensorsTabView.swift); the suffix (rest of the SMC
+   key, e.g. "09") is appended verbatim. This supersedes "sensor names from SensorCatalog"
+   in the header's not-localized list. "GPU", "Sensor" (fallback, "Sensor <key>") and
+   "High Temperature Alert" are defined above and reused. */
+"CPU Performance Core" = "CPU Performance Core";
+"CPU Efficiency Core" = "CPU Efficiency Core";
+"Battery" = "Battery";
+"Airflow Left" = "Airflow Left";
+"Airflow Right" = "Airflow Right";
+"NAND (SSD)" = "NAND (SSD)";
+"Palm Rest" = "Palm Rest";
+"Wireless" = "Wireless";
+"Memory" = "Memory";
+"Storage" = "Storage";
+"Temperature Thresholds" = "Temperature Thresholds";
+"Emergency (All Fans Maximum)" = "Emergency (All Fans Maximum)";
+"Hysteresis" = "Hysteresis";
+"Reset to Defaults" = "Reset to Defaults";
+"The alert and the all-fans-maximum override turn on when the hottest CPU/GPU sensor reaches these temperatures, and off again once it has cooled by the hysteresis." = "The alert and the all-fans-maximum override turn on when the hottest CPU/GPU sensor reaches these temperatures, and off again once it has cooled by the hysteresis.";

@@ -63,7 +63,8 @@ enum FanControlAlertKind: Equatable, Hashable {
 /// `FanControlGeneralSettings` into the manager (FanControlKit does not depend
 /// on Defaults): `pollingInterval`, `slowPollingOnBattery`, `reapplyProfileAfterWake`
 /// and `keepAlertsWhilePaused` (= any alert toggle on) are copied at creation and
-/// on every settings change. The wake re-apply itself is done by
+/// on every settings change, and so are the temperature thresholds
+/// (`FanControlThresholdSettings` → `manager.applySafetyThresholds`). The wake re-apply itself is done by
 /// `FanControlManager` (5 s after wake, only while a write session is open).
 @MainActor
 @Observable
@@ -87,6 +88,7 @@ final class FanControlAlertCoordinator {
 
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var settingsTask: Task<Void, Never>?
+    @ObservationIgnored private var thresholdsTask: Task<Void, Never>?
     /// The conflict alert is being shown (`conflictAlertDuration`).
     @ObservationIgnored private var conflictAlertVisible = false
     /// The current detection was announced already (reset when it clears).
@@ -112,6 +114,12 @@ final class FanControlAlertCoordinator {
             for await _ in Defaults.updates(.fanControlGeneralSettings, initial: false) {
                 self?.syncManagerSettings()
                 self?.reevaluate()
+            }
+        }
+        // Temperature thresholds changed in Settings (General tab, design doc §5.6).
+        thresholdsTask = Task { [weak self] in
+            for await _ in Defaults.updates(.fanControlThresholdSettings, initial: false) {
+                self?.syncManagerSettings()
             }
         }
 
@@ -141,6 +149,15 @@ final class FanControlAlertCoordinator {
         // paused: nothing else would clear the pause until the Nook opens again.
         if !(general.isEnabled && general.pauseWhenNookHidden) && manager.isMonitoringPaused {
             manager.setMonitoringPaused(false)
+        }
+        // Alert / emergency / hysteresis (FanControlThresholdSettings, clamped by
+        // ThresholdBounds). `emergencySensorPrefixes` and `enforceHardwareMinimum`
+        // are left as they are. A change is evaluated by the next poll; poll now
+        // so the alert and the emergency override follow without waiting.
+        let thresholds = Defaults[.fanControlThresholdSettings].thresholds
+        if manager.safetyPolicy.thresholds != ThresholdBounds.clamped(thresholds) {
+            manager.applySafetyThresholds(thresholds)
+            if manager.isMonitoring { manager.refreshNow() }
         }
     }
 
@@ -224,6 +241,7 @@ struct FanControlAlertView: View {
                     Text(verbatim: FanControlFormatting.temperature(hottest, unit: settings.temperatureUnit))
                         .monospacedDigit()
                         .foregroundStyle(.red)
+                        .help(Text(verbatim: "\(FanControlSensorNames.localized(hottest)) (\(hottest.id))"))
                 }
                 title
                     .foregroundStyle(.white)

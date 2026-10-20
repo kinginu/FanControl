@@ -4,7 +4,9 @@
 // "Sensors" tab of the Fan Control settings pane: the key temperatures
 // (CPU (max), GPU (max), SSD `TH0x`) at the top, then every discovered sensor
 // with its SMC key, name and temperature (replaces the earlier sensor table,
-// design doc §4.4). Sensor names are community-sourced (`SensorCatalog`).
+// design doc §4.4). Sensor names are community-sourced (`SensorCatalog`) and
+// localized by `FanControlSensorNames` (label from Localizable.strings + the
+// verbatim suffix, design doc §5.7); the raw SMC key stays in its own column.
 // Aggregate sensors ("CPU (max)", …; `SensorAggregator`) are listed first,
 // whatever the sort order, with a "sum" icon in the key column. Keys excluded
 // from ranking (`SensorCatalog.isExcludedFromRanking`, e.g. `Tf*`: constant /
@@ -63,7 +65,7 @@ struct FanControlSensorsTabView: View {
                 .width(min: 50, ideal: 70, max: 110)
 
                 TableColumn("Name", value: \.name) { sensor in
-                    Text(verbatim: FanControlFormatting.sensorName(sensor))
+                    Text(verbatim: FanControlSensorNames.localized(sensor))
                 }
 
                 TableColumn("Temperature", value: \.temperature) { sensor in
@@ -104,6 +106,29 @@ struct FanControlSensorsTabView: View {
 
     private func isHot(_ sensor: SensorReading) -> Bool {
         FanControlFormatting.isAlertTemperature(sensor, policy: manager.safetyPolicy)
+    }
+}
+
+// MARK: - Localized sensor names
+
+/// Localized sensor names (design doc §5.7), built from
+/// `SensorCatalog.nameComponents(for:)`: the label key ("CPU Performance Core",
+/// "Battery", …, "Sensor" for unknown keys, or an aggregate name such as
+/// "CPU (max)") goes through Localizable.strings, the suffix (rest of the SMC
+/// key, sensor index or raw key) is appended verbatim, e.g. `Tp09` →
+/// "CPU 高性能コア 09". `SensorReading.name` / `SensorCatalog.displayName(for:)`
+/// stay English (stored, legacy key).
+///
+/// Supersedes `FanControlFormatting.sensorName(_:)`, which localizes aggregate
+/// names only; the widget files still call that one.
+enum FanControlSensorNames {
+    static func localized(_ sensor: SensorReading) -> String {
+        localized(key: sensor.id)
+    }
+
+    static func localized(key: String) -> String {
+        let components = SensorCatalog.nameComponents(for: key)
+        return components.name(label: NSLocalizedString(components.labelKey, comment: "Sensor name label (SensorCatalog)"))
     }
 }
 #endif

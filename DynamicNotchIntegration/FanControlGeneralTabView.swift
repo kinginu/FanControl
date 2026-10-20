@@ -2,7 +2,8 @@
 // Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
 //
 // "General" tab of the Fan Control settings pane: feature switch, polling,
-// lifecycle options, alerts, privileged helper and maintenance actions.
+// lifecycle options, alerts, temperature thresholds (FanControlThresholdSettings,
+// own Defaults key), privileged helper and maintenance actions.
 
 import SwiftUI
 import AppKit
@@ -16,6 +17,7 @@ struct FanControlGeneralTabView: View {
     @Binding var actionError: String?
 
     @Default(.fanControlGeneralSettings) private var general
+    @Default(.fanControlThresholdSettings) private var thresholdSettings
     /// True while the SMC dump is being produced (button disabled).
     @State private var isExportingDump = false
 
@@ -61,6 +63,26 @@ struct FanControlGeneralTabView: View {
             Section("Alerts") {
                 Toggle("High Temperature Alert", isOn: $general.highTemperatureAlertEnabled)
                 Toggle("Fan Stopped Alert", isOn: $general.fanAnomalyAlertEnabled)
+            }
+
+            Section("Temperature Thresholds") {
+                thresholdStepper("High Temperature Alert", value: \.highTemperatureAlert,
+                                 range: ThresholdBounds.alertRange,
+                                 set: ThresholdBounds.settingHighTemperatureAlert)
+                thresholdStepper("Emergency (All Fans Maximum)", value: \.emergencyTemperature,
+                                 range: ThresholdBounds.emergencyOverallRange,
+                                 set: ThresholdBounds.settingEmergencyTemperature)
+                thresholdStepper("Hysteresis", value: \.alertHysteresis,
+                                 range: ThresholdBounds.hysteresisRange,
+                                 set: ThresholdBounds.settingAlertHysteresis)
+                Text("The alert and the all-fans-maximum override turn on when the hottest CPU/GPU sensor reaches these temperatures, and off again once it has cooled by the hysteresis.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Reset to Defaults") {
+                    thresholdSettings = FanControlThresholdSettings()
+                }
+                .disabled(thresholdSettings.thresholds == .default)
             }
 
             Section("Helper") {
@@ -118,6 +140,29 @@ struct FanControlGeneralTabView: View {
         )
     }
 
+    /// One threshold row: label, value in whole °C, stepper (1 °C steps) within
+    /// `range`. A change goes through `set` (`ThresholdBounds.setting…`), which
+    /// re-clamps the other two values; the coordinator mirrors the result into
+    /// `manager.safetyPolicy` (`FanControlAlertCoordinator.syncManagerSettings()`).
+    private func thresholdStepper(_ title: LocalizedStringKey,
+                                  value: KeyPath<SafetyThresholds, Double>,
+                                  range: ClosedRange<Double>,
+                                  set: @escaping (Double, SafetyThresholds) -> SafetyThresholds) -> some View {
+        let current = ThresholdBounds.clamped(thresholdSettings.thresholds)
+        let binding = Binding<Double>(
+            get: { current[keyPath: value] },
+            set: { newValue in
+                thresholdSettings.thresholds = set(newValue.rounded(), ThresholdBounds.clamped(thresholdSettings.thresholds))
+            }
+        )
+        return Stepper(value: binding, in: range, step: 1) {
+            LabeledContent(title) {
+                Text(verbatim: "\(Int(current[keyPath: value].rounded())) °C")
+                    .monospacedDigit()
+            }
+        }
+    }
+
     /// `manager.conflictingControllers` as one list ("FanFi", "FanFi, Other"; product names).
     private var conflictingNames: String {
         manager.conflictingControllers.formatted(.list(type: .and))
@@ -157,6 +202,55 @@ struct FanControlGeneralTabView: View {
             }
         }
     }
+}
+
+// MARK: - Temperature thresholds (design doc §5.6)
+
+/// User-set alert / emergency / hysteresis thresholds, persisted under their own
+/// Defaults key (`fanControlThresholdSettings`, separate from
+/// `FanControlGeneralSettings`). Values are whole °C in practice; they are
+/// clamped by `ThresholdBounds` when edited and again when mirrored into
+/// `FanControlManager.safetyPolicy` (`applySafetyThresholds`). Missing keys
+/// decode to the defaults (90 / 95 / 5 °C = `SafetyThresholds.default`).
+struct FanControlThresholdSettings: Codable, Defaults.Serializable, Equatable, Hashable {
+    var highTemperatureAlert: Double = SafetyThresholds.default.highTemperatureAlert
+    var emergencyTemperature: Double = SafetyThresholds.default.emergencyTemperature
+    var alertHysteresis: Double = SafetyThresholds.default.alertHysteresis
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = FanControlThresholdSettings()
+        highTemperatureAlert = try container.decodeIfPresent(Double.self, forKey: .highTemperatureAlert)
+            ?? defaults.highTemperatureAlert
+        emergencyTemperature = try container.decodeIfPresent(Double.self, forKey: .emergencyTemperature)
+            ?? defaults.emergencyTemperature
+        alertHysteresis = try container.decodeIfPresent(Double.self, forKey: .alertHysteresis)
+            ?? defaults.alertHysteresis
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case highTemperatureAlert, emergencyTemperature, alertHysteresis
+    }
+
+    /// The stored values as `SafetyThresholds` (unclamped).
+    var thresholds: SafetyThresholds {
+        get {
+            SafetyThresholds(highTemperatureAlert: highTemperatureAlert, emergencyTemperature: emergencyTemperature,
+                             alertHysteresis: alertHysteresis)
+        }
+        set {
+            highTemperatureAlert = newValue.highTemperatureAlert
+            emergencyTemperature = newValue.emergencyTemperature
+            alertHysteresis = newValue.alertHysteresis
+        }
+    }
+}
+
+extension Defaults.Keys {
+    static let fanControlThresholdSettings = Key<FanControlThresholdSettings>("fanControlThresholdSettings",
+                                                                              default: .init())
 }
 
 // MARK: - Rows
