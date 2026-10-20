@@ -17,6 +17,9 @@ struct FanControlGeneralTabView: View {
 
     @StoredSetting(.fanControlGeneralSettings) private var general
     @StoredSetting(.fanControlThresholdSettings) private var thresholdSettings
+    /// For `temperatureUnit` only: the thresholds are shown and stepped in the
+    /// widget's unit (°C / °F) but stored in °C.
+    @StoredSetting(.fanControlWidgetSettings) private var widgetSettings
     /// True while the SMC dump is being produced (button disabled).
     @State private var isExportingDump = false
 
@@ -66,13 +69,13 @@ struct FanControlGeneralTabView: View {
 
             Section("Temperature Thresholds") {
                 thresholdStepper("High Temperature Alert", value: \.highTemperatureAlert,
-                                 range: ThresholdBounds.alertRange,
+                                 kind: .absolute, range: ThresholdBounds.alertRange,
                                  set: ThresholdBounds.settingHighTemperatureAlert)
                 thresholdStepper("Emergency (All Fans Maximum)", value: \.emergencyTemperature,
-                                 range: ThresholdBounds.emergencyOverallRange,
+                                 kind: .absolute, range: ThresholdBounds.emergencyOverallRange,
                                  set: ThresholdBounds.settingEmergencyTemperature)
                 thresholdStepper("Hysteresis", value: \.alertHysteresis,
-                                 range: ThresholdBounds.hysteresisRange,
+                                 kind: .delta, range: ThresholdBounds.hysteresisRange,
                                  set: ThresholdBounds.settingAlertHysteresis)
                 Text("The alert and the all-fans-maximum override turn on when the hottest CPU/GPU sensor reaches these temperatures, and off again once it has cooled by the hysteresis.")
                     .font(.callout)
@@ -139,24 +142,34 @@ struct FanControlGeneralTabView: View {
         )
     }
 
-    /// One threshold row: label, value in whole °C, stepper (1 °C steps) within
-    /// `range`. A change goes through `set` (`ThresholdBounds.setting…`), which
-    /// re-clamps the other two values; the coordinator mirrors the result into
-    /// `manager.safetyPolicy` (`FanControlAlertCoordinator.syncManagerSettings()`).
+    /// One threshold row: label, value and stepper in the widget's temperature
+    /// unit (`widgetSettings.temperatureUnit`), stored in °C. A step moves to the
+    /// next whole °C or °F (`TemperatureUnitConversion.stepped`; the hysteresis is
+    /// a difference, so °F = °C × 9/5 without the +32 offset). The resulting °C
+    /// value goes through `set` (`ThresholdBounds.setting…`), which clamps it to
+    /// `range` (°C) and re-clamps the other two values; the coordinator mirrors
+    /// the result into `manager.safetyPolicy`
+    /// (`FanControlAlertCoordinator.syncManagerSettings()`). A button is disabled
+    /// at its end of `range`.
     private func thresholdStepper(_ title: LocalizedStringKey,
                                   value: KeyPath<SafetyThresholds, Double>,
+                                  kind: TemperatureUnitConversion.Kind,
                                   range: ClosedRange<Double>,
                                   set: @escaping (Double, SafetyThresholds) -> SafetyThresholds) -> some View {
-        let current = ThresholdBounds.clamped(thresholdSettings.thresholds)
-        let binding = Binding<Double>(
-            get: { current[keyPath: value] },
-            set: { newValue in
-                thresholdSettings.thresholds = set(newValue.rounded(), ThresholdBounds.clamped(thresholdSettings.thresholds))
-            }
-        )
-        return Stepper(value: binding, in: range, step: 1) {
+        let unit = widgetSettings.temperatureUnit
+        let current = ThresholdBounds.clamped(thresholdSettings.thresholds)[keyPath: value]
+        let step: (Bool) -> Void = { up in
+            let thresholds = ThresholdBounds.clamped(thresholdSettings.thresholds)
+            let next = TemperatureUnitConversion.stepped(celsius: thresholds[keyPath: value],
+                                                         kind: kind, unit: unit, up: up)
+            thresholdSettings.thresholds = set(next, thresholds)
+        }
+        let canIncrement = TemperatureUnitConversion.canStep(celsius: current, up: true, within: range)
+        let canDecrement = TemperatureUnitConversion.canStep(celsius: current, up: false, within: range)
+        return Stepper(onIncrement: canIncrement ? { step(true) } : nil,
+                       onDecrement: canDecrement ? { step(false) } : nil) {
             LabeledContent(title) {
-                Text(verbatim: "\(Int(current[keyPath: value].rounded())) °C")
+                Text(verbatim: TemperatureUnitConversion.label(celsius: current, kind: kind, unit: unit))
                     .monospacedDigit()
             }
         }
