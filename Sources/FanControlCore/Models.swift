@@ -115,10 +115,11 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
     /// Mode for every fan that has no entry in `modes` ("every fan" presets,
     /// which are defined before the fans are known). `nil` = `.automatic`.
     ///
-    /// Note: `FanControlManager.applyProfile` decides whether it needs the
-    /// write session from `modes` alone, so pass `resolved(for:)` (explicit
-    /// per-fan modes) to it. Planning (`FanControlEngine.plan`) uses
-    /// `mode(for:)` and therefore honours `defaultMode` as stored.
+    /// `FanControlManager.applyProfile` opens the write session when `modes`
+    /// or `defaultMode` holds a manual mode, so an unresolved preset works.
+    /// Planning (`FanControlEngine.plan`) uses `mode(for:)` and therefore
+    /// honours `defaultMode` as stored. UIs still pass `resolved(for:)` to show
+    /// and store explicit per-fan modes.
     public var defaultMode: FanControlMode?
     /// Multi-point curves of the `.sensor` modes in `modes`, keyed by fan id. A curve
     /// applies only while its first / last temperature equal the mode's

@@ -9,7 +9,7 @@ your own Mac. For apps you give to other people, use the `SMAppService` path ins
 | File | Purpose |
 |---|---|
 | `install.sh` | Verifies the app and its embedded helper, pins the app's cdhash, installs the helper and the plist, and bootstraps the job. Idempotent. |
-| `uninstall.sh` | Boots the job out (the helper restores automatic fan control on SIGTERM) and removes both files |
+| `uninstall.sh` | Boots the job out (the helper restores automatic fan control on SIGTERM) and removes both files. Like `install.sh`, it only touches what `install.sh` wrote: it refuses `com.apple.*` labels and a plist without `FANCONTROL_CLIENT_REQUIREMENT` (e.g. another vendor's daemon under a mistyped label), refuses to boot out a loaded job whose plist is missing, and without the plist removes the helper file only if it is signed with the helper identifier. |
 | `status.sh` | Read-only (no root needed): shows both files, the pinned requirement, the helper cdhash and launchd state. Given an app, it also checks whether the app's cdhash is the pinned one. |
 | `common.sh` | Shared constants and helpers (sourced; identifiers come from `../identifiers.sh`). Tests check that these values match the Swift code. |
 | `FanControlHelper.manual.plist` | The LaunchDaemon template. Its placeholder values make the helper refuse to start if the template is installed unfilled. |

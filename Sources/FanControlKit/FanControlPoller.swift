@@ -179,6 +179,16 @@ actor FanControlPoller {
         strategy = nil
     }
 
+    /// Closes the reader when neither monitoring (in queue order) nor a write
+    /// session needs it: after a user action opened it while monitoring was off
+    /// (`FanController.releasingIdleReader`). Otherwise the reader would stay open
+    /// for the life of the process, since `refreshNow()` one-shot polls see it
+    /// and do not close it.
+    func closeReaderIfIdle(sessionOpen: Bool) {
+        guard !monitoringActive && !sessionOpen else { return }
+        closeReader()
+    }
+
     /// Fans after `prepareReader()`.
     func discoveredFans() throws -> [FanDevice] {
         try prepareReader()

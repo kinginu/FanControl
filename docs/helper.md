@@ -587,6 +587,12 @@ What `install.sh` does (with `set -euo pipefail`; it is idempotent):
 `--dry-run` needs no root. It runs the verification and generates the plist, prints the plist,
 and only prints the commands that would change anything.
 
+`uninstall.sh` (also `--dry-run`) only removes what `install.sh` wrote. It refuses `com.apple.*`
+labels and a `/Library/LaunchDaemons/<label>.plist` without `FANCONTROL_CLIENT_REQUIREMENT` (so a
+mistyped label cannot stop and delete another vendor's daemon), refuses to boot out a loaded job
+whose plist is missing, and without the plist removes `/Library/PrivilegedHelperTools/<label>` only
+if its signing identifier is the helper identifier.
+
 ### Notes
 
 - **Debug dylib.** By default, Xcode 26 Debug builds split the app into a stub plus

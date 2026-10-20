@@ -121,7 +121,9 @@ which is lock-protected and documented.
   `Synchronization.Mutex`.
 - `stopMonitoring()` cancels pending wake re-apply attempts. Polls that were queued before it and
   run after it are dropped. `refreshNow()` while not monitoring opens the SMC for that single
-  poll and closes it again.
+  poll and closes it again. `setFanControlMode`, `setFanCurve` and `restoreDefaultControl` also
+  close a reader they opened while monitoring is off and no session is open
+  (`FanControlPoller.closeReaderIfIdle`).
 - `exportSMCDump()` (sync) blocks the caller until the poll in flight and the dump finish. Never
   call it on the main thread; UIs use `await exportSMCDump()`.
 - In `FanControlSMC`, `SMCConnection` (its handle is in a `Mutex`) and `SMCClient` (its key-info
@@ -292,8 +294,8 @@ back fans forced by other tools.
 ### Helper session rules
 
 - Only user actions open the session: `setFanRPM`, `setFanControlMode`, `applyProfile` with
-  manual modes, and `openSMCSession`. The wake re-apply never opens one, so it can never trigger
-  the install or approval flow.
+  manual modes (in `modes` or as `defaultMode`), and `openSMCSession`. The wake re-apply never
+  opens one, so it can never trigger the install or approval flow.
 - Applying a profile with manual modes while monitoring is stopped starts monitoring first.
 - `openSMCSession` registers the termination and wake observers, so a session opened without
   monitoring is still restored on quit.
@@ -482,9 +484,10 @@ provisional.
   72–78 °C on Mac14,9, so Boost runs at about 5500–6100 RPM at idle. It reaches full speed 10 °C
   below the emergency threshold. To retune it, copy it into a custom slot.
 - **"Every fan" presets** use `FanProfile.defaultMode`, so that
-  `mode(for:) = modes[id] ?? defaultMode ?? .automatic`. Pass
-  **`profile.resolved(for: fans)`** to `applyProfile` so that the manager sees explicit per-fan
-  modes and opens the session.
+  `mode(for:) = modes[id] ?? defaultMode ?? .automatic`. `applyProfile` opens the session when
+  `modes` **or** `defaultMode` holds a manual mode, so a preset applied before the fans are known
+  (or passed unresolved) is written, not just selected. Passing `profile.resolved(for: fans)`
+  remains the way to get explicit per-fan modes.
 - Presets are read-only and regenerated from code on every decode, so a changed preset value
   reaches existing installs. Only the custom slots persist edits. Every `.sensor` mode in a
   custom slot has a matching curve; if a mode has none, the equivalent linear curve is filled in.

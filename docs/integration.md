@@ -202,7 +202,9 @@ planned. Until it exists, your app provides the UI. What the app has to wire up:
    `NSApplication.willTerminateNotification`. Do not add your own wake re-apply either; the
    manager already does it (kit.md, "Sleep/wake").
 5. Apply profiles with `profile.resolved(for: manager.fans)`, so that presets defined through
-   `defaultMode` open the session (kit.md, "Profiles").
+   `defaultMode` are stored with explicit per-fan modes. `applyProfile` also opens the session
+   for an unresolved preset (manual `defaultMode`), e.g. one applied before the first poll has
+   published `fans` (kit.md, "Profiles").
 6. Handle `HelperInstallStatus` (`.requiresApproval`: show
    `FanControlManager.helperApprovalInstructions`; `.installedManually` /
    `.installedManuallyMismatch`) and `HelperConnectionState.rejected(reason:)`. The fix for the

@@ -101,13 +101,19 @@ is_loaded() {
 # (<App>/Contents/MacOS/FanControlHelper, what the helper itself reads at runtime). Fails if
 # an environment override contradicts them, or if the app's own Info.plist sets FanControl*
 # keys that resolve differently (the app would then talk to another service).
+# Sets (and clears) an EXIT trap so that the temporary file is removed when a check dies: call
+# it before the caller installs its own EXIT trap.
 load_identifiers_from_app() {
-    local app="$1" helper="$1/$HELPER_IN_APP" tmp
+    local app="$1" helper="$1/$HELPER_IN_APP"
     [[ -f "$helper" ]] || die "helper not found inside the app: $helper"
-    tmp="$(mktemp -t fanfi-ids)"
-    embedded_info_plist "$helper" "$tmp"
-    resolve_identifiers_from_plist "$tmp"
-    rm -f "$tmp"
+    # Global, not local: the trap may fire from inside a nested die/exit.
+    _FC_IDS_TMP="$(mktemp -t fanfi-ids)"
+    trap 'rm -f "${_FC_IDS_TMP:-}"' EXIT
+    embedded_info_plist "$helper" "$_FC_IDS_TMP"
+    resolve_identifiers_from_plist "$_FC_IDS_TMP"
+    rm -f "$_FC_IDS_TMP"
+    _FC_IDS_TMP=""
+    trap - EXIT
     local h="$HELPER_ID" l="$LABEL" c="$APP_BUNDLE_ID" t="$TEAM_ID"
     [[ -z "${FANCONTROL_HELPER_IDENTIFIER:-}" || "$FANCONTROL_HELPER_IDENTIFIER" == "$h" ]] \
         || die "FANCONTROL_HELPER_IDENTIFIER=$FANCONTROL_HELPER_IDENTIFIER, but the helper's Info.plist says $h"

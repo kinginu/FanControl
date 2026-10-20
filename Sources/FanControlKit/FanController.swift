@@ -55,7 +55,7 @@ final class FanController {
 
     /// `FanControlManager.setFanControlMode(fanIndex:mode:)`.
     func setFanControlMode(fanIndex: Int, mode: FanControlMode) async throws {
-        try await recordErrors {
+        try await releasingIdleReader { try await self.recordErrors {
             guard let host = self.host else { return }
             let fans = try await self.poller.run { try $0.discoveredFans() }
             guard let fan = fans.first(where: { $0.id == fanIndex }) else {
@@ -71,12 +71,12 @@ final class FanController {
             }
             let updated = Self.profile(changing: base, fanIndex: fanIndex, to: mode, fans: fans)
             try await self.apply(updated, force: true, allowOpeningSession: true, makeActive: true)
-        }
+        } }
     }
 
     /// `FanControlManager.setFanCurve(fanIndex:sensorKey:curve:)`.
     func setFanCurve(fanIndex: Int, sensorKey: String, curve: FanCurve) async throws {
-        try await recordErrors {
+        try await releasingIdleReader { try await self.recordErrors {
             guard let host = self.host else { return }
             let fans = try await self.poller.run { try $0.discoveredFans() }
             guard fans.contains(where: { $0.id == fanIndex }) else {
@@ -86,7 +86,7 @@ final class FanController {
                                        fans: fans)
             updated.setCurve(curve, sensorKey: sensorKey, forFan: fanIndex)
             try await self.apply(updated, force: true, allowOpeningSession: true, makeActive: true)
-        }
+        } }
     }
 
     /// `FanControlManager.applyProfile(_:)`.
@@ -152,7 +152,7 @@ final class FanController {
 
     /// `FanControlManager.restoreDefaultControl()`.
     func restoreDefaultControl() async throws {
-        try await recordErrors {
+        try await releasingIdleReader { try await self.recordErrors {
             guard let host = self.host else { return }
             host.profileStore.activeProfileID = FanProfile.BuiltInID.automatic
             // Drop poll batches planned from the previous profile.
@@ -176,7 +176,27 @@ final class FanController {
                 }
             }
             await self.closeSession()
+        } }
+    }
+
+    /// Runs `body`, then closes the SMC reader if `body` opened it outside
+    /// monitoring and no session is open (`FanControlPoller.closeReaderIfIdle`):
+    /// `discoveredFans()` and the orphan check open it, and with monitoring off
+    /// nothing else would close it (`refreshNow()` one-shot polls only close a
+    /// reader they opened themselves).
+    private func releasingIdleReader(_ body: () async throws -> Void) async throws {
+        do {
+            try await body()
+        } catch {
+            await releaseIdleReader()
+            throw error
         }
+        await releaseIdleReader()
+    }
+
+    private func releaseIdleReader() async {
+        let sessionOpen = helper.isSessionOpen
+        await poller.run { $0.closeReaderIfIdle(sessionOpen: sessionOpen) }
     }
 
     // MARK: - Applying
@@ -186,7 +206,8 @@ final class FanController {
     /// - `allowOpeningSession`: `true` only for explicit user actions. With `false`
     ///   (wake re-apply) the call returns immediately if no session is open, so it
     ///   can never open the helper session or trigger the install/approval flow.
-    /// - A profile with manual modes starts monitoring first if it is stopped
+    /// - A profile with manual modes (`requiresSession`: in `modes` or as
+    ///   `defaultMode`) starts monitoring first if it is stopped
     ///   (sensor-based modes, the emergency override and the throttle baseline
     ///   rely on polling), then opens the session if needed. An automatic profile
     ///   without a session writes nothing.
@@ -200,8 +221,7 @@ final class FanController {
                makeActive: Bool) async throws {
         guard let host else { return }
         if !allowOpeningSession && !helper.isSessionOpen { return }
-        let needsSession = profile.modes.values.contains { $0.isManual }
-        if needsSession {
+        if Self.requiresSession(profile) {
             if !host.isMonitoring { host.startMonitoring() }
             if !helper.isSessionOpen {
                 guard allowOpeningSession else { return }
@@ -233,6 +253,17 @@ final class FanController {
             }
             throw error
         }
+    }
+
+    /// Whether applying `profile` needs the write session: a manual mode in
+    /// `modes` or a manual `defaultMode`. The latter covers the "every fan"
+    /// presets passed unresolved, or resolved before the fans are known
+    /// (`resolved(for: [])` adds no `modes`); deciding from `modes` alone
+    /// selected such a preset without opening the session or writing anything.
+    /// (A manual `defaultMode` overridden by explicit `.automatic` entries for
+    /// every fan opens a session that writes automatic: harmless.)
+    nonisolated static func requiresSession(_ profile: FanProfile) -> Bool {
+        profile.modes.values.contains { $0.isManual } || (profile.defaultMode?.isManual ?? false)
     }
 
     /// One wake re-apply of the active profile, in a new main-actor task: bypasses

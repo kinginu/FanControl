@@ -236,6 +236,57 @@ struct FanControllerTests {
         #expect(host.profileStore.activeProfileID == nil)
         #expect(host.monitoringStarts == 0)
     }
+
+    /// "Every fan" presets keep their manual mode in `defaultMode` with empty
+    /// `modes`; applied unresolved or resolved before the fans are known
+    /// (`resolved(for: [])`), they must still open the session (review fix:
+    /// deciding from `modes` alone selected the preset and wrote nothing).
+    @Test func testDefaultModePresetsRequireSession() {
+        #expect(!FanController.requiresSession(.automatic()))
+        let presets: [FanProfile] = [.constantQuiet(), .constantHigh(), .boost(), .max(),
+                                     .defaultCustom1(), .defaultCustom2()]
+        for preset in presets {
+            #expect(preset.modes.isEmpty)
+            #expect(FanController.requiresSession(preset), "\(preset.name)")
+            #expect(FanController.requiresSession(preset.resolved(for: [])), "\(preset.name)")
+        }
+        let explicit = FanProfile(id: UUID(), name: "Manual", modes: [1: .constant(rpm: 3000)], isBuiltIn: false)
+        #expect(FanController.requiresSession(explicit))
+        let allAutomatic = FanProfile(id: UUID(), name: "Auto", modes: [0: .automatic], isBuiltIn: false,
+                                      defaultMode: .automatic)
+        #expect(!FanController.requiresSession(allAutomatic))
+    }
+}
+
+/// `FanControlPoller.closeReaderIfIdle`: the reader a user action opened while
+/// monitoring was off is closed again unless monitoring or a session needs it
+/// (review fix: it stayed open for the life of the process). `strategy` stands in
+/// for the reader (no SMC in tests): `closeReader()` clears both.
+struct PollerIdleReaderTests {
+
+    private func pollerWithStrategy(monitoring: Bool) async -> FanControlPoller {
+        let poller = FanControlPoller(helperClient: HelperClient(), label: "PollerIdleReaderTests.poll")
+        await poller.run { poller in
+            poller.monitoringActive = monitoring
+            poller.strategy = FanWriteStrategy(reader: MockSMCReader([]), fanIndices: [0])
+        }
+        return poller
+    }
+
+    @Test func testClosesWhenIdle() async {
+        let poller = await pollerWithStrategy(monitoring: false)
+        await poller.run { $0.closeReaderIfIdle(sessionOpen: false) }
+        #expect(await poller.run { $0.strategy == nil && $0.reader == nil })
+    }
+
+    @Test func testKeepsWhileMonitoringOrSessionOpen() async {
+        let monitoring = await pollerWithStrategy(monitoring: true)
+        await monitoring.run { $0.closeReaderIfIdle(sessionOpen: false) }
+        #expect(await monitoring.run { $0.strategy != nil })
+        let session = await pollerWithStrategy(monitoring: false)
+        await session.run { $0.closeReaderIfIdle(sessionOpen: true) }
+        #expect(await session.run { $0.strategy != nil })
+    }
 }
 
 @MainActor
