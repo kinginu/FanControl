@@ -16,7 +16,7 @@ public enum HelperInstallStatus: Equatable, Sendable {
     /// the user must re-run `sudo install.sh <this app>`.
     case installedManuallyMismatch(pinnedCDHash: String, appCDHash: String)
     /// Registered, but the user must enable it in System Settings > General >
-    /// Login Items & Extensions (macOS 15) / Login Items (macOS 14).
+    /// Login Items & Extensions.
     case requiresApproval
     /// The plist is not in `Contents/Library/LaunchDaemons/` of the app bundle.
     case notFound
@@ -180,8 +180,8 @@ public struct HelperInstaller: Sendable {
         }
     }
 
-    /// Opens System Settings > General > Login Items & Extensions (macOS 15) /
-    /// Login Items (macOS 14), where the daemon is approved.
+    /// Opens System Settings > General > Login Items & Extensions, where the
+    /// daemon is approved.
     public static func openSystemSettingsLoginItems() {
         SMAppService.openSystemSettingsLoginItems()
     }

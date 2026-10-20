@@ -15,6 +15,7 @@ public enum HelperConnectionState: Equatable, Sendable {
 
 #if os(macOS)
 import Foundation
+import Synchronization
 import FanControlCore
 import FanControlXPC
 
@@ -58,6 +59,12 @@ import FanControlXPC
 ///
 /// All mutable state is guarded by `lock`; `onStateChange` is invoked outside
 /// the lock on an arbitrary thread.
+///
+/// `@unchecked Sendable` (justified): every stored `var` is read and written only
+/// with `lock` held. The state cannot move into a `Mutex` because it includes the
+/// non-`Sendable` `NSXPCConnection`, which `ensureConnection` hands out of the
+/// critical section (a `Mutex` only returns `sending` values); `NSXPCConnection`
+/// itself is documented as safe to use from any thread.
 public final class HelperClient: SMCWriter, @unchecked Sendable {
 
     private let lock = NSLock()
@@ -66,7 +73,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
     private var generation: UInt64 = 0
     private var sessionOpen = false
     private var state: HelperConnectionState = .disconnected
-    private var stateHandler: ((HelperConnectionState) -> Void)?
+    private var stateHandler: (@Sendable (HelperConnectionState) -> Void)?
     private var teamID: String = FanControlHelperConstants.teamIdentifierPlaceholder
     private var timeout: TimeInterval = 8
 
@@ -173,7 +180,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
     }
 
     /// Called (on an arbitrary thread) whenever `connectionState` changes.
-    public var onStateChange: ((HelperConnectionState) -> Void)? {
+    public var onStateChange: (@Sendable (HelperConnectionState) -> Void)? {
         get { lock.withLock { stateHandler } }
         set { lock.withLock { stateHandler = newValue } }
     }
@@ -199,7 +206,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
     }
 
     private func updateState(_ newState: HelperConnectionState) {
-        let handler: ((HelperConnectionState) -> Void)?
+        let handler: (@Sendable (HelperConnectionState) -> Void)?
         lock.lock()
         if state == newState {
             lock.unlock()
@@ -448,32 +455,33 @@ private struct HelperTransportError: Error {
 /// Resumes a checked continuation at most once (XPC may call both the reply
 /// block and the error handler in edge cases, e.g. invalidation mid-reply, and
 /// the call timeout races the reply).
-final class ResumeOnce<T: Sendable>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<T, Error>?
-    private var resumeHandler: (@Sendable () -> Void)?
+final class ResumeOnce<T: Sendable>: Sendable {
+    private struct State {
+        var continuation: CheckedContinuation<T, Error>?
+        var resumeHandler: (@Sendable () -> Void)?
+    }
+
+    private let state: Mutex<State>
 
     init(_ continuation: CheckedContinuation<T, Error>) {
-        self.continuation = continuation
+        state = Mutex(State(continuation: continuation))
     }
 
     /// Runs `handler` once when the box is resumed (immediately if it already was).
     func onResume(_ handler: @escaping @Sendable () -> Void) {
-        let alreadyResumed: Bool = lock.withLock {
-            guard continuation != nil else { return true }
-            resumeHandler = handler
+        let alreadyResumed: Bool = state.withLock { state in
+            guard state.continuation != nil else { return true }
+            state.resumeHandler = handler
             return false
         }
         if alreadyResumed { handler() }
     }
 
+    /// Takes the continuation (at most once) and runs the resume handler outside the lock.
     private func take() -> CheckedContinuation<T, Error>? {
-        let (current, handler) = lock.withLock { () -> (CheckedContinuation<T, Error>?, (@Sendable () -> Void)?) in
-            let current = continuation
-            let handler = resumeHandler
-            continuation = nil
-            resumeHandler = nil
-            return (current, handler)
+        let (current, handler) = state.withLock { state in
+            defer { state = State() }
+            return (state.continuation, state.resumeHandler)
         }
         handler?()
         return current
