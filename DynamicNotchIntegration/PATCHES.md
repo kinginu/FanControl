@@ -109,7 +109,12 @@ FanControlNookVisibility.nookVisibilityChanged(isVisible: notchState == .nook)
 `FanControlManager.shared.setMonitoringPaused(!isVisible)` を呼び、それ以外は一時停止を解除する。補足:
 
 - ウィジェット自身の `onAppear`（解除）/ `onDisappear`（一時停止）はホストのフックが無い場合の代替として残している。フックがあれば
-  Nook を開くたびに確実に解除される。
+  Nook を開くたびに確実に解除される。`onDisappear` の一時停止は、表示中の Fan Control ウィジェットが 0 個になったときだけ
+  （`FanControlWidgetPresence.visibleCount`。複数画面で片方の Nook を閉じても、もう片方が開いていれば止めない。Nook の中身は
+  フェードで消えるので `onDisappear` はフックより後に走る）、かつ `FanControlWidgetPresence.hostReportsVisibility` が false のとき
+  だけ行う（2026-10-20 レビュー指摘）。ホストのフックを入れたら `nookVisibilityChanged` の先頭で
+  `FanControlWidgetPresence.hostReportsVisibility = true` を立てること（未実施: `FanControlSettingsView.swift` の担当）。
+  プレビュー描画（`previewProfile` / `previewGridSize` 指定時）は数に入れない。
 - 設定ペイン（`FanControlSettingsView`）は表示中 `FanControlManager.setLiveDataHold(true, for:)` で一時停止を保留し（Nook が閉じていても
   通常間隔でポーリング）、閉じると保留を外す。ホストの要求（`isMonitoringPaused`）は書き換えないので、元の状態を覚えて戻す必要は無い。
 - 一般設定で「Nook 非表示中は一時停止」をオフにする（または機能を無効にする）と、`FanControlAlertCoordinator.syncManagerSettings()` が
@@ -131,58 +136,44 @@ settings: { widget in
 }
 ```
 
-## (d) 設定ウィンドウに「Fan Control」ペインを登録
+## (d) 設定ウィンドウに「Fan Control」タブを追加
 
-**`Settings` の名前衝突に注意:** sindresorhus/Settings の `Settings` 名前空間（`enum Settings`）は、SwiftUI と一緒に import すると
-SwiftUI の `Settings` シーン型（`struct Settings<Content>: Scene`）と衝突する。実 SDK + Settings 3.1.2 での型検査
-（`Tools/IntegrationTypeCheck`）では、`extension Settings.PaneIdentifier` は「'Settings' is ambiguous for type lookup」、
-`Settings.Pane(…)` は SwiftUI 側に誤解決されて「type 'Settings<Content>' has no member 'Pane'」になった。
-このファイルの先頭で `import enum Settings.Settings`（スコープ付き import。パッケージ自身が推奨している書き方）を追加すれば
-`Settings.*` が sindresorhus/Settings に解決される。代わりにパッケージ提供の `typealias AppSettings = Settings` を使い
-`AppSettings.Pane` などと書いてもよい。DynamicNotch の既存ペイン登録箇所が既にどちらかを使っていればそれに合わせる。
-
-`Settings.PaneIdentifier` の定義と、`SettingsWindowController(panes:)`（または `Settings { … }` シーン）に渡している配列に追加する:
-
-Swift 6 言語モードでビルドしている場合は `import Settings` を `@preconcurrency import Settings` にする
-（Settings 3.1.2 の `PaneIdentifier` は `Sendable` でないため、`static let fanControl` が
-「not concurrency-safe because non-'Sendable' type 'Settings.PaneIdentifier'」になる）。Swift 5 モードでは不要。
+ホストの設定ウィンドウは SwiftUI 標準の `Settings` シーン（`App` の `body` に `Settings { … }`）で、中身はペインごとに
+1 タブの `TabView`（`.tabItem { Label(タイトル, systemImage: SF Symbol) }`。macOS がツールバー型のタブとして表示する）である前提。
+そこへ Fan Control のタブを 1 つ足す。ドロップインファイル側はどれも sindresorhus/Settings に依存しない（2026-10-20 に撤去。
+各タブは標準の `Form` + `.formStyle(.grouped)`）。
 
 ```swift
-import SwiftUI
-import Settings                 // Swift 6 モードでは @preconcurrency import Settings
-import enum Settings.Settings   // `Settings.*` を sindresorhus/Settings に解決させる
-
-extension Settings.PaneIdentifier {
+// ペイン ID（AppKit 側から特定のタブを開くため。ホストが別の選択型を使うならそれに合わせる）
+extension AppSettings.PaneIdentifier {
     static let fanControl = Self("fanControl")
 }
 
-// NSHostingController を生成するので @MainActor（Swift 6 言語モードでは必須。
-// グローバルな `let …: () -> SettingsPane = { … }` は Swift 6 で非 Sendable のグローバル変数としてエラーになる）。
-@MainActor
-func FanControlSettingsPaneController() -> SettingsPane {
-    let pane = Settings.Pane(
-        identifier: .fanControl,
-        title: String(localized: "Fan Control"),
-        toolbarIcon: NSImage(systemSymbolName: "fan", accessibilityDescription: String(localized: "Fan Control"))!
-    ) {
-        FanControlSettingsView()
-    }
-    return Settings.PaneHostingController(pane: pane)
+// ホストの設定 TabView に追加（About の直前）:
+TabView(selection: $navigation.pane) {
+    // … 既存のタブ …
+    FanControlSettingsView()
+        .frame(width: 760, height: 640, alignment: .top)   // ホストが全タブに付けている固定サイズ
+        .tabItem { Label("Fan Control", systemImage: "fan") }
+        .tag(AppSettings.PaneIdentifier.fanControl)
+    // … About …
 }
-
-// 既存の panes 配列に追加:
-// SettingsWindowController(panes: [ …, FanControlSettingsPaneController() ], …)
 ```
 
-`FanControlSettingsView` は全タブ共通の固定サイズ（`FanControlSettingsView.contentSize` = 740×600 pt。タブ切替でウィンドウが伸縮しない。
-一般タブ・プロファイル編集・センサー表は内部でスクロール）を持つ。ホスト側でペインを固定フレームで包む場合はそれ以上にする。
+`FanControlSettingsView` は全サブタブ共通の固定サイズ（`FanControlSettingsView.contentSize` = 740×600 pt。サブタブ切替でウィンドウが伸縮しない。
+一般タブ・プロファイル編集・センサー表は内部でスクロール）を持つ。ホスト側で各タブを固定フレームで包む場合はそれ以上にする
+（`Settings` シーンのウィンドウはタブの内容サイズに合わせて伸縮するので、全タブに同じ固定フレームを付けると切替で大きさが変わらない）。
 
-ホストアプリが全ペイン共通のヘルパーを持っている場合は、上の `FanControlSettingsPaneController()` の代わりに
-`FanControlSettingsView()` をそのヘルパーで包んで登録してよい。`DynamicNotchApp/` はそうしている
-（`Sources/WindowsManager.swift` の `settingsPane("fanControl", "Fan Control", "fan") { FanControlSettingsView() }`、
-全ペインを 760×640 の固定フレーム `settingsPaneSize` で包む。License ペインは削除済みで Fan Control は About の直前）。
-`Sources/Support/FanControl-Patches.swift` の `FanControlSettingsPaneController()` は他のホスト向けの参照実装として残しているが、DynamicNotchApp からは呼ばれない。
-プロファイルが固定 6 件になった変更（2026-10-20）では (a)〜(g) の配線は変わらない（ドロップインファイル内だけの変更）。
+`DynamicNotchApp/` では、`App/DynamicNotchApp.swift` が `Settings { SettingsRootView() }` を宣言し、
+`Sources/SettingsRootView.swift` が `AppSettings.PaneIdentifier`（旧 sindresorhus/Settings の API と同じ綴り）、選択中のタブ
+（`SettingsNavigation.shared.pane`、UserDefaults に保存）、各タブの 760×640 固定フレームを持つ。Fan Control タブは
+`#if canImport(FanControlKit)` で About の直前に入り、`.fanControl` は `Sources/Support/FanControl-Patches.swift` で定義している。
+AppKit 側からは `WindowsManager.shared.showSettings(pane: .fanControl)` で開く（選択を設定してから標準の設定ウィンドウを開く）。
+
+**履歴（sindresorhus/Settings 時代、2026-10-20 まで）:** 以前は `Settings.Pane` / `Settings.PaneHostingController` を
+`SettingsWindowController(panes:)` に登録していた。sindresorhus/Settings の `enum Settings` は SwiftUI の `Settings` シーン型と
+名前が衝突するため、`import enum Settings.Settings` か `typealias AppSettings` が必要だった（Swift 6 モードでは
+`@preconcurrency import Settings` も）。標準の `Settings` シーンに移行したのでこの回避策は不要になった。
 
 ## (e) `AppDelegate.applicationDidFinishLaunching` — 監視の自動開始と警告コーディネータ
 

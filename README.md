@@ -56,7 +56,7 @@ Mac（Apple Silicon, macOS 26, Swift 6.3.3 / Command Line Tools）で確認済�
   アプリは自分に Team ID が無いか手動インストールを検出するとインストール済みヘルパーの cdhash を要件にする。スクリプトは `--dry-run` でスモークアプリに対して確認済み。
   実インストール・接続は未実施（root が必要。手順は `Tools/HelperSmokeApp/README.md`）
 - 書込前コードレビュー（2026-10-20、`docs/verification/pre-write-review-2026-10-20.md`）: 復元順序（`Md`=0 を先に、`Tg`=0 は書き戻さない）、部分失敗時のロールバック、ヘルパーの書込ポリシー（`F<n>Mn` を許可リストから除外、0x40 書込ビット必須）を修正。初回書込の手順チェックリストも同文書
-- `DynamicNotchIntegration/` の UI 8 ファイル（と PATCHES.md の断片）を実 SDK + Defaults 8.2.0 + Settings 3.1.2 で型検査:
+- `DynamicNotchIntegration/` の UI 8 ファイル（と PATCHES.md の断片）を実 SDK + Defaults 8.2.0 で型検査（2026-10-20 に sindresorhus/Settings 依存を撤去。それまでは Settings 3.1.2 も）:
   `Tools/IntegrationTypeCheck` で `swift build`（Swift 5 / Swift 6 言語モードとも警告・エラー 0）。DynamicNotch 側はスタブ（`docs/integration.md` §7）
 
 テストは Swift Testing（`import Testing`）で書かれている。XCTest は Xcode.app にしか同梱されないため

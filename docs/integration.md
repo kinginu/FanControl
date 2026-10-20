@@ -37,7 +37,8 @@ arm64 でない Mac ではアプリが `FanControlError.unsupportedPlatform` で
    リポジトリ内に置く場合は `$(SRCROOT)/FanControl` を推奨（以降のパスはこの前提）。
 2. DynamicNotch アプリターゲットの **General ▸ Frameworks, Libraries, and Embedded Content** に
    `FanControlCore` と `FanControlKit` を追加する（`FanControlSMC` / `FanControlXPC` は Kit 経由で推移的にリンクされる）。
-3. DynamicNotch は既に sindresorhus の `Defaults` と `Settings` を使っているので、追加の依存は不要。
+3. DynamicNotch は既に sindresorhus の `Defaults` を使っているので、追加の依存は不要（設定ウィンドウは SwiftUI 標準の
+   `Settings` シーン。DynamicNotchApp は 2026-10-20 に sindresorhus/Settings を撤去した。§5）。
 
 ## 2. ヘルパーターゲット
 
@@ -152,18 +153,17 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
 ## 5. UI ファイルとパッチ
 
 1. `FanControl/DynamicNotchIntegration/*.swift`（8 ファイル）を DynamicNotch アプリターゲットに追加する。
-   各ファイルは `#if os(macOS)` で囲まれ、`Defaults` / `Settings` / `FanControlCore` / `FanControlKit` を import する。
-   **注意:** `import Settings`（sindresorhus/Settings）と `import SwiftUI` を同じファイルで使うと、`Settings` が SwiftUI の
-   `Settings` シーン（`struct Settings<Content>: Scene`）と衝突する。実 SDK + Settings 3.1.2 での型検査では、
-   式の位置の `Settings.Container(…)` / `Settings.Section(…)` は解決できたが、型の位置（`extension Settings.PaneIdentifier`）は
-   「'Settings' is ambiguous」、`Settings.Pane(…)` は SwiftUI 側に誤解決されてエラーになった。そのため `Settings.*` を使う
-   ドロップインファイル（`FanControlGeneralTabView.swift` / `FanControlWidgetSettingsView.swift`）と PATCHES.md (d) では
-   `import enum Settings.Settings`（スコープ付き import。Settings パッケージ自身が推奨）を併記している。パッケージ提供の
-   `typealias AppSettings = Settings` を使う書き方でもよい。DynamicNotch の既存設定ビューが別の書き方をしていればそれに合わせてよい。
-   Swift 6 言語モードでは PATCHES.md (d) の `static let fanControl` のために `@preconcurrency import Settings` が要る（PATCHES.md (d)）。
+   各ファイルは `#if os(macOS)` で囲まれ、`SwiftUI` / `Defaults` / `FanControlCore` / `FanControlKit` を import する
+   （sindresorhus/Settings には依存しない。設定画面は標準の `Form` + `.formStyle(.grouped)`）。
+   ホストの設定ウィンドウは SwiftUI 標準の `Settings` シーン + `TabView` を前提とし、Fan Control はそのタブの 1 つとして追加する（PATCHES.md (d)）。
+   **履歴（2026-10-20 まで）:** sindresorhus/Settings を使っていた頃は、`import Settings` と `import SwiftUI` を同じファイルで使うと
+   `Settings` が SwiftUI の `Settings` シーン（`struct Settings<Content>: Scene`）と衝突した（Settings 3.1.2 での型検査で、
+   型の位置の `extension Settings.PaneIdentifier` は「'Settings' is ambiguous」、`Settings.Pane(…)` は SwiftUI 側に誤解決）。
+   そのためドロップイン 2 ファイルと PATCHES.md (d) に `import enum Settings.Settings`（Swift 6 モードでは `@preconcurrency import Settings` も）を
+   併記していた。標準の `Settings` シーンへの移行でパッケージごと撤去したので、この回避策は不要になった。
 2. `PATCHES.md` の (a)〜(g) を既存ソースに適用する:
    (a) `NookWidget.fanControl`（tag 8）、(b) Nook グリッドの View 振り分け、(c) `WidgetsSettingsTabView`、
-   (d) 設定ペイン登録、(e) `applicationDidFinishLaunching`、(f) `LiveActivity.fanAlert` と `LiveActivityView`、
+   (d) 設定ウィンドウの Fan Control タブ、(e) `applicationDidFinishLaunching`、(f) `LiveActivity.fanAlert` と `LiveActivityView`、
    (g) 終了処理（パッチ不要。`FanControlManager` が `NSApplication.willTerminateNotification` で自動制御に戻す）。
 3. 文字列: `Localizable/en.strings` と `ja.strings` の項目を、プロジェクトの `en.lproj/Localizable.strings` /
    `ja.lproj/Localizable.strings`（ソース側）にマージする。アプリ内に同梱されているのはコンパイル済み（バイナリ/UTF-16 plist）の
@@ -173,8 +173,8 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
    `FanControlWidgetSettings` に `init()`（`Preferences` が `init()` を要求し、全引数既定値の init では満たせない。PATCHES.md (a)）、
    XcodeGen ではローカルパッケージ参照に `group:` を付けないと `../FanControl` のソースグループと衝突してドロップインがターゲットから落ちる
    （`DynamicNotchApp/project.yml`）。
-   8 ファイルと PATCHES.md の断片は `Tools/IntegrationTypeCheck`（実 SDK + Defaults 8.2.0 +
-   Settings 3.1.2、DynamicNotch 側はスタブ）で警告・エラー 0 を確認済み（§7）。実プロジェクトで出る差分はスタブと実ソースの違いに起因する。
+   8 ファイルと PATCHES.md の断片は `Tools/IntegrationTypeCheck`（実 SDK + Defaults 8.2.0、DynamicNotch 側はスタブ。
+   2026-10-20 まで Settings 3.1.2 にも依存）で警告・エラー 0 を確認済み（§7）。実プロジェクトで出る差分はスタブと実ソースの違いに起因する。
 
 ## 6. Mac での検証チェックリスト（Phase 1 → 5）
 
@@ -376,7 +376,8 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
   コンパイルし、Swift 5 言語モード・Swift 6 言語モード（`TYPECHECK_SWIFT6=1`）とも警告・エラー 0。8 ファイルは DynamicNotch 側の
   シンボルを参照しないためスタブ無しで通る。PATCHES.md (a)〜(f) の断片も、ホストアプリに倣ったスタブ
   （`NookWidget` / `NookGridSizeType` / `Preferences` / `WidgetPrefs` / `LiveActivity` / `ActiveLiveActivitiesManager` など）に対して型検査した。
-  見つかった問題と修正:
+  見つかった問題と修正（以下 (d) の 2 項目は sindresorhus/Settings 時代のもの。2026-10-20 に標準の `Settings` シーンへ移行し、
+  Settings パッケージへの依存ごと撤去した。現在の (d) は `TabView` へのタブ追加で、型検査も Settings 無しで行う）:
   - PATCHES.md (d): `extension Settings.PaneIdentifier` が SwiftUI の `Settings` と曖昧、`Settings.Pane(…)` が SwiftUI 側に誤解決
     → `import enum Settings.Settings` を追加（§5）。ドロップインの 2 ファイルにも予防的に同じ import を追加（変更前もコンパイルは通っていた）。
   - PATCHES.md (d): グローバル `let FanControlSettingsPaneController: () -> SettingsPane = { … }` は Swift 6 モードで
@@ -388,9 +389,8 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
   `HelperInstallStatus` / `HelperConnectionState` の case）は実装と突き合わせ済み。`FanControlManager` は 2026-10-20 から `@MainActor`
   （SMC I/O は専用キュー上の actor `FanControlPoller`。`docs/kit.md`「Threading model」）。UI は main actor から同期メソッドを直接呼び、
   async メソッドは `Task { @MainActor in … }` で待つ（ドロップインは変更不要。両言語モードで型検査済み）。
-- `Settings.Section(label:content:)` / `Settings.Container(contentWidth:)` / `Settings.Pane(identifier:title:toolbarIcon:)` /
-  `Settings.PaneHostingController(pane:)` は Settings 3.1.2 の実 API で型検査済み。DynamicNotch が古い Settings（2.x）を
-  固定していれば差異がありうるので、実プロジェクトの Package.resolved を確認する（参照ソースでは `Section { … }`）。
+- （履歴）`Settings.Section(label:content:)` / `Settings.Container(contentWidth:)` / `Settings.Pane(identifier:title:toolbarIcon:)` /
+  `Settings.PaneHostingController(pane:)` は Settings 3.1.2 の実 API で型検査していた。2026-10-20 以降ドロップインはこれらを使わない。
 - `WidgetPrefs` / `Preferences` の実際の要件はスタブでの推定（`gridSizeType` のみ）。実プロジェクトで追加要件があれば
   PATCHES.md (a) の `extension FanControlWidgetSettings: Preferences, WidgetPrefs` に足す。
 - `NookWidget` の View 振り分け箇所、`ActiveLiveActivitiesManager` インスタンスの保持場所はホスト側のソースから特定できていない（PATCHES.md 参照）。

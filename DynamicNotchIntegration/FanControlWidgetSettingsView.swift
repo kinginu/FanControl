@@ -6,9 +6,6 @@
 
 import SwiftUI
 import Defaults
-import Settings
-// Resolve `Settings.*` to sindresorhus/Settings, not SwiftUI's `Settings` scene (PATCHES.md (d)).
-import enum Settings.Settings
 import FanControlCore
 import FanControlKit
 
@@ -20,70 +17,39 @@ struct FanControlWidgetSettingsView: View {
     private var manager: FanControlManager { FanControlManager.shared }
 
     var body: some View {
-        Settings.Container(contentWidth: 480.0) {
-            Settings.Section(label: { Text("Layout") }) {
-                HStack {
-                    Text("Grid Size")
-                    Spacer()
-                    Picker("", selection: $settings.gridSize) {
-                        Text("2x1").tag(FanControlWidgetSettings.GridSizeChoice.medium)
-                        Text("Double Wide").tag(FanControlWidgetSettings.GridSizeChoice.doubleWide)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.radioGroup)
+        // Grouped form (System Settings style), like the host's other widget settings views.
+        Form {
+            Section("Layout") {
+                Picker("Grid Size", selection: $settings.gridSize) {
+                    Text("2x1").tag(FanControlWidgetSettings.GridSizeChoice.medium)
+                    Text("Double Wide").tag(FanControlWidgetSettings.GridSizeChoice.doubleWide)
                 }
-                .padding(.vertical, 4)
+                .pickerStyle(.radioGroup)
             }
 
-            Settings.Section(label: { Text("Fans") }) {
+            Section("Fans") {
                 FanSelectionList(settings: $settings, fans: manager.fans)
             }
 
-            Settings.Section(label: { Text("Sensors") }) {
+            Section("Sensors") {
                 SensorSelectionList(settings: $settings,
                                     sensors: FanControlFormatting.aggregatesFirst(manager.sensorReadings))
             }
 
-            Settings.Section(label: { Text("Display") }) {
-                HStack {
-                    Text("Temperature Unit")
-                    Spacer()
-                    Picker("", selection: $settings.temperatureUnit) {
-                        Text("Celsius (°C)").tag(TemperatureUnit.celsius)
-                        Text("Fahrenheit (°F)").tag(TemperatureUnit.fahrenheit)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .fixedSize()
+            Section("Display") {
+                Picker("Temperature Unit", selection: $settings.temperatureUnit) {
+                    Text("Celsius (°C)").tag(TemperatureUnit.celsius)
+                    Text("Fahrenheit (°F)").tag(TemperatureUnit.fahrenheit)
                 }
-                .padding(.vertical, 4)
+                .pickerStyle(.segmented)
+                .fixedSize()
 
-                HStack {
-                    Text("Show Profile Picker")
-                    Spacer()
-                    Toggle("", isOn: $settings.showProfilePicker)
-                        .labelsHidden()
-                }
-                .padding(.vertical, 4)
-
-                HStack {
-                    Text("Show Fan Curve (Double Wide)")
-                    Spacer()
-                    Toggle("", isOn: $settings.showFanCurve)
-                        .labelsHidden()
-                }
-                .padding(.vertical, 4)
-
-                HStack {
-                    Text("Show Target RPM")
-                    Spacer()
-                    Toggle("", isOn: $settings.showTargetRPM)
-                        .labelsHidden()
-                }
-                .padding(.vertical, 4)
+                Toggle("Show Profile Picker", isOn: $settings.showProfilePicker)
+                Toggle("Show Fan Curve (Double Wide)", isOn: $settings.showFanCurve)
+                Toggle("Show Target RPM", isOn: $settings.showTargetRPM)
             }
         }
-        .padding(0)
+        .formStyle(.grouped)
     }
 }
 
@@ -94,27 +60,14 @@ private struct FanSelectionList: View {
     let fans: [FanDevice]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Show All Fans")
-                Spacer()
-                Toggle("", isOn: showAll)
-                    .labelsHidden()
-            }
-            .padding(.vertical, 4)
+        Toggle("Show All Fans", isOn: showAll)
 
-            if fans.isEmpty {
-                Text("No fans detected")
-                    .foregroundStyle(.secondary)
-            } else if settings.visibleFanIDs != nil {
-                ForEach(fans) { fan in
-                    HStack {
-                        Text(fan.name)
-                        Spacer()
-                        Toggle("", isOn: isVisible(fan))
-                            .labelsHidden()
-                    }
-                }
+        if fans.isEmpty {
+            Text("No fans detected")
+                .foregroundStyle(.secondary)
+        } else if settings.visibleFanIDs != nil {
+            ForEach(fans) { fan in
+                Toggle(isOn: isVisible(fan)) { Text(verbatim: fan.name) }
             }
         }
     }
@@ -148,39 +101,26 @@ private struct SensorSelectionList: View {
     let sensors: [SensorReading]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("Show Key Temperatures")
-                Spacer()
-                Toggle("", isOn: automatic)
-                    .labelsHidden()
-            }
-            .padding(.vertical, 4)
+        Toggle("Show Key Temperatures", isOn: automatic)
 
-            if sensors.isEmpty {
-                Text("No sensors found")
-                    .foregroundStyle(.secondary)
-            } else if settings.visibleSensorKeys != nil {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(sensors) { sensor in
-                            HStack {
-                                Text(verbatim: FanControlFormatting.sensorName(sensor))
-                                    .lineLimit(1)
-                                Text(verbatim: sensor.id)
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Text(verbatim: FanControlFormatting.temperature(sensor, unit: settings.temperatureUnit))
-                                    .monospacedDigit()
-                                    .foregroundStyle(.secondary)
-                                Toggle("", isOn: isVisible(sensor))
-                                    .labelsHidden()
-                            }
-                        }
+        if sensors.isEmpty {
+            Text("No sensors found")
+                .foregroundStyle(.secondary)
+        } else if settings.visibleSensorKeys != nil {
+            ForEach(sensors) { sensor in
+                Toggle(isOn: isVisible(sensor)) {
+                    HStack {
+                        Text(verbatim: FanControlFormatting.sensorName(sensor))
+                            .lineLimit(1)
+                        Text(verbatim: sensor.id)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(verbatim: FanControlFormatting.temperature(sensor, unit: settings.temperatureUnit))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
                     }
                 }
-                .frame(maxHeight: 220)
             }
         }
     }

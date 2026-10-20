@@ -1,6 +1,6 @@
 // swift-tools-version: 5.9
 // Scratch package that type-checks FanControl/DynamicNotchIntegration/*.swift against the
-// real macOS SDK + sindresorhus/Defaults + sindresorhus/Settings. Not part of FanControl/Package.swift.
+// real macOS SDK + sindresorhus/Defaults. Not part of FanControl/Package.swift.
 import PackageDescription
 import Foundation
 
@@ -12,11 +12,10 @@ let swift6: [SwiftSetting] = ProcessInfo.processInfo.environment["TYPECHECK_SWIF
 
 let package = Package(
     name: "IntegrationTypeCheck",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("26.0")],   // follows FanControl/Package.swift
     dependencies: [
         .package(name: "FanControl", path: "../.."),
         .package(url: "https://github.com/sindresorhus/Defaults", from: "8.2.0"),
-        .package(url: "https://github.com/sindresorhus/Settings", from: "3.0.0"),
     ],
     targets: [
         .target(
@@ -25,7 +24,6 @@ let package = Package(
                 .product(name: "FanControlCore", package: "FanControl"),
                 .product(name: "FanControlKit", package: "FanControl"),
                 .product(name: "Defaults", package: "Defaults"),
-                .product(name: "Settings", package: "Settings"),
             ],
             swiftSettings: swift6
         ),

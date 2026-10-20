@@ -7,13 +7,11 @@
 //
 // Part 2 transcribes the code from DynamicNotchIntegration/PATCHES.md (a)(c)(d)(e)(f)
 // against those stubs, so the snippets are type-checked against the real
-// Defaults / Settings / SwiftUI APIs. Keep it in sync with PATCHES.md by hand.
+// Defaults / SwiftUI APIs. Keep it in sync with PATCHES.md by hand.
 
 import SwiftUI
 import AppKit
 import Defaults
-@preconcurrency import Settings   // PATCHES.md (d): needed for `static let fanControl` in Swift 6 mode
-import enum Settings.Settings
 import FanControlCore
 import FanControlKit
 
@@ -21,8 +19,7 @@ import FanControlKit
 
 /// host app *Settings.swift: every settings struct conforms to `DynamicNotch.Preferences`.
 /// Requirements are unknown (not visible from the host sources); modelled as the conformances all
-/// settings structs share. NB: sindresorhus/Settings also exports `typealias Preferences = Settings`;
-/// the app module's own protocol shadows it.
+/// settings structs share.
 protocol Preferences: Defaults.Serializable, Codable, Equatable, Hashable {}
 
 /// host app *WidgetSettings.swift: `DynamicNotch.WidgetPrefs`. NookSettings.swift reads
@@ -137,26 +134,41 @@ struct _PatchC_WidgetSettingsDispatch: View {
     }
 }
 
-// (d) settings pane registration
-extension Settings.PaneIdentifier {
+// (d) Fan Control tab in the host's native SwiftUI `Settings` scene.
+// Host side (DynamicNotchApp/Sources/SettingsRootView.swift), stubbed minimally:
+enum AppSettings {
+    struct PaneIdentifier: Hashable, RawRepresentable, Sendable {
+        let rawValue: String
+        init(rawValue: String) { self.rawValue = rawValue }
+        init(_ rawValue: String) { self.rawValue = rawValue }
+    }
+}
+
+// PATCHES.md (d):
+extension AppSettings.PaneIdentifier {
     static let fanControl = Self("fanControl")
 }
 
-@MainActor
-func FanControlSettingsPaneController() -> SettingsPane {
-    let pane = Settings.Pane(
-        identifier: .fanControl,
-        title: String(localized: "Fan Control"),
-        toolbarIcon: NSImage(systemSymbolName: "fan", accessibilityDescription: String(localized: "Fan Control"))!
-    ) {
-        FanControlSettingsView()
+struct _PatchD_SettingsRootView: View {
+    @State private var selection = AppSettings.PaneIdentifier("general")
+
+    var body: some View {
+        TabView(selection: $selection) {
+            // … existing tabs …
+            FanControlSettingsView()
+                .frame(width: 760, height: 640, alignment: .top)
+                .tabItem { Label("Fan Control", systemImage: "fan") }
+                .tag(AppSettings.PaneIdentifier.fanControl)
+            // … About …
+        }
     }
-    return Settings.PaneHostingController(pane: pane)
 }
 
-@MainActor
-func _patchD_makeWindowController() -> SettingsWindowController {
-    SettingsWindowController(panes: [FanControlSettingsPaneController()])
+// The scene the host declares in its `App` (no name clash: SwiftUI's `Settings` is the only one).
+struct _PatchD_App {
+    @SceneBuilder var body: some Scene {
+        Settings { _PatchD_SettingsRootView() }
+    }
 }
 
 // (e) AppDelegate.applicationDidFinishLaunching

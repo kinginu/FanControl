@@ -1,8 +1,9 @@
 # IntegrationTypeCheck
 
 `FanControl/DynamicNotchIntegration/*.swift`（DynamicNotch アプリターゲットに追加するドロップイン SwiftUI ファイル 8 つ）を、
-実 macOS SDK（SwiftUI / AppKit）と実際のサードパーティパッケージ（[sindresorhus/Defaults](https://github.com/sindresorhus/Defaults)・
-[sindresorhus/Settings](https://github.com/sindresorhus/Settings)）に対して型検査するための作業用 SwiftPM パッケージ。
+実 macOS SDK（SwiftUI / AppKit）と実際のサードパーティパッケージ（[sindresorhus/Defaults](https://github.com/sindresorhus/Defaults)）に
+対して型検査するための作業用 SwiftPM パッケージ。2026-10-20 に sindresorhus/Settings への依存を撤去した（ホストの設定ウィンドウは
+SwiftUI 標準の `Settings` シーン。PATCHES.md (d)）。
 DynamicNotch の実 Xcode プロジェクトが無い環境でも UI コードをコンパイルできるようにするためのもので、成果物は出荷しない。
 `FanControl/Package.swift` には含めていない（独立したパッケージ）。
 
@@ -14,15 +15,15 @@ swift build                      # Swift 5 言語モード
 TYPECHECK_SWIFT6=1 swift build   # この target だけ Swift 6 言語モード（strict concurrency complete）
 ```
 
-`Build complete!` で警告・エラー 0 なら合格。初回は GitHub から Defaults / Settings を取得する（ネットワークが必要）。
+`Build complete!` で警告・エラー 0 なら合格。初回は GitHub から Defaults を取得する（ネットワークが必要）。
 Command Line Tools のみ（Xcode.app 無し）の環境で動く。
 
 ## 構成
 
 | パス | 内容 |
 |---|---|
-| `Package.swift` | ローカルパッケージ `../..`（`FanControlCore` / `FanControlKit`）、Defaults `from: 8.2.0`、Settings `from: 3.0.0` に依存 |
-| `Package.resolved` | 検証に使った版: **Defaults 8.2.0**、**Settings 3.1.2**（2026-10-19 時点の最新安定版。Defaults 9 は beta のみ） |
+| `Package.swift` | ローカルパッケージ `../..`（`FanControlCore` / `FanControlKit`）、Defaults `from: 8.2.0` に依存 |
+| `Package.resolved` | 検証に使った版: **Defaults 8.2.0**（2026-10-19 時点の最新安定版。Defaults 9 は beta のみ） |
 | `Sources/IntegrationTypeCheck/FanControl*.swift` | `../../../../DynamicNotchIntegration/*.swift` への **シンボリックリンク**（SwiftPM はリンク先をそのままコンパイルする）。ソースは複製しない |
 | `Sources/IntegrationTypeCheck/DynamicNotchStubs.swift` | DynamicNotch 側シンボルのスタブと、`PATCHES.md` の断片の書き写し（下記） |
 
@@ -42,6 +43,7 @@ for f in ../../../../DynamicNotchIntegration/*.swift; do ln -sf "$f" .; done
 - `NookWidget`（既存 case は `timer` のみに省略）と `NookWidget.NookGridSizeType`（small = 0 / medium = 2 / doubleWide = 5）
 - `LiveActivity`（`battery` と `fanAlert` のみ）、`ActiveLiveActivitiesManager`（`insertSync` / `removeSync`）
 - `BlankView`、`TimerWidgetView`、`TimerWidgetSettingsView`（既存の switch 分岐の代用）
+- `AppSettings.PaneIdentifier`（ホストの設定タブ ID。DynamicNotchApp  `DynamicNotchApp/Sources/SettingsRootView.swift` と同じ形）
 
 続けて `PATCHES.md` の (a)(b)(c)(d)(e)(f) の断片を書き写している。**PATCHES.md を変えたらこのファイルも手で合わせること。**
 (g) はパッチ不要なので対象外。

@@ -8,11 +8,6 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import Defaults
-// `Settings` (sindresorhus/Settings) clashes with SwiftUI's `Settings` scene.
-// The scoped `import enum` makes `Settings.Container` / `Settings.Section`
-// resolve to the package's namespace in this file (see PATCHES.md (d)).
-import Settings
-import enum Settings.Settings
 import FanControlCore
 import FanControlKit
 
@@ -27,51 +22,38 @@ struct FanControlGeneralTabView: View {
     private var manager: FanControlManager { FanControlManager.shared }
 
     var body: some View {
-        // Scrolls inside the pane's fixed size (FanControlSettingsView.contentSize).
-        ScrollView {
-        Settings.Container(contentWidth: 480.0) {
-            Settings.Section(label: { Text("Fan Control") }) {
-                HStack {
-                    Text("Enable Fan Control")
-                    Spacer()
-                    Toggle("", isOn: isEnabled)
-                        .labelsHidden()
-                }
-                .padding(.vertical, 4)
+        // Grouped form (System Settings style); scrolls inside the pane's fixed size
+        // (FanControlSettingsView.contentSize).
+        Form {
+            Section("Fan Control") {
+                Toggle("Enable Fan Control", isOn: isEnabled)
 
-                HStack {
-                    Text("Polling Interval")
-                    Spacer()
-                    Picker("", selection: $general.pollingInterval) {
-                        Text("1 second").tag(1.0 as TimeInterval)
-                        Text("2 seconds").tag(2.0 as TimeInterval)
-                        Text("5 seconds").tag(5.0 as TimeInterval)
-                        Text("10 seconds").tag(10.0 as TimeInterval)
-                        // A value set elsewhere (e.g. `defaults write`) stays selectable.
-                        if !FanControlGeneralSettings.pollingIntervalChoices.contains(general.pollingInterval) {
-                            Text("Custom (\(customIntervalText) s)").tag(general.pollingInterval)
-                        }
+                Picker("Polling Interval", selection: $general.pollingInterval) {
+                    Text("1 second").tag(1.0 as TimeInterval)
+                    Text("2 seconds").tag(2.0 as TimeInterval)
+                    Text("5 seconds").tag(5.0 as TimeInterval)
+                    Text("10 seconds").tag(10.0 as TimeInterval)
+                    // A value set elsewhere (e.g. `defaults write`) stays selectable.
+                    if !FanControlGeneralSettings.pollingIntervalChoices.contains(general.pollingInterval) {
+                        Text("Custom (\(customIntervalText) s)").tag(general.pollingInterval)
                     }
-                    .labelsHidden()
-                    .fixedSize()
                 }
-                .padding(.vertical, 4)
 
-                ToggleRow(title: "Start Monitoring at Launch", isOn: $general.autoStartMonitoring)
-                ToggleRow(title: "Pause When Nook Is Hidden", isOn: $general.pauseWhenNookHidden)
-                ToggleRow(title: "Re-apply Profile After Wake", isOn: $general.reapplyProfileAfterWake)
+                Toggle("Start Monitoring at Launch", isOn: $general.autoStartMonitoring)
+                Toggle("Pause When Nook Is Hidden", isOn: $general.pauseWhenNookHidden)
+                Toggle("Re-apply Profile After Wake", isOn: $general.reapplyProfileAfterWake)
             }
 
-            Settings.Section(label: { Text("Alerts") }) {
-                ToggleRow(title: "High Temperature Alert", isOn: $general.highTemperatureAlertEnabled)
-                ToggleRow(title: "Fan Stopped Alert", isOn: $general.fanAnomalyAlertEnabled)
+            Section("Alerts") {
+                Toggle("High Temperature Alert", isOn: $general.highTemperatureAlertEnabled)
+                Toggle("Fan Stopped Alert", isOn: $general.fanAnomalyAlertEnabled)
             }
 
-            Settings.Section(label: { Text("Helper") }) {
-                HelperStatusRow(actionError: $actionError)
+            Section("Helper") {
+                HelperStatusRows(actionError: $actionError)
             }
 
-            Settings.Section(label: { Text("Maintenance") }) {
+            Section("Maintenance") {
                 HStack {
                     Button("Restore Automatic Control") {
                         fanControlPerform($actionError) { try await manager.restoreDefaultControl() }
@@ -85,11 +67,9 @@ struct FanControlGeneralTabView: View {
                             .controlSize(.small)
                     }
                 }
-                .padding(.vertical, 4)
             }
         }
-        .padding(0)
-        }
+        .formStyle(.grouped)
         // `pollingInterval` / `reapplyProfileAfterWake` reach the manager through
         // `FanControlAlertCoordinator.syncManagerSettings()` (Defaults.updates).
     }
@@ -161,41 +141,17 @@ struct FanControlGeneralTabView: View {
 
 // MARK: - Rows
 
-private struct ToggleRow: View {
-    let title: LocalizedStringKey
-    @Binding var isOn: Bool
-
-    var body: some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Toggle("", isOn: $isOn)
-                .labelsHidden()
-        }
-        .padding(.vertical, 4)
-    }
-}
-
 /// Helper install state, connection state and the matching action.
-private struct HelperStatusRow: View {
+private struct HelperStatusRows: View {
     @Binding var actionError: String?
 
     private var manager: FanControlManager { FanControlManager.shared }
 
+    /// One form row per item (`LabeledContent` shows the value right-aligned, like System Settings).
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Privileged Helper")
-                Spacer()
-                statusText
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                Text("Connection")
-                Spacer()
-                connectionText
-                    .foregroundStyle(.secondary)
-            }
+        Group {
+            LabeledContent("Privileged Helper") { statusText }
+            LabeledContent("Connection") { connectionText }
 
             // Refused at runtime although the files look fine (e.g. the plist could
             // not be read, or a Team-ID build): same remedy, explained once here.
@@ -264,7 +220,6 @@ private struct HelperStatusRow: View {
                 }
             }
         }
-        .padding(.vertical, 4)
     }
 
     @ViewBuilder private var statusText: some View {
