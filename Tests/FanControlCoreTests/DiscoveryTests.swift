@@ -66,8 +66,11 @@ struct FanDiscoveryTests {
 
 struct SensorCatalogTests {
     @Test func testDisplayNames() {
-        #expect(SensorCatalog.displayName(for: "TC0P") == "CPU Proximity")
-        #expect(SensorCatalog.displayName(for: "TPCD") == "Platform Controller Hub Die")
+        // Intel-only names were removed (Intel dropped 2026-10-20): generic fallback.
+        for key in ["TC0P", "TC0D", "TG0P", "TG0D", "TA0P", "TPCD"] {
+            #expect(SensorCatalog.displayName(for: key) == "Sensor \(key)")
+            #expect(SensorCatalog.knownNames[key] == nil)
+        }
         #expect(SensorCatalog.displayName(for: "Tp09") == "CPU Performance Core 09")
         #expect(SensorCatalog.displayName(for: "Te05") == "CPU Efficiency Core 05")
         #expect(SensorCatalog.displayName(for: "Tg0f") == "GPU 0f")
@@ -127,11 +130,12 @@ struct SensorCatalogTests {
         }
     }
 
-    @Test func testDiscoverIntel() throws {
+    /// Intel-era fixture (sp78): discovery still decodes generically.
+    @Test func testDiscoverLegacyFixedPointSensors() throws {
         let sensors = try SensorCatalog.discoverTemperatureSensors(using: Fixtures.intel())
         #expect(sensors.map(\.id) == ["TC0P", "TG0D", "TB0T", "Tm0P"])
         #expect(sensors.first?.temperature == 55.5)
-        #expect(sensors.first?.name == "CPU Proximity")
+        #expect(sensors.first?.name == "Sensor TC0P")
         #expect(sensors[1].temperature == 48.25)
         #expect(sensors.allSatisfy { $0.sensorType == .smc })
     }

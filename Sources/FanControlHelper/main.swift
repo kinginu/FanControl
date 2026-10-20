@@ -1,11 +1,20 @@
 #if os(macOS)
 import Foundation
+import FanControlCore
 import FanControlXPC
 
 // FanControlHelper: privileged launchd daemon registered by DynamicNotch through
 // `SMAppService.daemon(plistName:)`, or installed by `Support/manual-install/install.sh`
 // as a plain LaunchDaemon (manual / personal mode). launchd starts it on demand when DynamicNotch
 // connects to the Mach service; it then serves `FanControlHelperProtocol`.
+
+// Apple Silicon only (Intel dropped 2026-10-20): refuse to serve on other hardware
+// rather than write an untested scheme. Exit like an invalid configuration
+// (launchd retries on the next connect, throttled; the client sees an invalidated connection).
+guard FanControlHost.isAppleSilicon else {
+    helperLog.fault("Refusing to start: \(FanControlHost.unsupportedDetail, privacy: .public)")
+    exit(78)  // EX_CONFIG
+}
 
 // Client requirement: Team ID (SMAppService) or the cdhash-pinned override from the
 // manual-install LaunchDaemon plist. An invalid override must never fall back to

@@ -6,8 +6,9 @@ public struct SafetyPolicy: Codable, Hashable, Sendable {
     /// is forced to its maximum speed regardless of profile.
     public var emergencyTemperature: Double = 95
     /// Key prefixes of sensors considered for the emergency override and the
-    /// high-temperature alert (CPU/GPU sensors on Intel and Apple Silicon).
-    public var emergencySensorPrefixes: [String] = ["Tp", "Te", "TC", "Tg", "TG"]
+    /// high-temperature alert (Apple Silicon CPU/GPU sensors;
+    /// `SafetyPolicy.defaultEmergencySensorPrefixes`).
+    public var emergencySensorPrefixes: [String] = SafetyPolicy.defaultEmergencySensorPrefixes
     /// Temperature (°C) at which the high-temperature alert turns on.
     public var highTemperatureAlert: Double = 90
     /// The alert turns off again at `highTemperatureAlert - alertHysteresis`.
@@ -16,13 +17,13 @@ public struct SafetyPolicy: Codable, Hashable, Sendable {
     /// minimum. When `false`, constant speeds may go down to 0 RPM.
     ///
     /// This is only a client-side planning preference. FanControlHelper is the
-    /// safety authority: it rejects any `F<n>Tg` / `F<n>Mn` write outside the
+    /// safety authority: it rejects any `F<n>Tg` write outside the
     /// fan's hardware `F<n>Mn...F<n>Mx` range regardless of this setting, so
     /// sub-minimum targets planned with `false` will fail at the helper.
     public var enforceHardwareMinimum: Bool = true
 
     public init(emergencyTemperature: Double = 95,
-                emergencySensorPrefixes: [String] = ["Tp", "Te", "TC", "Tg", "TG"],
+                emergencySensorPrefixes: [String] = SafetyPolicy.defaultEmergencySensorPrefixes,
                 highTemperatureAlert: Double = 90,
                 alertHysteresis: Double = 5,
                 enforceHardwareMinimum: Bool = true) {
@@ -33,33 +34,19 @@ public struct SafetyPolicy: Codable, Hashable, Sendable {
         self.enforceHardwareMinimum = enforceHardwareMinimum
     }
 
-    /// The default policy. Its `emergencySensorPrefixes` is the
-    /// architecture-neutral list `["Tp", "Te", "TC", "Tg", "TG"]` (kept for
-    /// compatibility). Prefer `default(appleSilicon:)`, which drops prefixes
-    /// whose meaning differs between architectures.
-    public static let `default` = SafetyPolicy()
-
-    /// Emergency/alert sensor prefixes for the given CPU architecture.
+    /// Emergency/alert sensor prefixes (Apple Silicon only; Intel dropped
+    /// 2026-10-20): `["Tp", "Te", "TC", "Tg"]`.
     ///
-    /// - Intel (`appleSilicon == false`): `["Tp", "Te", "TC", "Tg", "TG"]`
-    ///   (the list of `SafetyPolicy.default`). `TC*` = CPU, `TG0P`/`TG0D` = GPU;
-    ///   `Tp`/`Te`/`Tg` normally do not exist on Intel and are harmless.
-    /// - Apple Silicon: `["Tp", "Te", "TC", "Tg"]`. `TG*` is excluded: on
-    ///   Mac14,9 (M2 Pro) / macOS 26 the `TG*` keys (`TG0B`, `TG0C`, `TG0H`,
-    ///   `TG0V`, `TG1B`, `TG2B`, type `ioft`) read ~33 °C, tracking the battery
-    ///   sensor `TB0T`, while the GPU is `Tg*` (`flt `). Excluding them only
-    ///   removes battery-area sensors from the CPU/GPU emergency maximum.
-    ///   `TC*` stays (`TCMz` tracks the hottest P core on Mac14,9).
-    public static func defaultEmergencySensorPrefixes(appleSilicon: Bool) -> [String] {
-        appleSilicon ? ["Tp", "Te", "TC", "Tg"] : ["Tp", "Te", "TC", "Tg", "TG"]
-    }
+    /// `Tp*` / `Te*` = CPU performance / efficiency cores, `TC*` = CPU (`TCMz`
+    /// tracks the hottest P core on Mac14,9), `Tg*` = GPU. `TG*` is excluded: on
+    /// Mac14,9 (M2 Pro) / macOS 26 the `TG*` keys (`TG0B`, `TG0C`, `TG0H`,
+    /// `TG0V`, `TG1B`, `TG2B`, type `ioft`) read ~33 °C, tracking the battery
+    /// sensor `TB0T`; they are battery-area sensors, not the GPU.
+    public static let defaultEmergencySensorPrefixes: [String] = ["Tp", "Te", "TC", "Tg"]
 
-    /// `SafetyPolicy.default` with `emergencySensorPrefixes` set to
-    /// `defaultEmergencySensorPrefixes(appleSilicon:)`. Every other threshold
-    /// is the same as `default`.
-    public static func `default`(appleSilicon: Bool) -> SafetyPolicy {
-        SafetyPolicy(emergencySensorPrefixes: defaultEmergencySensorPrefixes(appleSilicon: appleSilicon))
-    }
+    /// The default policy (`defaultEmergencySensorPrefixes`, 95 °C emergency,
+    /// 90 °C alert, 5 °C hysteresis, hardware minimum enforced).
+    public static let `default` = SafetyPolicy()
 }
 
 /// Pure, stateless fan-speed calculations.

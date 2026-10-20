@@ -134,7 +134,7 @@ struct TemperatureSampleFilterTests {
                            ("Tp01", .flt, Fixtures.flt(tp01))])
         }
         var filter = TemperatureSampleFilter()
-        let policy = SafetyPolicy.default(appleSilicon: true)
+        let policy = SafetyPolicy.default
         func plan(_ tp01: Double) -> Int? {
             let sensors = filter.filter(SensorCatalog.readTemperatures(keys: ["Tp00", "Tp01"], using: reader(tp01)))
             return FanControlEngine.plan(profile: profile, fans: [fan], sensors: sensors, policy: policy)[0] ?? nil
@@ -149,31 +149,35 @@ struct TemperatureSampleFilterTests {
 }
 
 struct SafetyPolicyDefaultsTests {
-    @Test func testAppleSiliconExcludesTG() {
-        #expect(SafetyPolicy.defaultEmergencySensorPrefixes(appleSilicon: true) == ["Tp", "Te", "TC", "Tg"])
-        #expect(SafetyPolicy.defaultEmergencySensorPrefixes(appleSilicon: false) == ["Tp", "Te", "TC", "Tg", "TG"])
-        #expect(SafetyPolicy.default(appleSilicon: false) == SafetyPolicy.default)
-        var expected = SafetyPolicy.default
-        expected.emergencySensorPrefixes = ["Tp", "Te", "TC", "Tg"]
-        #expect(SafetyPolicy.default(appleSilicon: true) == expected)
+    /// Apple Silicon only (Intel dropped 2026-10-20): one default list, without `TG`.
+    @Test func testDefaultIsTheAppleSiliconList() {
+        #expect(SafetyPolicy.defaultEmergencySensorPrefixes == ["Tp", "Te", "TC", "Tg"])
+        #expect(SafetyPolicy.default.emergencySensorPrefixes == ["Tp", "Te", "TC", "Tg"])
+        #expect(SafetyPolicy().emergencySensorPrefixes == SafetyPolicy.defaultEmergencySensorPrefixes)
+        #expect(!SafetyPolicy.default.emergencySensorPrefixes.contains("TG"))
+        #expect(SafetyPolicy.default.emergencyTemperature == 95)
+        #expect(SafetyPolicy.default.highTemperatureAlert == 90)
+        #expect(SafetyPolicy.default.alertHysteresis == 5)
     }
 
-    @Test func testTGBatterySensorsIgnoredOnAppleSilicon() {
+    @Test func testTGBatterySensorsIgnored() {
         let sensors = [SensorReading(id: "TG0B", name: "", temperature: 96),
                        SensorReading(id: "Tg0f", name: "", temperature: 50)]
-        #expect(FanControlEngine.hottestEmergencySensor(sensors, policy: .default(appleSilicon: true))?.id == "Tg0f")
-        #expect(FanControlEngine.hottestEmergencySensor(sensors, policy: .default(appleSilicon: false))?.id == "TG0B")
+        #expect(FanControlEngine.hottestEmergencySensor(sensors, policy: .default)?.id == "Tg0f")
     }
 
     @Test func testCodableRoundTripIncludingLegacyPayload() throws {
-        let policy = SafetyPolicy.default(appleSilicon: true)
+        let policy = SafetyPolicy.default
         let data = try JSONEncoder().encode(policy)
         #expect(try JSONDecoder().decode(SafetyPolicy.self, from: data) == policy)
-        // A payload encoded with the old (single) default still decodes unchanged.
+        // A payload encoded with the old architecture-neutral default (with TG)
+        // still decodes, keeping its stored prefixes.
         let legacy = Data("""
             {"emergencyTemperature":95,"emergencySensorPrefixes":["Tp","Te","TC","Tg","TG"],
              "highTemperatureAlert":90,"alertHysteresis":5,"enforceHardwareMinimum":true}
             """.utf8)
-        #expect(try JSONDecoder().decode(SafetyPolicy.self, from: legacy) == .default)
+        var expected = SafetyPolicy.default
+        expected.emergencySensorPrefixes = ["Tp", "Te", "TC", "Tg", "TG"]
+        #expect(try JSONDecoder().decode(SafetyPolicy.self, from: legacy) == expected)
     }
 }

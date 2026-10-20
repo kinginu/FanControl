@@ -6,8 +6,7 @@ import Testing
 /// automatic "hottest sensors" selection (`SensorAggregator.hottestOverview`).
 struct SensorRankingTests {
 
-    private let appleSilicon = SensorAggregator.definitions(appleSilicon: true)
-    private let intel = SensorAggregator.definitions(appleSilicon: false)
+    private let appleSilicon = SensorAggregator.definitions
 
     private func batch(_ values: [(String, Double)]) -> [SensorReading] {
         values.map { SensorReading(id: $0.0, name: SensorCatalog.displayName(for: $0.0), temperature: $0.1) }
@@ -54,23 +53,19 @@ struct SensorRankingTests {
     }
 
     @Test func testAggregatesAndEmergencyExcludeThemByConstruction() {
-        for arch in [true, false] {
-            let policy = SafetyPolicy.default(appleSilicon: arch)
-            let excluded = SensorCatalogTests.mac14_9Keys.filter(SensorCatalog.isExcludedFromRanking)
-            for key in excluded {
-                #expect(!policy.emergencySensorPrefixes.contains { key.hasPrefix($0) }, "\(key)")
-                for definition in SensorAggregator.definitions(appleSilicon: arch) {
-                    #expect(!definition.contains(key), "\(definition.id) ∋ \(key)")
-                }
+        let excluded = SensorCatalogTests.mac14_9Keys.filter(SensorCatalog.isExcludedFromRanking)
+        for key in excluded {
+            #expect(!SafetyPolicy.default.emergencySensorPrefixes.contains { key.hasPrefix($0) }, "\(key)")
+            for definition in appleSilicon {
+                #expect(!definition.contains(key), "\(definition.id) ∋ \(key)")
             }
         }
         // Unchanged behaviour on the Mac14,9-like snapshot.
         let readings = SensorAggregator.appendingAggregates(to: mac14_9Snapshot, definitions: appleSilicon)
         let aggregates = Dictionary(uniqueKeysWithValues: readings.filter(\.isAggregate).map { ($0.id, $0.temperature) })
         #expect(aggregates == ["agg:cpu": 75.0, "agg:cpu.p": 75.0, "agg:cpu.e": 53.1, "agg:gpu": 58.5])
-        let policy = SafetyPolicy.default(appleSilicon: true)
+        let policy = SafetyPolicy.default
         #expect(FanControlEngine.hottestEmergencySensor(readings, policy: policy)?.temperature == 75.0)
-        #expect(FanControlEngine.hottestEmergencySensor(readings, policy: .default)?.temperature == 75.0)
         // Tf06 at 105 °C must not trigger the emergency override (threshold 95 °C).
         var evaluator = AlertEvaluator()
         #expect(evaluator.evaluateEmergency(sensors: readings, policy: policy) == false)
@@ -85,11 +80,6 @@ struct SensorRankingTests {
         let overview = SensorAggregator.overview(readings, definitions: appleSilicon)
         #expect(overview.allSatisfy { !$0.isExcludedFromRanking })
         #expect(overview.map(\.id) == ["agg:cpu", "agg:gpu", "TG0B", "TB0T", "TH0x", "TW0P", "TaLP"])
-
-        // Intel definitions (TG = GPU): TG0B joins agg:gpu, Tf* still excluded.
-        let intelReadings = SensorAggregator.appendingAggregates(to: mac14_9Snapshot, definitions: intel)
-        #expect(SensorAggregator.hottestOverview(intelReadings, definitions: intel).map(\.id)
-                == ["agg:cpu", "agg:gpu", "TW0P"])
 
         // Without aggregates: plain hottest rankable sensors.
         #expect(SensorAggregator.hottestOverview(mac14_9Snapshot, definitions: appleSilicon).map(\.id)

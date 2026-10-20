@@ -54,55 +54,45 @@ public enum SensorAggregator {
     /// Prefix of every aggregate id.
     public static let idPrefix = "agg:"
 
-    /// Aggregate ids (stable across architectures; members differ).
+    /// Aggregate ids (stable; persisted in profiles).
     public enum ID {
         /// CPU (max): `Tp*` + `Te*` + `TC*`.
         public static let cpu = "agg:cpu"
-        /// CPU performance cores (max): `Tp*` (Apple Silicon).
+        /// CPU performance cores (max): `Tp*`.
         public static let cpuPerformance = "agg:cpu.p"
-        /// CPU efficiency cores (max): `Te*` (Apple Silicon).
+        /// CPU efficiency cores (max): `Te*`.
         public static let cpuEfficiency = "agg:cpu.e"
-        /// GPU (max): `Tg*`, plus `TG*` on Intel only.
+        /// GPU (max): `Tg*`.
         public static let gpu = "agg:gpu"
     }
 
-    /// The aggregate table for the given architecture, in display order.
+    /// The aggregate table, in display order (Apple Silicon only; Intel dropped
+    /// 2026-10-20):
     ///
-    /// | id | name | members (Apple Silicon) | members (Intel) |
-    /// |---|---|---|---|
-    /// | `agg:cpu` | CPU (max) | `Tp` `Te` `TC` | `Tp` `Te` `TC` |
-    /// | `agg:cpu.p` | CPU Performance Cores (max) | `Tp` | `Tp` |
-    /// | `agg:cpu.e` | CPU Efficiency Cores (max) | `Te` | `Te` |
-    /// | `agg:gpu` | GPU (max) | `Tg` | `Tg` `TG` |
+    /// | id | name | members |
+    /// |---|---|---|
+    /// | `agg:cpu` | CPU (max) | `Tp` `Te` `TC` |
+    /// | `agg:cpu.p` | CPU Performance Cores (max) | `Tp` |
+    /// | `agg:cpu.e` | CPU Efficiency Cores (max) | `Te` |
+    /// | `agg:gpu` | GPU (max) | `Tg` |
     ///
-    /// Members are taken from `SafetyPolicy.defaultEmergencySensorPrefixes(appleSilicon:)`,
-    /// so `TG*` (a battery-area `ioft` sensor on Mac14,9, not the GPU) is
-    /// excluded on Apple Silicon exactly as in the emergency prefixes.
-    /// `Tp`/`Te` normally do not exist on Intel; those aggregates are then omitted.
-    public static func definitions(appleSilicon: Bool) -> [SensorAggregateDefinition] {
-        let allowed = Set(SafetyPolicy.defaultEmergencySensorPrefixes(appleSilicon: appleSilicon))
-        func members(_ prefixes: [String]) -> [String] { prefixes.filter(allowed.contains) }
-        return [
-            SensorAggregateDefinition(id: ID.cpu, name: "CPU (max)",
-                                      memberPrefixes: members(["Tp", "Te", "TC"]), isOverview: true),
-            SensorAggregateDefinition(id: ID.cpuPerformance, name: "CPU Performance Cores (max)",
-                                      memberPrefixes: members(["Tp"]), isOverview: false),
-            SensorAggregateDefinition(id: ID.cpuEfficiency, name: "CPU Efficiency Cores (max)",
-                                      memberPrefixes: members(["Te"]), isOverview: false),
-            SensorAggregateDefinition(id: ID.gpu, name: "GPU (max)",
-                                      memberPrefixes: members(["Tg", "TG"]), isOverview: true),
-        ]
-    }
+    /// Every member prefix is in `SafetyPolicy.defaultEmergencySensorPrefixes`;
+    /// `TG*` (a battery-area `ioft` sensor on Mac14,9, not the GPU) is excluded
+    /// exactly as there.
+    public static let definitions: [SensorAggregateDefinition] = [
+        SensorAggregateDefinition(id: ID.cpu, name: "CPU (max)",
+                                  memberPrefixes: ["Tp", "Te", "TC"], isOverview: true),
+        SensorAggregateDefinition(id: ID.cpuPerformance, name: "CPU Performance Cores (max)",
+                                  memberPrefixes: ["Tp"], isOverview: false),
+        SensorAggregateDefinition(id: ID.cpuEfficiency, name: "CPU Efficiency Cores (max)",
+                                  memberPrefixes: ["Te"], isOverview: false),
+        SensorAggregateDefinition(id: ID.gpu, name: "GPU (max)",
+                                  memberPrefixes: ["Tg"], isOverview: true),
+    ]
 
-    /// Every id that `definitions(appleSilicon:)` can produce, on either
-    /// architecture, with its name (used by `SensorCatalog.displayName(for:)`).
-    public static let knownNames: [String: String] = {
-        var names: [String: String] = [:]
-        for definition in definitions(appleSilicon: true) + definitions(appleSilicon: false) {
-            names[definition.id] = definition.name
-        }
-        return names
-    }()
+    /// Every aggregate id with its name (used by `SensorCatalog.displayName(for:)`).
+    public static let knownNames: [String: String] = Dictionary(
+        uniqueKeysWithValues: definitions.map { ($0.id, $0.name) })
 
     /// `true` if `id` is an aggregate id (starts with `idPrefix`).
     public static func isAggregate(_ id: String) -> Bool {

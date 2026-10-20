@@ -44,7 +44,7 @@ public struct TemperatureSampleFilter: Hashable, Sendable {
     /// Default `floor` (°C). A running CPU/GPU die is not below 10 °C in
     /// practice; every bogus value observed on Mac14,9 is below 8.5 °C.
     public static let defaultFloor: Double = 10
-    /// Default `filteredPrefixes`: die-type sensors (P/E cores, GPU, Intel CPU).
+    /// Default `filteredPrefixes`: die-type sensors (P/E cores, GPU, `TC*` CPU).
     public static let defaultFilteredPrefixes = ["Tp", "Te", "Tg", "TC"]
     /// Default `maxConsecutiveSubstitutions` (5 polls = 10 s at the default 2 s interval).
     public static let defaultMaxConsecutiveSubstitutions = 5

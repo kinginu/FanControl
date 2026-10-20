@@ -1,45 +1,35 @@
-#if canImport(Darwin)
-import Darwin
-#endif
 import FanControlCore
 
-/// Host CPU architecture detection used to pick architecture-dependent defaults
-/// (`SafetyPolicy.default(appleSilicon:)`).
-///
-/// This deliberately does not reuse `FanWriteStrategy.ControlStyle`: the
-/// `F<i>Md` mode key that marks the "Apple Silicon style" write scheme also
-/// exists on some late Intel models, and the strategy is only known after fan
-/// discovery, whereas the policy is needed when `FanControlManager` is created.
+/// The one supported platform: Apple Silicon Macs (Intel support dropped
+/// 2026-10-20). There is no per-architecture branching any more; this type
+/// asserts the hardware (`requireSupported()`, backed by
+/// `FanControlCore.FanControlHost`) so that non-arm64 Macs fail clearly with
+/// `FanControlError.unsupportedPlatform`, and exposes the (single) defaults.
 public enum FanControlPlatform {
 
-    /// `true` on Apple Silicon Macs, also when the process runs under Rosetta 2
-    /// (`sysctl hw.optional.arm64` reports the hardware, not the process
-    /// architecture). Falls back to the compile-time architecture if the sysctl
-    /// is unavailable (Intel Macs do not have it → `false`).
-    public static let isAppleSilicon: Bool = {
-        #if canImport(Darwin)
-        var value: Int32 = 0
-        var size = MemoryLayout<Int32>.size
-        if sysctlbyname("hw.optional.arm64", &value, &size, nil, 0) == 0 {
-            return value == 1
-        }
-        #endif
-        #if arch(arm64)
-        return true
-        #else
-        return false
-        #endif
-    }()
+    /// `true` on Apple Silicon Macs, also under Rosetta 2 (`FanControlHost.isAppleSilicon`).
+    public static var isAppleSilicon: Bool { FanControlHost.isAppleSilicon }
 
-    /// `SafetyPolicy.default(appleSilicon: isAppleSilicon)`: the policy
-    /// `FanControlManager` starts with.
-    public static var defaultSafetyPolicy: SafetyPolicy {
-        .default(appleSilicon: isAppleSilicon)
+    /// `true` if fan control may run on this host (`isAppleSilicon`).
+    public static var isSupported: Bool { FanControlHost.isAppleSilicon }
+
+    /// Short description of an unsupported host (`FanControlHost.unsupportedDetail`).
+    public static var unsupportedPlatformDetail: String { FanControlHost.unsupportedDetail }
+
+    /// Throws `FanControlError.unsupportedPlatform` unless `isSupported`.
+    /// `FanControlManager` calls it before every SMC open.
+    public static func requireSupported() throws {
+        try FanControlHost.requireAppleSilicon()
     }
 
-    /// `SensorAggregator.definitions(appleSilicon: isAppleSilicon)`: the
-    /// aggregate sensors `FanControlManager` appends to `sensorReadings`.
+    /// `SafetyPolicy.default`: the policy `FanControlManager` starts with.
+    /// Kept as an entry point for the smoke app and the drop-ins.
+    public static var defaultSafetyPolicy: SafetyPolicy { .default }
+
+    /// `SensorAggregator.definitions`: the aggregate sensors `FanControlManager`
+    /// appends to `sensorReadings`. Referenced by the DynamicNotch drop-ins
+    /// (`FanControlWidgetSettings.swift`).
     public static var sensorAggregateDefinitions: [SensorAggregateDefinition] {
-        SensorAggregator.definitions(appleSilicon: isAppleSilicon)
+        SensorAggregator.definitions
     }
 }

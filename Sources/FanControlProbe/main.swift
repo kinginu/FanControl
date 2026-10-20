@@ -74,6 +74,12 @@ func modeString(_ mode: FanControlMode?) -> String {
     }
 }
 
+// Apple Silicon only (Intel dropped 2026-10-20). Reading is harmless, so the
+// probe still runs, but its labels and aggregates assume Apple Silicon.
+if !FanControlHost.isAppleSilicon {
+    FileHandle.standardError.write(Data("warning: unsupported host: \(FanControlHost.unsupportedDetail)\n".utf8))
+}
+
 let client: SMCClient
 do {
     client = try SMCClient()
@@ -103,6 +109,8 @@ do {
 }
 
 print("== Fan keys (raw) ==")
+// `FS! ` (Intel force bitmask) and `Ftst` (unlock key) are never written; listed
+// only to record that they are absent (Mac14,9: key not found).
 var fanKeyNames = ["FNum", "FS! ", "Ftst"]
 for fan in fans {
     for suffix in ["ID", "Mn", "Mx", "Ac", "Tg", "Md", "Sf"] { fanKeyNames.append("F\(fan.id)\(suffix)") }
@@ -118,11 +126,7 @@ print("")
 
 // Aggregates are computed from filtered samples, as in FanControlManager.
 var sampleFilter = TemperatureSampleFilter()
-#if arch(arm64)
-let aggregateDefinitions = SensorAggregator.definitions(appleSilicon: true)
-#else
-let aggregateDefinitions = SensorAggregator.definitions(appleSilicon: false)
-#endif
+let aggregateDefinitions = SensorAggregator.definitions
 
 func readout() {
     let current = FanDiscovery.readCurrentRPMs(fans: fans, using: client)

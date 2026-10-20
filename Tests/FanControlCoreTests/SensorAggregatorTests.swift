@@ -4,8 +4,7 @@ import Testing
 
 struct SensorAggregatorTests {
 
-    private let appleSilicon = SensorAggregator.definitions(appleSilicon: true)
-    private let intel = SensorAggregator.definitions(appleSilicon: false)
+    private let appleSilicon = SensorAggregator.definitions
 
     private func batch(_ values: [(String, Double)]) -> [SensorReading] {
         values.map { SensorReading(id: $0.0, name: SensorCatalog.displayName(for: $0.0), temperature: $0.1) }
@@ -17,20 +16,18 @@ struct SensorAggregatorTests {
 
     @Test func testTables() {
         #expect(appleSilicon.map(\.id) == ["agg:cpu", "agg:cpu.p", "agg:cpu.e", "agg:gpu"])
-        #expect(intel.map(\.id) == appleSilicon.map(\.id))
         #expect(appleSilicon.map(\.memberPrefixes) == [["Tp", "Te", "TC"], ["Tp"], ["Te"], ["Tg"]])
-        #expect(intel.map(\.memberPrefixes) == [["Tp", "Te", "TC"], ["Tp"], ["Te"], ["Tg", "TG"]])
         #expect(appleSilicon.filter(\.isOverview).map(\.id) == ["agg:cpu", "agg:gpu"])
-        // Members are a subset of the emergency prefixes (same TG split).
-        for arch in [true, false] {
-            let emergency = Set(SafetyPolicy.defaultEmergencySensorPrefixes(appleSilicon: arch))
-            for definition in SensorAggregator.definitions(appleSilicon: arch) {
-                #expect(Set(definition.memberPrefixes).isSubset(of: emergency))
-                #expect(SMCKey(definition.id) == nil)
-                #expect(definition.id.count > 4)
-                #expect(SensorAggregator.isAggregate(definition.id))
-            }
+        // Members are a subset of the emergency prefixes (no TG anywhere).
+        let emergency = Set(SafetyPolicy.defaultEmergencySensorPrefixes)
+        for definition in appleSilicon {
+            #expect(Set(definition.memberPrefixes).isSubset(of: emergency))
+            #expect(!definition.memberPrefixes.contains("TG"))
+            #expect(SMCKey(definition.id) == nil)
+            #expect(definition.id.count > 4)
+            #expect(SensorAggregator.isAggregate(definition.id))
         }
+        #expect(SensorAggregator.knownNames.count == appleSilicon.count)
     }
 
     /// Mac14,9 shape: TG* is a battery-area sensor (~33 °C) and must not feed GPU.
@@ -46,16 +43,14 @@ struct SensorAggregatorTests {
                                            "CPU Efficiency Cores (max)", "GPU (max)"])
     }
 
-    @Test func testIntelValuesAndEmptyGroupsOmitted() {
+    @Test func testEmptyGroupsOmitted() {
+        // Intel-era keys (unsupported since 2026-10-20): TC* still counts as CPU,
+        // TG* is never GPU, and the P/E aggregates are omitted without Tp/Te keys.
         let readings = batch([("TC0P", 61), ("TC0D", 72.5), ("TG0P", 55), ("TG0D", 66), ("TA0P", 30)])
-        let aggregates = SensorAggregator.aggregates(of: readings, definitions: intel)
-        // No Tp/Te keys on Intel: the P/E aggregates are omitted.
-        #expect(temps(aggregates) == ["agg:cpu": 72.5, "agg:gpu": 66])
-        // The same readings on the Apple Silicon table: TG is not GPU there.
         #expect(temps(SensorAggregator.aggregates(of: readings, definitions: appleSilicon)) == ["agg:cpu": 72.5])
         // Fanless / no CPU-GPU sensors: nothing.
         #expect(SensorAggregator.aggregates(of: batch([("TB0T", 33)]), definitions: appleSilicon).isEmpty)
-        #expect(SensorAggregator.aggregates(of: [], definitions: intel).isEmpty)
+        #expect(SensorAggregator.aggregates(of: [], definitions: appleSilicon).isEmpty)
     }
 
     @Test func testNonFiniteMembersIgnored() {
@@ -133,16 +128,16 @@ struct SensorAggregatorTests {
         ])
         let sensors = SensorAggregator.appendingAggregates(
             to: batch([("Tp00", 45), ("Tp02", 60), ("Te04", 50)]), definitions: appleSilicon)
-        let plan = FanControlEngine.plan(profile: profile, fans: [fan], sensors: sensors, policy: .default(appleSilicon: true))
+        let plan = FanControlEngine.plan(profile: profile, fans: [fan], sensors: sensors, policy: .default)
         #expect(plan[0] == .some(3000)) // 60 °C = max member
 
         // Aggregate missing (no CPU keys): fail hot.
         let missing = FanControlEngine.plan(profile: profile, fans: [fan], sensors: batch([("TB0T", 33)]),
-                                            policy: .default(appleSilicon: true))
+                                            policy: .default)
         #expect(missing[0] == .some(5000))
 
         // Aggregates do not affect the emergency maximum (ids are not emergency-prefixed).
-        let hottest = FanControlEngine.hottestEmergencySensor(sensors, policy: .default(appleSilicon: true))
+        let hottest = FanControlEngine.hottestEmergencySensor(sensors, policy: .default)
         #expect(hottest?.id == "Tp02")
     }
 }

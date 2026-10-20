@@ -211,7 +211,7 @@ struct ProfileStoreTests {
         let profile = FanProfile.boost()
         func plan(_ cpu: Double?) -> [Int: Int?] {
             let sensors = cpu.map { [SensorReading(id: "agg:cpu", name: "CPU (max)", temperature: $0, sensorType: .greatest)] } ?? []
-            return FanControlEngine.plan(profile: profile, fans: fans, sensors: sensors, policy: .default(appleSilicon: true),
+            return FanControlEngine.plan(profile: profile, fans: fans, sensors: sensors, policy: .default,
                                          isEmergency: false)
         }
         #expect(plan(40) == [0: 2317, 1: 2317])

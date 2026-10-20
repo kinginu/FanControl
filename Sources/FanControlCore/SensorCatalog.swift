@@ -10,9 +10,15 @@ public enum SensorCatalog {
 
     /// Human-readable names for SMC temperature keys (exact match).
     ///
+    /// Apple Silicon only (Intel dropped 2026-10-20): the Intel-only exact names
+    /// (`TC0P`, `TC0D`, `TC0E`, `TC0F`, `TCXC`, `TG0P`, `TG0D`, `TA0P`, `TM0P`,
+    /// `TH0P`, `TPCD`) were removed; none exists on Mac14,9, and `TG0P`/`TG0D`
+    /// would mislabel `TG*` keys, which are battery-area sensors on Apple Silicon.
+    ///
     /// Sources, per entry:
-    /// - **[Intel]** Intel-era community lists (open-source SMC tools, e.g. the
-    ///   Stats app, smcFanControl, VirtualSMC key docs). Not verified on hardware here.
+    /// - **[legacy]** names that originate in Intel-era community lists
+    ///   (open-source SMC tools, e.g. the Stats app, smcFanControl, VirtualSMC
+    ///   key docs). Kept only where the key also exists on Apple Silicon.
     /// - **[AS]** Apple Silicon entries of community tools (Stats app sensor
     ///   table, smctemp). Recorded from those projects' published tables, not
     ///   re-derived; marked **verified on Mac14,9** when the key exists on
@@ -27,26 +33,14 @@ public enum SensorCatalog {
     /// `TD*`, `Tf*`, `TG*`, `Ta0*`, `Tz*`, `TS*`. Several of these are also
     /// excluded from ranking (`isExcludedFromRanking(_:)`).
     public static let knownNames: [String: String] = [
-        // [Intel]
-        "TC0P": "CPU Proximity",
-        "TC0D": "CPU Die",
-        "TC0E": "CPU Die (Virtual)",
-        "TC0F": "CPU Die (Filtered)",
-        "TCXC": "CPU PECI",
-        "TG0P": "GPU Proximity",
-        "TG0D": "GPU Die",
-        "TA0P": "Ambient",
-        "TM0P": "Memory Proximity",
-        "TH0P": "Drive 0",
-        "TPCD": "Platform Controller Hub Die",
-        // [Intel] + [AS] battery: TB0T = battery maximum, TB1T/TB2T = individual
+        // [legacy] + [AS] battery: TB0T = battery maximum, TB1T/TB2T = individual
         // battery sensors. Verified on Mac14,9 (all three ≈ 33 °C).
         "TB0T": "Battery",
         "TB1T": "Battery 1",
         "TB2T": "Battery 2",
-        // [Intel] + [AS] (Stats: "Airport"). Verified on Mac14,9 (≈ 45 °C).
+        // [legacy] + [AS] (Stats: "Airport"). Verified on Mac14,9 (≈ 45 °C).
         "TW0P": "Wireless",
-        // [Intel] palm rest. Verified on Mac14,9 (Ts0P/Ts1P ≈ 30 °C, the coolest
+        // [legacy] palm rest. Verified on Mac14,9 (Ts0P/Ts1P ≈ 30 °C, the coolest
         // sensors besides the battery area, as expected for the palm rest).
         "Ts0P": "Palm Rest",
         "Ts1P": "Palm Rest 2",
@@ -67,8 +61,10 @@ public enum SensorCatalog {
     ///   `Tp*` keys are P vs E cores per chip generation (e.g. Stats labels M2
     ///   `Tp1h`/`Tp1t` as efficiency cores), so the labels follow the prefix only.
     /// - `Tg`: [AS] GPU cluster, Mac14,9 (`Tg0*`/`Tg1*` 44-58 °C).
-    /// - `TB`, `TW`, `TM`: [Intel] battery / wireless / memory families.
-    /// - `TH`: [Intel]/[AS] storage (`TH0a`/`TH0b` ≈ `TH0x` on Mac14,9).
+    /// - `TB`, `TW`: [legacy] battery / wireless families (`TB0T`, `TW0P` verified on Mac14,9).
+    /// - `TM`: [legacy] memory family; legacy name, unverified on Apple Silicon
+    ///   (Mac14,9 only has `TMVR`).
+    /// - `TH`: [legacy]/[AS] storage (`TH0a`/`TH0b` ≈ `TH0x` on Mac14,9).
     ///
     /// `Ts` is intentionally not a prefix any more: on Mac14,9 `Ts0C`…`Ts0g`
     /// read ≈ 45-55 °C (SoC-level, not skin/palm rest), so they render as

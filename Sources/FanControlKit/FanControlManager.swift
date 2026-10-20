@@ -128,9 +128,9 @@ public final class FanControlManager: @unchecked Sendable {
     public var pollingInterval: TimeInterval = 2.0 {
         didSet { if isMonitoring { scheduleTimer() } }
     }
-    /// Starts as `FanControlPlatform.defaultSafetyPolicy` (on Apple Silicon the
-    /// emergency prefixes exclude `TG`, which is a battery-area sensor there;
-    /// see `SafetyPolicy.defaultEmergencySensorPrefixes(appleSilicon:)`).
+    /// Starts as `FanControlPlatform.defaultSafetyPolicy` (= `SafetyPolicy.default`;
+    /// the emergency prefixes exclude `TG`, a battery-area sensor on Apple
+    /// Silicon; see `SafetyPolicy.defaultEmergencySensorPrefixes`).
     /// Not persisted by the kit.
     public var safetyPolicy: SafetyPolicy = FanControlPlatform.defaultSafetyPolicy
     /// When `true` (default) and a write session is still open when the Mac
@@ -259,6 +259,8 @@ public final class FanControlManager: @unchecked Sendable {
     // MARK: - Init
 
     /// Cheap: no SMC or XPC I/O (only the profile store is read from UserDefaults).
+    /// On a non-Apple-Silicon Mac this logs an error; every later SMC open then
+    /// fails with `FanControlError.unsupportedPlatform` (Intel dropped 2026-10-20).
     public init(defaults: UserDefaults = .standard,
                 helperClient: HelperClient = HelperClient(),
                 installer: HelperInstaller = HelperInstaller()) {
@@ -270,6 +272,9 @@ public final class FanControlManager: @unchecked Sendable {
             self.profileStore = store
         } else {
             self.profileStore = ProfileStore()
+        }
+        if !FanControlPlatform.isSupported {
+            kitLog.error("Fan control disabled: \(FanControlPlatform.unsupportedPlatformDetail, privacy: .public)")
         }
         helperClient.onStateChange = { [weak self] state in
             guard let self else { return }
@@ -874,6 +879,7 @@ public final class FanControlManager: @unchecked Sendable {
         }
         let client: SMCClient
         do {
+            try FanControlPlatform.requireSupported()
             client = try SMCClient()
         } catch {
             publishOnMain { $0.isSMCConnected = false }
