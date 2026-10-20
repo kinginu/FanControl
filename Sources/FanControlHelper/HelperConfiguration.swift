@@ -14,23 +14,33 @@ enum HelperConfiguration {
     static let teamID: String = {
         if let value = FanControlHelperConstants.clientTeamID {
             if value == FanControlHelperConstants.teamIdentifierPlaceholder {
-                helperLog.warning("FanControlClientTeamID is still the placeholder; no real client will pass the code-signing check")
+                helperLog.warning("Config: FanControlClientTeamID is still the placeholder; no real client will pass the code-signing check")
             }
             return value
         }
-        helperLog.warning("FanControlClientTeamID missing from embedded Info.plist; using placeholder Team ID")
+        helperLog.warning("Config: FanControlClientTeamID missing from embedded Info.plist; using placeholder Team ID")
         return FanControlHelperConstants.teamIdentifierPlaceholder
     }()
 
     /// Logs the resolved identifiers and every configuration problem once at startup.
     static func logIdentifiers() {
         let ids = FanControlHelperConstants.identifiers
-        helperLog.notice("Identifiers: helper \(ids.helperIdentifier, privacy: .public), Mach service \(ids.machServiceName, privacy: .public), client \(ids.clientBundleIdentifier, privacy: .public)")
+        helperLog.notice("Config: identifiers: helper \(ids.helperIdentifier, privacy: .public), Mach service \(ids.machServiceName, privacy: .public), client \(ids.clientBundleIdentifier, privacy: .public)")
         for issue in ids.issues {
-            helperLog.warning("Embedded Info.plist: \(issue, privacy: .public)")
+            helperLog.warning("Config: embedded Info.plist: \(issue, privacy: .public)")
         }
         if let own = Bundle.main.bundleIdentifier, own != ids.helperIdentifier {
-            helperLog.warning("Embedded CFBundleIdentifier \(own, privacy: .public) differs from FanControlHelperIdentifier \(ids.helperIdentifier, privacy: .public); the app pins the latter as the helper's code-signing identifier")
+            helperLog.warning("Config: embedded CFBundleIdentifier \(own, privacy: .public) differs from FanControlHelperIdentifier \(ids.helperIdentifier, privacy: .public); the app pins the latter as the helper's code-signing identifier")
+        }
+    }
+
+    /// Logs which client requirement mode is in force (once at startup).
+    static func logClientRequirement(_ clientRequirement: ClientRequirement) {
+        switch clientRequirement.mode {
+        case .teamID:
+            helperLog.notice("Config: Client requirement mode: Team ID (SMAppService) - \(clientRequirement.requirement, privacy: .public)")
+        case .manualCDHash(let hash):
+            helperLog.notice("Config: Client requirement mode: MANUAL INSTALL (personal use), client cdhash pinned to \(hash, privacy: .public) - \(clientRequirement.requirement, privacy: .public)")
         }
     }
 

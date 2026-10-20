@@ -3,9 +3,17 @@ import Foundation
 import FanControlCore
 import FanControlXPC
 
-/// Exported object for one client connection. All input is validated; nothing here traps.
-final class HelperService: NSObject, FanControlHelperProtocol {
+/// Exported object for one client connection: decodes and checks the request shape
+/// (key syntax, allowlist, payload size), then hands it to `SessionRegistry`, which does
+/// the value validation and the SMC I/O. All input is validated; nothing here traps.
+///
+/// `Sendable` (immutable): XPC may deliver one connection's messages on any of its queues.
+final class HelperService: NSObject, FanControlHelperProtocol, Sendable {
     private let owner: SessionOwner
+
+    /// Payload sizes accepted by `writeKey` (the SMC's own limit; the exact size is
+    /// checked against the key's `dataSize` by `HelperWritePolicy.validate`).
+    static let payloadSizeRange = 1...32
 
     init(owner: SessionOwner) {
         self.owner = owner
@@ -17,36 +25,29 @@ final class HelperService: NSObject, FanControlHelperProtocol {
     }
 
     func openSession(reply: @escaping (Int, String) -> Void) {
-        let result = SessionRegistry.shared.open(for: owner)
-        reply(result.code.rawValue, result.message)
+        send(SessionRegistry.shared.open(for: owner), operation: "openSession", reply: reply)
     }
 
     func writeKey(_ key: String, bytes: Data, reply: @escaping (Int, String) -> Void) {
-        guard let smcKey = SMCKey(key) else {
-            reply(FanControlHelperErrorCode.invalidKey.rawValue, "key must be exactly 4 ASCII characters")
-            return
+        let result: HelperResult
+        if let smcKey = SMCKey(key) {
+            if !FanControlHelperConstants.isWriteAllowed(key: key) {
+                result = .failure(.keyNotAllowed, "key '\(key)' is not in the write allowlist")
+            } else if !Self.payloadSizeRange.contains(bytes.count) {
+                result = .failure(.badRequest, "payload must be \(Self.payloadSizeRange.lowerBound)...\(Self.payloadSizeRange.upperBound) bytes, got \(bytes.count)")
+            } else {
+                // Value validation (mode 0/1, RPM within hardware Mn...Mx) happens in
+                // SessionRegistry.write, which holds the per-session hardware limits.
+                result = SessionRegistry.shared.write([UInt8](bytes), to: smcKey, from: owner)
+            }
+        } else {
+            result = .failure(.invalidKey, "key must be exactly 4 ASCII characters")
         }
-        guard FanControlHelperConstants.isWriteAllowed(key: key) else {
-            helperLog.warning("pid \(self.owner.pid, privacy: .public) tried to write disallowed key \(key, privacy: .public)")
-            reply(FanControlHelperErrorCode.keyNotAllowed.rawValue, "key '\(key)' is not in the write allowlist")
-            return
-        }
-        guard (1...32).contains(bytes.count) else {
-            reply(FanControlHelperErrorCode.badRequest.rawValue, "payload must be 1...32 bytes, got \(bytes.count)")
-            return
-        }
-        // Value validation (mode 0/1, RPM within hardware Mn...Mx)
-        // happens in SessionRegistry.write, which holds the per-session hardware limits.
-        let result = SessionRegistry.shared.write([UInt8](bytes), to: smcKey, from: owner)
-        if result.code != .ok {
-            helperLog.error("write \(key, privacy: .public) failed: \(result.message, privacy: .public)")
-        }
-        reply(result.code.rawValue, result.message)
+        send(result, operation: "writeKey(\(key))", reply: reply)
     }
 
     func closeSession(reply: @escaping (Int, String) -> Void) {
-        let result = SessionRegistry.shared.close(for: owner)
-        reply(result.code.rawValue, result.message)
+        send(SessionRegistry.shared.close(for: owner), operation: "closeSession", reply: reply)
     }
 
     func readKeyInfo(_ key: String, reply: @escaping (Int, Int, UInt32, UInt8, String) -> Void) {
@@ -67,6 +68,19 @@ final class HelperService: NSObject, FanControlHelperProtocol {
             }
             reply(code.rawValue, 0, 0, 0, "\(error)")
         }
+    }
+
+    /// Logs a failed request (SMC failures as errors, refused requests as warnings) and replies.
+    private func send(_ result: HelperResult, operation: String, reply: (Int, String) -> Void) {
+        switch result.code {
+        case .ok:
+            break
+        case .smcUnavailable, .smcError:
+            helperLog.error("XPC: \(operation, privacy: .public) from pid \(self.owner.pid, privacy: .public) failed (\(result.code.rawValue, privacy: .public)): \(result.message, privacy: .public)")
+        default:  // notSessionOwner, sessionNotOpen, invalidKey, keyNotAllowed, badRequest
+            helperLog.warning("XPC: \(operation, privacy: .public) from pid \(self.owner.pid, privacy: .public) refused (\(result.code.rawValue, privacy: .public)): \(result.message, privacy: .public)")
+        }
+        reply(result.code.rawValue, result.message)
     }
 }
 #endif

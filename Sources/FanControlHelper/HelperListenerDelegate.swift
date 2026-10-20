@@ -1,14 +1,20 @@
 #if os(macOS)
 import Foundation
+import Synchronization
 import FanControlXPC
 
-/// Accepts XPC connections from DynamicNotch only (code-signing requirement enforced by the system).
-final class HelperListenerDelegate: NSObject, NSXPCListenerDelegate {
-    private let connectionCounterLock = NSLock()
-    private var nextConnectionID: UInt64 = 1
+/// Accepts XPC connections that satisfy the client code-signing requirement (enforced by
+/// the system) and gives each one its own `HelperService` and `SessionOwner` identity.
+///
+/// `Sendable` without locks around mutable state: the requirement is immutable and the
+/// connection counter is an `Atomic`, so `listener(_:shouldAcceptNewConnection:)` may run
+/// on any XPC queue.
+final class HelperListenerDelegate: NSObject, NSXPCListenerDelegate, Sendable {
     /// `HelperConfiguration.resolveClientRequirement()` result: the Team-ID requirement,
     /// or the cdhash-pinned `FANCONTROL_CLIENT_REQUIREMENT` override (manual install).
     private let clientRequirement: String
+    /// Next `SessionOwner.connectionID` (starts at 1; never reused within a process).
+    private let nextConnectionID = Atomic<UInt64>(1)
 
     init(clientRequirement: String) {
         self.clientRequirement = clientRequirement
@@ -20,28 +26,23 @@ final class HelperListenerDelegate: NSObject, NSXPCListenerDelegate {
         // rejected and the connection is invalidated by the system.
         newConnection.setCodeSigningRequirement(clientRequirement)
 
-        let owner = SessionOwner(pid: newConnection.processIdentifier, connectionID: makeConnectionID())
+        let owner = SessionOwner(pid: newConnection.processIdentifier,
+                                 connectionID: nextConnectionID.wrappingAdd(1, ordering: .relaxed).oldValue)
         newConnection.exportedInterface = makeHelperInterface()
         newConnection.exportedObject = HelperService(owner: owner)
+        // Both end the connection's session (if it holds one) with the full restore. A
+        // listener-side connection is normally only invalidated, never interrupted.
         newConnection.invalidationHandler = {
-            helperLog.info("Connection \(owner.connectionID, privacy: .public) from pid \(owner.pid, privacy: .public) invalidated")
+            helperLog.info("XPC: connection \(owner.connectionID, privacy: .public) from pid \(owner.pid, privacy: .public) invalidated")
             SessionRegistry.shared.release(owner: owner)
         }
         newConnection.interruptionHandler = {
-            helperLog.info("Connection \(owner.connectionID, privacy: .public) from pid \(owner.pid, privacy: .public) interrupted")
+            helperLog.info("XPC: connection \(owner.connectionID, privacy: .public) from pid \(owner.pid, privacy: .public) interrupted")
             SessionRegistry.shared.release(owner: owner)
         }
         newConnection.resume()
-        helperLog.info("Accepted connection \(owner.connectionID, privacy: .public) from pid \(owner.pid, privacy: .public)")
+        helperLog.info("XPC: Accepted connection \(owner.connectionID, privacy: .public) from pid \(owner.pid, privacy: .public)")
         return true
-    }
-
-    private func makeConnectionID() -> UInt64 {
-        connectionCounterLock.lock()
-        defer { connectionCounterLock.unlock() }
-        let id = nextConnectionID
-        nextConnectionID += 1
-        return id
     }
 }
 #endif

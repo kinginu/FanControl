@@ -23,13 +23,15 @@ import FanControlXPC
 actor PowerObserver {
     static let shared = PowerObserver()
 
-    // IOMessage.h: iokit_common_msg(x) = sys_iokit (0xE0000000) | sub_iokit_common (0) | x.
-    // The macros are not imported into Swift.
-    static let canSystemSleep: UInt32 = 0xE000_0270
-    static let systemWillSleep: UInt32 = 0xE000_0280
-    static let systemWillNotSleep: UInt32 = 0xE000_0290
-    static let systemHasPoweredOn: UInt32 = 0xE000_0300
-    static let systemWillPowerOn: UInt32 = 0xE000_0320
+    /// IOMessage.h: `iokit_common_msg(x)` = sys_iokit (0xE0000000) | sub_iokit_common (0) | x.
+    /// The macros are not imported into Swift.
+    private enum Message: UInt32 {
+        case canSystemSleep = 0xE000_0270
+        case systemWillSleep = 0xE000_0280
+        case systemWillNotSleep = 0xE000_0290
+        case systemHasPoweredOn = 0xE000_0300
+        case systemWillPowerOn = 0xE000_0320
+    }
 
     private nonisolated let queue = DispatchSerialQueue(label: FanControlHelperConstants.machServiceName + ".power")
 
@@ -79,18 +81,19 @@ actor PowerObserver {
 
     /// Runs on `queue`.
     private func handle(messageType: UInt32, token: Int) {
-        switch messageType {
-        case Self.canSystemSleep:
+        guard let message = Message(rawValue: messageType) else { return }
+        switch message {
+        case .canSystemSleep:
             IOAllowPowerChange(rootPort, token)
-        case Self.systemWillSleep:
+        case .systemWillSleep:
             epoch &+= 1
             SessionRegistry.shared.prepareForSleep()
             IOAllowPowerChange(rootPort, token)
-        case Self.systemWillNotSleep:
+        case .systemWillNotSleep:
             helperLog.info("Power: sleep cancelled")
-        case Self.systemWillPowerOn:
+        case .systemWillPowerOn:
             break
-        case Self.systemHasPoweredOn:
+        case .systemHasPoweredOn:
             epoch &+= 1
             let current = epoch
             let delays = PowerTransitionPolicy.wakeRetryDelays
@@ -102,8 +105,6 @@ actor PowerObserver {
                     SessionRegistry.shared.recoverAfterWake(attempt: index + 1, of: delays.count)
                 }
             }
-        default:
-            break
         }
     }
 }
