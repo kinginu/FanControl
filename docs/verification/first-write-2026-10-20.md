@@ -39,10 +39,27 @@ Fan 1  2317  2317  automatic      （約 2 分後、冷えて最小回転へ）
   復元時に `Tg` を書き戻す必要はない（pre-write-review の HIGH 1 の修正方針が実機で裏付けられた）。
   `Tg` を書き戻さないので、アイドル時のスナップショット `Tg`=0 < `Mn` の問題も生じない。
 
+## テスト 1a: アプリを `kill -9`（セッション中）
+
+- 09:42:14 Fan 1 を固定 3000 RPM（`Session opened by pid 71765 (connection 3)`）
+- 09:43:04 `kill -9 71765` → helper: `Connection 3 invalidated` → `Owner pid 71765 went away; releasing session` → `Session closed after 50s`
+- probe: 09:43:06 に `Fan 1 target 3000 → 2317 / automatic`（約 2 秒で復元）、09:43:08 current 2327、以後 2317 で安定
+- 結論: クライアント消失時のヘルパー側復元は動作する（helper.md §5）
+
+## テスト 1b: ヘルパーに SIGTERM（セッション中）
+
+新ビルドのスモークアプリ（cdhash `fd6b97f4…`、`install.sh` 再実行で pin 更新、ヘルパーは bootout → オンデマンド再起動 pid 82776）。
+
+- 09:45:28 Fan 1 を固定 3000 RPM（`Session opened by pid 82208 (connection 1)`）
+- 09:46:02 `sudo launchctl kill SIGTERM system/…fanfi` → helper: `SIGTERM received` → `Helper shutting down; ending session and restoring fans` → `Session of pid 82208 closed after 34s` → 終了コード 0
+- probe: 直後に `Fan 1 automatic / target ≈ 2370`（SMC の値）
+- launchd: `runs = 1`、`last exit code = 0`、`state = not running`
+- 結論: SIGTERM 時の復元は動作する。
+- 備考: セッション中に 1 サンプルだけ `Fan 1 current 3964 (target 3000)`、`Fan 2 current 4020 (target 2606)` と両ファンが同時に跳ねた読取があり、次のサンプルで戻った。P コア最大は 89.7 °C（警告閾値 90 °C 直前）。読取の揺れか SMC の一時的な介入かは未確認。
+
 ## 未確認のまま残ること
 
 - `Md`=1 かつ `Tg`=0（Mn 未満）の挙動（ヘルパーが範囲外として拒否するため通常は起きない）
 - 手動モードで SMC が `Mn` を強制するか
 - スリープ／復帰で `Md` が戻るか（integration.md §6 Phase 5）
-- `kill -9` 時のヘルパーによる復元、ヘルパー SIGTERM 時の復元（§6 Phase 4）
 - センサー連動プロファイル、緊急オーバーライド（§6 Phase 4/5）
