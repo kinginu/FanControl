@@ -1,15 +1,16 @@
 #if os(macOS)
 // Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
 //
-// The "Fan Control" settings pane (design doc §4.3), registered as a
-// `Settings.Pane` (see PATCHES.md (d)). Mirrors `LiveActivitiesSettingsView`:
-// a `TabView` with General / Profiles / Sensors tabs, plus an error footer.
+// The "Fan Control" settings pane (design doc §4.3), added as one tab of the
+// host's native SwiftUI `Settings` scene (see PATCHES.md (d)). General /
+// Profiles / Sensors sub-tabs as a segmented control (a nested `TabView` would
+// be hoisted into the Settings window's toolbar), plus an error footer.
 //
 // The pane has ONE fixed size for every tab (`contentSize`), so switching tabs
 // never resizes the settings window; tab contents that can grow (General's
-// sections, the profile editor, the sensor table) scroll inside it. The host
-// app wraps the pane in a slightly larger fixed frame (DynamicNotchApp: 760×640,
-// `settingsPaneSize` in WindowsManager.swift).
+// grouped form, the profile editor, the sensor table) scroll inside it. The host
+// app wraps every settings tab in a slightly larger fixed frame (DynamicNotchApp:
+// 760×640, `SettingsRootView.contentSize` in Sources/SettingsRootView.swift).
 
 import SwiftUI
 import Defaults
@@ -21,7 +22,8 @@ struct FanControlSettingsView: View {
     /// Fixed size of the whole pane (tabs + error footer), identical for every tab.
     static let contentSize = CGSize(width: 740, height: 600)
 
-    @State private var selection: Int = 0
+    /// Selected sub-tab, remembered across openings (like the top-level tab).
+    @AppStorage("fanControlSettingsTab") private var selection: Int = 0
     /// Error from the last action started in this pane (thrown by the manager).
     @State private var actionError: String?
 
@@ -29,22 +31,25 @@ struct FanControlSettingsView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            TabView(selection: $selection) {
-                FanControlGeneralTabView(actionError: $actionError)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .tabItem { Text("General") }
-                    .tag(0)
-
-                FanControlProfilesTabView(actionError: $actionError)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .tabItem { Text("Profiles") }
-                    .tag(1)
-
-                FanControlSensorsTabView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .tabItem { Text("Sensors") }
-                    .tag(2)
+            // Sub-tabs as a segmented control, not a nested `TabView`: inside SwiftUI's
+            // `Settings` scene every `TabView` is hoisted into the window toolbar.
+            Picker("", selection: $selection) {
+                Text("General").tag(0)
+                Text("Profiles").tag(1)
+                Text("Sensors").tag(2)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+
+            Group {
+                switch selection {
+                case 1: FanControlProfilesTabView(actionError: $actionError)
+                case 2: FanControlSensorsTabView()
+                default: FanControlGeneralTabView(actionError: $actionError)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             FanControlErrorFooter(message: actionError ?? manager.lastError.map { fanControlErrorMessage($0) }) {
                 actionError = nil
@@ -75,6 +80,8 @@ struct FanControlSettingsView: View {
 @MainActor
 enum FanControlNookVisibility {
     static func nookVisibilityChanged(isVisible: Bool) {
+        // The host reports Nook visibility; the widget's own appear/disappear becomes a fallback only.
+        FanControlWidgetPresence.hostReportsVisibility = true
         let general = Defaults[.fanControlGeneralSettings]
         FanControlManager.shared.setMonitoringPaused(!isVisible && general.isEnabled && general.pauseWhenNookHidden)
     }
