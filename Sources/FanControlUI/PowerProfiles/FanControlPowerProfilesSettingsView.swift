@@ -401,11 +401,25 @@ private extension String {
 /// Host start-up hook (DynamicNotch: PATCHES.md (h)): call once from
 /// `applicationDidFinishLaunching`, after the Fan Control start-up. Starts the engine (cheap and
 /// inert while Power Profiles are off) and keeps fan switching off while the Fan Control feature
-/// is disabled (`FanControlSettingKey.general`).
+/// is disabled (`FanControlSettingKey.general`). When the feature is switched back on, a
+/// decision the arbiter held back meanwhile is applied (`applyAllowedDidChange()`).
 @MainActor
 public enum FanControlPowerProfiles {
+    private static var gateTask: Task<Void, Never>?
+
     public static func start() {
         FanProfileArbiter.shared.isApplyAllowed = { FanControlSettingKey.general.value.isEnabled }
+        if gateTask == nil {
+            gateTask = Task { @MainActor in
+                var wasEnabled = FanControlSettingKey.general.value.isEnabled
+                for await settings in FanControlSettingKey.general.updates(initial: false) {
+                    let isEnabled = settings.isEnabled
+                    defer { wasEnabled = isEnabled }
+                    guard isEnabled, !wasEnabled else { continue }
+                    await FanProfileArbiter.shared.applyAllowedDidChange()
+                }
+            }
+        }
         PowerProfileEngine.shared.start()
     }
 }

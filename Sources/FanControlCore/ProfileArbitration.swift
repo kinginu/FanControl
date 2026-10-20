@@ -103,12 +103,16 @@ public struct ProfileArbitration: Hashable, Sendable {
 
     /// Sets (or with `nil` withdraws) the claim of an automatic layer. Returns `true` if the
     /// claim changed. `.manual` / `.baseline` are ignored (use their own methods).
+    ///
+    /// `endsManualOverride: false` keeps a manual pick even if the automatic winner changes
+    /// (a feature withdrawing a stale claim while it is paused by that very pick).
     @discardableResult
-    public mutating func setClaim(_ claim: ProfileClaim?, for layer: ProfileLayer) -> Bool {
+    public mutating func setClaim(_ claim: ProfileClaim?, for layer: ProfileLayer,
+                                  endsManualOverride: Bool = true) -> Bool {
         guard ProfileLayer.automaticLayers.contains(layer), claims[layer] != claim else { return false }
         let before = automaticWinner?.profileID
         claims[layer] = claim
-        if manualEndsOnTransition, manualProfileID != nil, automaticWinner?.profileID != before {
+        if endsManualOverride, manualEndsOnTransition, manualProfileID != nil, automaticWinner?.profileID != before {
             manualProfileID = nil
         }
         return true

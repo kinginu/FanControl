@@ -559,8 +559,21 @@ automation (F3). Both go through one arbiter; neither calls `applyProfile` itsel
 - **`FanProfileArbiter`** (Kit, `@MainActor @Observable`, `.shared`): applies the decision
   through `FanProfileHosting` (`FanControlManager` conforms: `applyProfile(profile.resolved(for: fans))`)
   only when it differs from the active profile; a failed decision is not retried until it
-  changes or `retry()`; `isApplyAllowed` gates applying (the app: Fan Control enabled). It
-  observes `activeFanProfileID` (`withObservationTracking`) to detect manual picks.
+  changes or `retry()` (`failedDecision`, `lastError`, both observable). `isApplyAllowed` gates
+  applying (the app: Fan Control enabled); a decision it held back is applied by
+  `applyAllowedDidChange()` (`FanControlPowerProfiles.start()` calls it when Fan Control is
+  switched on) or by the next `setClaim`, even an unchanged one. It observes
+  `activeFanProfileID` (`withObservationTracking`) to detect manual picks, also **during** an
+  apply: only the profile being applied and the rollback target are the arbiter's own; any other
+  change is the user's pick, and if the arbiter's late select or rollback then replaced it, the
+  pick is re-applied right after. `setClaim` / `resumeAutomation` / `retry` return after the
+  pass that applies their decision (a call during an apply waits for the follow-up pass).
+  `setClaim(_:for:endsManualOverride: false)` changes a claim without ending a manual
+  override. The baseline is persisted (`fanControl.arbiter.baselineProfileID`, `.shared` only),
+  and so is the profile an automatic switch left active
+  (`fanControl.arbiter.automaticActiveProfileID`, cleared by a manual pick or a return to the
+  baseline): after a relaunch automation returns to the user's profile, and if the active
+  profile is still the automation's, the first `setClaim` (even an unchanged `nil`) reconciles.
 - **Other observers of `activeFanProfileID`** (e.g. `WorkloadProfileCoordinator`): the arbiter is
   the single classifier of automatic vs manual changes. Either subscribe to
   `FanProfileArbiter.manualSelectionNotification` (posted when a change the arbiter did not make is
@@ -598,7 +611,9 @@ automation (F3). Both go through one arbiter; neither calls `applyProfile` itsel
   `FanControlPowerProfileStatusLine` (one line for a widget), `FanControlPowerProfiles.start()`
   (host start-up hook; gates fan switching on `FanControlSettingKey.general.isEnabled`).
 - Tests: `PowerProfileRulesTests` / `ProfileArbitrationTests` (Core), `PowerProfileEngineTests`
-  (Kit, injected context + fake Low Power Mode + fake fan host), `LowPowerModeCommandTests`
+  (Kit, injected context + fake per-source Low Power Mode + fake fan host),
+  `FanProfileArbiterTests` (Kit, a fan host whose apply can be held mid-flight: gate, picks
+  during an apply, persisted baseline), `LowPowerModeCommandTests`
   (XPC, fake pmset), `LowPowerModeEndToEndTests` (real XPC, `FakeHelper`).
 
 ### Workload automation
@@ -617,7 +632,7 @@ error) and whose `onResume` it sets.
 
 | Layer | Behaviour |
 |---|---|
-| Manual | A profile the user picks by hand (classified by the arbiter, `manualSelectionNotification`) is never replaced. The engine disengages *without* returning and pauses for `manualOverrideMinutes` (15 / 30 / 60 / 120, or 0 = until resumed / disabled and re-enabled); its `.workload` claim is kept meanwhile, so withdrawing it does not end the user's override. |
+| Manual | A profile the user picks by hand (classified by the arbiter, `manualSelectionNotification`) is never replaced. The engine disengages *without* returning and pauses for `manualOverrideMinutes` (15 / 30 / 60 / 120, or 0 = until resumed / disabled and re-enabled); its `.workload` claim is withdrawn meanwhile **without** ending the arbiter's manual override (`endsManualOverride: false`), so a stale workload profile cannot come back through the Power status line's "Resume" and power-rule transitions still count. |
 | Emergency | While `emergencyOverrideActive`, decisions are held (no switch either way). The override itself forces max under any profile, the manual one included (see "Emergency override"). |
 | Workload | Enabled app rules in list order (`running` or `frontmost`), then the sustained-load rule. |
 | Power (F2) | Its own `.power` claim; it wins whenever no workload claim is set. |
@@ -648,10 +663,14 @@ from the highest IOAccelerator `PerformanceStatistics` "Device Utilization %".
 - `idle` / `disabled` (the engine names the baseline once) → `setClaim(nil, for: .workload)`; the
   arbiter then picks the next layer (power, else the baseline). The engine's own baseline id is
   not applied.
-- `pausedByManualSelection` / `heldForEmergency` → the claim is left as it is.
+- `pausedByManualSelection` → the claim is withdrawn with `endsManualOverride: false` (the
+  user's pick stays in effect); re-engaging after the pause claims again only if a rule still
+  matches. `heldForEmergency` → the claim is left as it is.
 - Fan control off → `reset()` and the claim is withdrawn.
-- A failed apply is the arbiter's (`lastError`, not retried until the decision changes); the
-  coordinator mirrors it into `FanControlAutomationState.lastApplyError`.
+- A failed apply is the arbiter's (`failedDecision` / `lastError`). The coordinator mirrors it
+  into `FanControlAutomationState.lastApplyError` by **observing** the arbiter (the error while
+  the decision in effect is the failed workload claim), not by reading it right after
+  `setClaim`, and retries a failed workload claim at most once a minute while its rule matches.
 - `noteLowerLayerSelection` and the old `requestLowerLayerProfile` entry point are not used: power
   profiles claim `.power` directly.
 
