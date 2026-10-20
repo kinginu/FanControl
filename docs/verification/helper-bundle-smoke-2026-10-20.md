@@ -273,3 +273,18 @@ TEAMID0000
   実インストール（root）・ヘルパー起動・XPC 接続は未実施（手順は `Tools/HelperSmokeApp/README.md`「手動インストールモードでのテスト」）。
 - アドホック署名 + Hardened Runtime + `com.apple.application-identifier` entitlement を持つ小さな実行ファイルは、ユーザープロセスとしては AMFI に拒否されず起動した。
   launchd から root で起動したときの挙動は未確認。
+
+## 追記: 手動インストールモードの実動作（2026-10-20 09:27）
+
+`sudo Support/manual-install/install.sh <FanControlSmoke.app>` を実行（ユーザー操作）。`status.sh` でアプリの cdhash `e9acede7…` が pinned requirement と一致、
+ヘルパー `/Library/PrivilegedHelperTools/com.example.dynamicnotch.DynamicNotch.fanfi`（cdhash `b0ece20a…`）、`launchctl print` は `state = not running`（オンデマンド）。
+スモークアプリで「Helper version」を押すと:
+
+- kernel (AMFI): `'/Library/PrivilegedHelperTools/…fanfi' is adhoc signed.`
+- amfid: `No certificate chain found` / `Requirements for restricted entitlements failed to validate, error -67688` / `Basic requirement validation failed -67050`（entitlements は `com.apple.application-identifier` と `get-task-allow`）
+- kernel (AppleSystemPolicy): `evaluation result: … exec, allowed`
+- launchd: `Successfully spawned com.example.dynamicnotch.DynamicNotch.fanfi[73179] because ipc (mach)`
+- helper: `Client requirement mode: MANUAL INSTALL (personal use), client cdhash pinned to e9acede7…` → `FanControlHelper started (protocol v1, build 1.0 (1)), listening on …fanfi` → `Accepted connection 1 from pid 71765`
+- app (libxpc): `Code-signing requirement (identifier "…fanfi" and cdhash H"b0ece20a…") set on connection` → 応答後に `xpc_connection_cancel()`（スモークアプリは呼び出しごとに `HelperClient` を破棄する）
+
+結論: ad-hoc 署名 + Xcode 注入 entitlements のヘルパーでも launchd は root で起動し、双方向の cdhash 要件で XPC 接続が成立した。AMFI の失敗ログは警告扱いで実害なし。
