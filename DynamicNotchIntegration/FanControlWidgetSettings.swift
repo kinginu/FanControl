@@ -34,10 +34,14 @@ struct FanControlWidgetSettings: CodableStoredValue, Equatable, Hashable {
     /// Sensor keys to show (`SensorReading.id`, aggregate ids such as
     /// `"agg:cpu"` included); `nil` shows the key temperatures
     /// (CPU (max), GPU (max), SSD; see `visibleSensors(from:aggregateDefinitions:)`).
+    /// Not shown by the Fan Control widget any more: temperatures moved to the Temperature
+    /// widget (2026-10-20, `FanControlTemperatureWidgetView`). Kept so stored settings decode
+    /// unchanged (and for `visibleSensors`, which other views may still use).
     var visibleSensorKeys: [String]? = nil
-    /// Unit used for temperatures in the widget, the alert and the settings pane.
+    /// Unit used for temperatures in the Fan Control and Temperature widgets, the alert and the
+    /// settings pane.
     var temperatureUnit: TemperatureUnit = .celsius
-    /// Show the profile list (all six profiles, click to apply) in the widget.
+    /// Show the profile list (all seven profiles, click to apply) in the widget.
     /// The stored key keeps its old name (it was a pull-down menu before 2026-10-20).
     var showProfilePicker: Bool = true
     /// Show the target RPM next to the measured RPM.
@@ -252,7 +256,25 @@ enum FanControlFormatting {
         readings.filter { !$0.isExcludedFromRanking } + readings.filter(\.isExcludedFromRanking)
     }
 
-    /// Localized display name for a profile. The six fixed profiles show
+    // MARK: Curves
+
+    /// The points of `curve` as text, e.g. "50°C min · 60°C 3,500 · 70°C 5,200 · 85°C max".
+    /// With `rpmRange` (one fan) RPMs are clamped to it and its ends read "min" / "max";
+    /// without, the fan-agnostic `FanCurve.fanMinimumRPM` / `fanMaximumRPM` do.
+    static func curvePointsSummary(_ curve: FanCurve, rpmRange: ClosedRange<Int>? = nil,
+                                   unit: TemperatureUnit) -> String {
+        let points = (rpmRange.map { curve.resolved(rpmRange: $0) } ?? curve.normalized()).points
+        let low = rpmRange?.lowerBound ?? FanCurve.fanMinimumRPM
+        let high = rpmRange?.upperBound ?? FanCurve.fanMaximumRPM
+        return points.map { point in
+            let rpm = point.rpm <= low ? String(localized: "min")
+                : point.rpm >= high ? String(localized: "max")
+                : point.rpm.formatted()
+            return "\(temperature(point.temperature, unit: unit)) \(rpm)"
+        }.joined(separator: " · ")
+    }
+
+    /// Localized display name for a profile. The seven fixed profiles show
     /// their localized default name ("Automatic", "Constant Quiet", …,
     /// "Custom 1"); a renamed custom slot shows the user's name verbatim.
     static func profileName(_ profile: FanProfile) -> String {
@@ -305,19 +327,20 @@ enum FanControlFormatting {
     }
 }
 
-// MARK: - Fixed profiles (the six of `ProfileStore`)
+// MARK: - Fixed profiles (the seven of `ProfileStore`)
 
 enum FanControlProfiles {
 
-    /// The six fixed profiles in display order (`ProfileStore.fixedProfiles`).
+    /// The seven fixed profiles in display order (`ProfileStore.fixedProfiles`: Automatic,
+    /// Constant Quiet, Constant High, Boost, Max, Custom 1, Custom 2).
     /// `FanControlManager.availableProfiles` still lists the legacy
     /// Silent / Maximum built-ins and programmatic profiles (`setFanRPM`'s
-    /// "Custom"), so the UI reads the store's fixed six instead.
+    /// "Custom"), so the UI reads the store's fixed seven instead.
     @MainActor
     static var all: [FanProfile] { FanControlManager.shared.profileStore.fixedProfiles }
 
     /// The active profile's id; Automatic when nothing is selected. May be a
-    /// programmatic profile outside the six (then no selector entry is checked).
+    /// programmatic profile outside the seven (then no selector entry is checked).
     @MainActor
     static var activeID: UUID {
         FanControlManager.shared.profileStore.activeProfileID ?? FanProfile.BuiltInID.automatic

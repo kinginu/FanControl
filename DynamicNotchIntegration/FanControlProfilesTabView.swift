@@ -4,11 +4,12 @@
 // "Profiles" tab of the Fan Control settings pane (replaces the earlier
 // profile editor dialogs, design doc §4.4).
 // The profile set is fixed (`ProfileStore`): the presets Automatic,
-// Constant Quiet, Constant High and Boost are shown read-only with their
-// parameters; Custom 1 / Custom 2 are editable (per-fan mode, sensor,
-// start / maximum temperature, constant RPM; rename) and can be reset to
-// their default. No profiles are created or deleted. This is the only place
-// where profiles are edited (the notch widget only selects one).
+// Constant Quiet, Constant High, Boost and Max are shown read-only with their
+// parameters (Boost with its real multi-point curve); Custom 1 / Custom 2 are
+// editable (per-fan mode, sensor, multi-point fan curve — FanControlCurveEditorView.swift,
+// 2026-10-20, replaces the start / maximum temperature steppers —, constant RPM; rename)
+// and can be reset to their default. No profiles are created or deleted. This is the only
+// place where profiles are edited (the notch widget only selects one).
 
 import SwiftUI
 import FanControlCore
@@ -59,6 +60,7 @@ struct FanControlProfilesTabView: View {
                     currentRPMs: manager.currentRPMs,
                     unit: widgetSettings.temperatureUnit,
                     emergencyTemperature: manager.safetyPolicy.emergencyTemperature,
+                    policy: manager.safetyPolicy,
                     onApply: applyDraft,
                     onSave: saveDraft,
                     onRevert: loadDraft,
@@ -176,12 +178,21 @@ private struct ProfileEditor: View {
     let currentRPMs: [Int: Int]
     let unit: TemperatureUnit
     let emergencyTemperature: Double
+    let policy: SafetyPolicy
     let onApply: () -> Void
     let onSave: () -> Void
     let onRevert: () -> Void
     let onReset: () -> Void
 
     private var isEditable: Bool { draft.isCustomSlot }
+
+    /// A sensor-based fan's curve has a blocking validation error (Save / Apply disabled).
+    private var hasCurveErrors: Bool {
+        isEditable && fans.contains { fan in
+            guard case .sensor = draft.mode(for: fan), let curve = draft.curve(for: fan) else { return false }
+            return FanCurveEditorView.hasErrors(curve, fan: fan)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -222,9 +233,11 @@ private struct ProfileEditor: View {
                             .frame(height: 110)
                         FanCurveLegend(fans: fans)
                         Divider()
-                        ForEach(fans) { fan in
-                            FanModeEditor(fan: fan, mode: modeBinding(for: fan), sensors: sensors, unit: unit)
-                                .disabled(!isEditable)
+                        ForEach(Array(fans.enumerated()), id: \.element.id) { index, fan in
+                            FanModeEditor(fan: fan, color: FanCurveView.color(forFanAt: index), draft: $draft,
+                                          isEditable: isEditable, sensors: sensors, unit: unit,
+                                          emergencyTemperature: emergencyTemperature,
+                                          currentRPM: currentRPMs[fan.id])
                             Divider()
                         }
                     }
@@ -233,6 +246,12 @@ private struct ProfileEditor: View {
             }
 
             Spacer(minLength: 0)
+
+            if hasCurveErrors {
+                Label("Fix the fan curve before saving.", systemImage: "xmark.octagon.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
 
             if !canApply {
                 Text("Turn on Fan Control in the General tab to apply profiles.")
@@ -243,7 +262,7 @@ private struct ProfileEditor: View {
 
             HStack {
                 Button("Apply", action: onApply)
-                    .disabled(!canApply)
+                    .disabled(!canApply || hasCurveErrors)
                 Spacer()
                 if isEditable {
                     Button("Reset to Default", action: onReset)
@@ -251,7 +270,7 @@ private struct ProfileEditor: View {
                     Button("Revert", action: onRevert)
                         .disabled(!isDirty)
                     Button("Save", action: onSave)
-                        .disabled(!isDirty)
+                        .disabled(!isDirty || hasCurveErrors)
                         .keyboardShortcut(.defaultAction)
                 }
             }
@@ -259,35 +278,54 @@ private struct ProfileEditor: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// What the profile does (presets) or how to edit it (custom slots).
+    /// What the profile does (presets) or how to edit it (custom slots). Preset descriptions
+    /// say what their curve looks like (2026-10-20).
     private var description: String {
         switch draft.id {
         case FanProfile.BuiltInID.automatic:
-            return String(localized: "macOS (the SMC) controls every fan. Fan control returns the fans to automatic.")
+            return String(localized: "macOS (the SMC) controls every fan, so there is no curve. Fan control returns the fans to automatic.")
         case FanProfile.BuiltInID.constantQuiet, FanProfile.BuiltInID.constantHigh:
             let rpm: Int
             if case .constant(let value) = draft.defaultMode { rpm = value } else { rpm = 0 }
-            return String(localized: "Every fan at a constant \(rpm.formatted()) RPM (limited to each fan's range). Read-only preset.")
+            return String(localized: "Every fan at a constant \(rpm.formatted()) RPM (limited to each fan's range): the curve is a flat line. Read-only preset.")
+        case FanProfile.BuiltInID.max:
+            let rpm: Int
+            if case .constant(let value) = draft.defaultMode { rpm = value } else { rpm = FanProfile.Preset.maxRPM }
+            return String(localized: "Every fan at full speed (\(rpm.formatted()) RPM, limited to each fan's maximum): a flat line at the top of the chart. The loudest setting. Read-only preset.")
         case FanProfile.BuiltInID.boost:
-            let summary = draft.defaultMode.map { FanControlFormatting.modeSummary($0, sensors: sensors, unit: unit) } ?? ""
-            return String(localized: "Every fan follows \(summary): minimum speed at the start temperature, maximum speed at the maximum temperature. Read-only preset.")
+            return boostDescription
         default:
-            return String(localized: "Editable profile. Choose a mode for each fan, then Save or Apply.")
+            return String(localized: "Editable profile. Choose a mode for each fan; a sensor-based fan follows its own curve (drag the points or use the rows below). Then Save or Apply.")
         }
+    }
+
+    /// Boost: the sensor, the curve's points, and how loud it is at idle (`agg:cpu` is the
+    /// hottest core and idles at ≈ 72–78 °C on Apple Silicon, so Boost is loud even when idle),
+    /// with the live value when the sensor is readable.
+    private var boostDescription: String {
+        let sensorName: String
+        if case .sensor(let key, _, _)? = draft.defaultMode {
+            sensorName = sensors.first { $0.id == key }.map(FanControlFormatting.sensorName)
+                ?? NSLocalizedString("CPU (max)", comment: "Aggregate sensor name")
+        } else {
+            sensorName = NSLocalizedString("CPU (max)", comment: "Aggregate sensor name")
+        }
+        let curve = draft.defaultCurve ?? FanProfile.Preset.boostCurve
+        let points = FanControlFormatting.curvePointsSummary(curve, unit: unit)
+        var text = String(localized: "Every fan follows \(sensorName) on a smooth curve through \(points), reaching full speed well before the emergency threshold. Read-only preset.")
+        text += " " + String(localized: "Note: CPU (max) is the hottest core, which idles at about 72–78 °C on Apple Silicon, so Boost runs the fans at about 5,500 RPM or more even when the Mac is idle.")
+        if case .sensor(let key, _, _)? = draft.defaultMode, let fan = fans.first,
+           let temperature = FanControlManager.shared.controlTemperature(for: key), temperature.isFinite,
+           let rpm = FanControlEngine.targetRPM(for: draft, fan: fan, sensorTemperature: temperature, policy: policy) {
+            text += " " + String(localized: "Now: \(FanControlFormatting.temperature(temperature, unit: unit)) → \(rpm.formatted()) RPM.")
+        }
+        return text
     }
 
     private var nameBinding: Binding<String> {
         Binding(
             get: { FanControlFormatting.profileName(draft) },
             set: { draft.name = $0 }
-        )
-    }
-
-    /// Explicit per-fan entries (also `.automatic`), so they override `defaultMode`.
-    private func modeBinding(for fan: FanDevice) -> Binding<FanControlMode> {
-        Binding(
-            get: { draft.mode(for: fan) },
-            set: { draft.modes[fan.id] = $0 }
         )
     }
 }
@@ -314,18 +352,29 @@ struct FanCurveLegend: View {
 
 // MARK: - Per-fan mode editor
 
+/// Mode of one fan in the draft: automatic, constant (slider) or sensor-based (sensor picker +
+/// multi-point curve, `FanCurveEditorView`). Edits go to the draft with explicit per-fan entries
+/// (`modes[fan.id]`, also `.automatic`, so they override `defaultMode`); a sensor-based fan's
+/// curve is stored with `FanProfile.setCurve`, other modes drop the fan's curve.
 private struct FanModeEditor: View {
 
     private enum Kind: Hashable { case automatic, constant, sensor }
 
     let fan: FanDevice
-    @Binding var mode: FanControlMode
+    let color: Color
+    @Binding var draft: FanProfile
+    let isEditable: Bool
     let sensors: [SensorReading]
     let unit: TemperatureUnit
+    let emergencyTemperature: Double
+    let currentRPM: Int?
 
-    /// Temperature limits for the sensor-based mode (°C).
-    private static let startRange: ClosedRange<Double> = 20...105
-    private static let maxRange: ClosedRange<Double> = 21...110
+    private var mode: FanControlMode { draft.mode(for: fan) }
+
+    private func setMode(_ mode: FanControlMode) {
+        draft.modes[fan.id] = mode
+        draft.curves[fan.id] = nil
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -349,6 +398,7 @@ private struct FanModeEditor: View {
             .labelsHidden()
             .pickerStyle(.segmented)
             .fixedSize()
+            .disabled(!isEditable)
 
             switch mode {
             case .automatic:
@@ -357,8 +407,9 @@ private struct FanModeEditor: View {
                     .foregroundStyle(.secondary)
             case .constant(let rpm):
                 constantEditor(rpm: rpm)
-            case .sensor(let key, let start, let maxTemperature):
-                sensorEditor(key: key, start: start, maxTemperature: maxTemperature)
+                    .disabled(!isEditable)
+            case .sensor(let key, _, _):
+                sensorEditor(key: key)
             }
         }
     }
@@ -388,7 +439,7 @@ private struct FanModeEditor: View {
             },
             set: { value in
                 let rounded = Int((value / 10).rounded()) * 10
-                mode = .constant(rpm: Swift.min(Swift.max(rounded, fan.rpmRange.lowerBound), fan.rpmRange.upperBound))
+                setMode(.constant(rpm: Swift.min(Swift.max(rounded, fan.rpmRange.lowerBound), fan.rpmRange.upperBound)))
             }
         )
     }
@@ -396,8 +447,8 @@ private struct FanModeEditor: View {
     // MARK: Sensor-based
 
     @ViewBuilder
-    private func sensorEditor(key: String, start: Double, maxTemperature: Double) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private func sensorEditor(key: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Sensor")
                     .fixedSize()
@@ -420,26 +471,12 @@ private struct FanModeEditor: View {
                 .labelsHidden()
                 .frame(maxWidth: 280)
             }
-            Stepper(value: startBinding, in: Self.startRange, step: 1) {
-                HStack {
-                    Text("Start Temperature")
-                    Spacer()
-                    Text(verbatim: FanControlFormatting.temperature(start, unit: unit))
-                        .monospacedDigit()
-                }
-            }
-            Stepper(value: maxTemperatureBinding, in: Self.maxRange, step: 1) {
-                HStack {
-                    Text("Maximum Temperature")
-                    Spacer()
-                    Text(verbatim: FanControlFormatting.temperature(maxTemperature, unit: unit))
-                        .monospacedDigit()
-                }
-            }
-            Text("Minimum speed at or below the start temperature, maximum speed at or above the maximum temperature.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .disabled(!isEditable)
+            // The multi-point curve replaces the old start / maximum temperature steppers
+            // (its first / last points are the mode's start / maximum temperature).
+            FanCurveEditorView(fan: fan, color: color, sensorKey: key, curve: curveBinding, unit: unit,
+                               emergencyTemperature: emergencyTemperature, currentRPM: currentRPM,
+                               isEditable: isEditable)
         }
     }
 
@@ -454,39 +491,27 @@ private struct FanModeEditor: View {
         }
     }
 
-    private var sensorParameters: (key: String, start: Double, max: Double) {
-        if case .sensor(let key, let start, let maxTemperature) = mode { return (key, start, maxTemperature) }
-        return (defaultSensorKey, FanProfile.Preset.boostStartTemperature, FanProfile.Preset.boostMaxTemperature)
+    private var sensorKey: String {
+        if case .sensor(let key, _, _) = mode { return key }
+        return defaultSensorKey
+    }
+
+    /// The curve that drives the fan (stored multi-point curve, or the mode's linear ramp).
+    private var currentCurve: FanCurve {
+        draft.curve(for: fan) ?? FanCurve.boost.resolved(for: fan)
+    }
+
+    private var curveBinding: Binding<FanCurve> {
+        Binding(
+            get: { currentCurve },
+            set: { draft.setCurve($0, sensorKey: sensorKey, forFan: fan.id) }
+        )
     }
 
     private var sensorKeyBinding: Binding<String> {
         Binding(
-            get: { sensorParameters.key },
-            set: { key in
-                let p = sensorParameters
-                mode = .sensor(sensorKey: key, startTemperature: p.start, maxTemperature: p.max)
-            }
-        )
-    }
-
-    /// Keeps `start < max` by pushing the other bound.
-    private var startBinding: Binding<Double> {
-        Binding(
-            get: { sensorParameters.start },
-            set: { start in
-                let p = sensorParameters
-                mode = .sensor(sensorKey: p.key, startTemperature: start, maxTemperature: Swift.max(p.max, start + 1))
-            }
-        )
-    }
-
-    private var maxTemperatureBinding: Binding<Double> {
-        Binding(
-            get: { sensorParameters.max },
-            set: { maxTemperature in
-                let p = sensorParameters
-                mode = .sensor(sensorKey: p.key, startTemperature: Swift.min(p.start, maxTemperature - 1), maxTemperature: maxTemperature)
-            }
+            get: { sensorKey },
+            set: { key in draft.setCurve(currentCurve, sensorKey: key, forFan: fan.id) }
         )
     }
 
@@ -504,16 +529,15 @@ private struct FanModeEditor: View {
             set: { newKind in
                 switch newKind {
                 case .automatic:
-                    mode = .automatic
+                    setMode(.automatic)
                 case .constant:
                     if case .constant = mode { return }
                     let range = fan.rpmRange
-                    mode = .constant(rpm: range.lowerBound + (range.upperBound - range.lowerBound) / 2)
+                    setMode(.constant(rpm: range.lowerBound + (range.upperBound - range.lowerBound) / 2))
                 case .sensor:
                     if case .sensor = mode { return }
-                    mode = .sensor(sensorKey: defaultSensorKey,
-                                   startTemperature: FanProfile.Preset.boostStartTemperature,
-                                   maxTemperature: FanProfile.Preset.boostMaxTemperature)
+                    // New sensor-based fans start from the Boost curve (resolved for this fan).
+                    draft.setCurve(FanCurve.boost.resolved(for: fan), sensorKey: defaultSensorKey, forFan: fan.id)
                 }
             }
         )

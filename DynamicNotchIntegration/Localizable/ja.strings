@@ -98,9 +98,6 @@
 "Unavailable sensor (%@)" = "利用できないセンサー (%@)";
 "Aggregate" = "集約";
 "Individual Sensors" = "個別センサー";
-"Start Temperature" = "開始温度";
-"Maximum Temperature" = "最大温度";
-"Minimum speed at or below the start temperature, maximum speed at or above the maximum temperature." = "開始温度以下では最低回転数、最大温度以上では最大回転数で回ります。";
 "Turn on Fan Control in the General tab to apply profiles." = "「一般」タブでファン制御を有効にすると、プロファイルを適用できます。";
 
 /* MARK: Aggregate sensor names (SensorAggregator; FanControlFormatting.sensorName) */
@@ -137,10 +134,6 @@
 "Reset to Default" = "初期設定に戻す";
 "Reset this profile to its default settings?" = "このプロファイルを初期設定に戻しますか？";
 "Your changes to this profile, including its name, are discarded." = "名前を含め、このプロファイルへの変更は破棄されます。";
-"macOS (the SMC) controls every fan. Fan control returns the fans to automatic." = "すべてのファンを macOS（SMC）が制御します。ファンは自動制御に戻ります。";
-"Every fan at a constant %@ RPM (limited to each fan's range). Read-only preset." = "すべてのファンを %@ RPM の一定速度で回します（各ファンの範囲内に制限）。編集できないプリセットです。";
-"Every fan follows %@: minimum speed at the start temperature, maximum speed at the maximum temperature. Read-only preset." = "すべてのファンが %@ に連動します。開始温度で最低回転数、最大温度で最大回転数になります。編集できないプリセットです。";
-"Editable profile. Choose a mode for each fan, then Save or Apply." = "編集できるプロファイルです。ファンごとにモードを選び、「保存」または「適用」を押してください。";
 "Dot = current speed" = "点 = 現在の回転数";
 
 /* MARK: Fan curve and key temperatures (FanCurveView, FanControlKeyTemperaturesView) */
@@ -152,7 +145,6 @@
 "SSD" = "SSD";
 
 /* MARK: Widget settings — fixed profiles (FanControlWidgetSettingsView) */
-"Show Key Temperatures" = "主要な温度を表示";
 "Show Fan Curve (Double Wide)" = "ファンカーブを表示（ダブルワイド）";
 
 /* MARK: Widget apply error */
@@ -192,3 +184,48 @@
 "Hysteresis" = "ヒステリシス";
 "Reset to Defaults" = "既定値に戻す";
 "The alert and the all-fans-maximum override turn on when the hottest CPU/GPU sensor reaches these temperatures, and off again once it has cooled by the hysteresis." = "CPU/GPU の最も高いセンサーがこれらの温度に達すると警告と全ファン最大が作動し、ヒステリシス分下がると解除されます。";
+
+/* MARK: Curves, Max preset, curve editor, Temperature widget (2026-10-20; FanControlCurveEditorView,
+   FanControlTemperatureWidgetView / …SettingsView, FanControlProfilesTabView) */
+"Max" = "最大";
+"min" = "最小";
+"max" = "最大";
+"%lld-point curve" = "%lld 点のカーブ";
+"macOS (the SMC) controls every fan, so there is no curve. Fan control returns the fans to automatic." = "すべてのファンを macOS（SMC）が制御するため、カーブはありません。ファンは自動制御に戻ります。";
+"Every fan at a constant %@ RPM (limited to each fan's range): the curve is a flat line. Read-only preset." = "すべてのファンを %@ RPM の一定速度で回します（各ファンの範囲内に制限）。カーブは水平な線です。編集できないプリセットです。";
+"Every fan at full speed (%@ RPM, limited to each fan's maximum): a flat line at the top of the chart. The loudest setting. Read-only preset." = "すべてのファンを全速（%@ RPM、各ファンの最大値に制限）で回します。カーブはグラフ上端の水平な線で、最も騒がしい設定です。編集できないプリセットです。";
+"Every fan follows %@ on a smooth curve through %@, reaching full speed well before the emergency threshold. Read-only preset." = "すべてのファンが %@ に連動し、%@ を通るなめらかなカーブで回ります。緊急しきい値よりかなり手前で全速に達します。編集できないプリセットです。";
+"Note: CPU (max) is the hottest core, which idles at about 72–78 °C on Apple Silicon, so Boost runs the fans at about 5,500 RPM or more even when the Mac is idle." = "注意: CPU（最大）は最も熱いコアの温度で、Apple シリコンではアイドル時でも約 72〜78 °C あるため、ブーストではアイドル中もファンが約 5,500 RPM 以上で回ります。";
+"Now: %@ → %@ RPM." = "現在: %@ → %@ RPM。";
+"Editable profile. Choose a mode for each fan; a sensor-based fan follows its own curve (drag the points or use the rows below). Then Save or Apply." = "編集できるプロファイルです。ファンごとにモードを選びます。センサー連動のファンは専用のカーブに従います（点をドラッグするか下の行で調整）。最後に「保存」または「適用」を押してください。";
+"Fix the fan curve before saving." = "保存する前にファンカーブを修正してください。";
+"%lld points" = "%lld 点";
+"Use Preset" = "プリセットを使用";
+"Quiet" = "静音";
+"Balanced" = "バランス";
+"Full Speed" = "全速";
+"Add Point" = "点を追加";
+"Remove Point" = "点を削除";
+"now" = "現在";
+"Now: %@ %@ → %@ RPM on this curve" = "現在: %@ %@ → このカーブでは %@ RPM";
+"(fan at %@ RPM)" = "（ファンは %@ RPM）";
+"%@ is not available: the fan would run at maximum speed." = "%@ を読み取れません。ファンは最大回転数で回ります。";
+"A curve needs at least two points." = "カーブには 2 点以上が必要です。";
+"Every point needs a temperature between 0 and 130 °C." = "各点の温度は 0〜130 °C にしてください。";
+"Two points have the same temperature." = "同じ温度の点が 2 つあります。";
+"A point is outside this fan's range (%@–%@ RPM)." = "このファンの範囲（%@〜%@ RPM）外の点があります。";
+"The speed falls from %@ to %@ RPM between %@ and %@: the fan slows down as it gets hotter." = "%@ → %@ RPM（%@〜%@）と回転数が下がっています。温度が上がるとファンが遅くなります。";
+"Full speed only at %@, at or above the emergency threshold (%@)." = "全速になるのは %@ で、緊急しきい値（%@）以上です。";
+"The curve never reaches this fan's maximum (%@ RPM). Only the emergency override (%@) runs it at full speed." = "このカーブはファンの最大回転数（%@ RPM）に達しません。全速になるのは緊急時（%@）だけです。";
+"History" = "履歴";
+"Time Window" = "表示期間";
+"%lld min" = "%lld 分";
+"highest %@, lowest %@" = "最高 %@、最低 %@";
+"Temperature history" = "温度の履歴";
+"Collecting temperatures…" = "温度を記録中…";
+"Turn on Fan Control in Settings to read temperatures." = "温度を読み取るには、設定でファン制御をオンにしてください。";
+"The history is kept while DynamicNotch runs (about 30 minutes) and is not saved." = "履歴は DynamicNotch の実行中だけ（約 30 分）保持され、保存されません。";
+"Show Highest and Lowest" = "最高・最低を表示";
+"Show Alert Threshold" = "警告しきい値を表示";
+"The dashed line is the high-temperature alert threshold (%@), set in Settings ▸ Fan Control ▸ General. CPU and GPU values turn orange within 10° below it and red at or above it." = "破線は高温警告のしきい値（%@）で、設定 ▸ ファン制御 ▸ 一般 で変更できます。CPU と GPU の値は、しきい値の 10° 手前からオレンジ、しきい値以上で赤になります。";
+"CPU, GPU and SSD temperatures are shown by the Temperature widget." = "CPU・GPU・SSD の温度は「温度」ウィジェットに表示されます。";

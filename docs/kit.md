@@ -22,7 +22,7 @@ Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (intern
 | `ApplyGenerationGate.swift` | pure drop rule for stale poll write batches (unit-tested on Linux) |
 | `PowerSourceMonitor.swift` | `PowerSourceProviding` + IOKit `PowerSourceMonitor` (AC / battery, power-aware polling) |
 | `ConflictingControllerDetector.swift` | `ConflictingController` (`.fanFi`), `ConflictingControllerDetector` (other fan control apps running / helper installed) |
-| `TemperatureHistory.swift` | `TemperatureHistory`: per-key ring buffers of recent temperatures (future Temperature widget) |
+| `TemperatureHistory.swift` | `TemperatureHistory`: per-key ring buffers of recent temperatures (Temperature widget) |
 | `FanControlPlatform.swift` | arm64 assertion (`isSupported` / `requireSupported()`, backed by `FanControlCore.FanControlHost`, `sysctl hw.optional.arm64`), `defaultSafetyPolicy`, `sensorAggregateDefinitions` |
 
 ## Threading model
@@ -171,6 +171,21 @@ sensorTemperature:policy:)` honour curves; the old `targetRPM(for: mode, …)` i
 `setFanControlMode` (which drops the edited fan's curve). A new `.curve` enum case was rejected
 because it would break every exhaustive switch in the drop-ins.
 
+**In the drop-in UI (2026-10-20):** `FanCurveView` (widget details, Profiles tab overview) draws
+`profile.curve(for: fan)?.sample(count: 48, rpmRange: fan.rpmRange, temperatureDomain:)` for
+`.sensor` fans (so Boost shows its real 5-point curve) and `FanControlEngine.targetRPM(for: profile, …)`
+for constant ones; the widget's per-fan target uses the same overload at
+`FanControlManager.controlTemperature(for:)`, and the operating point is drawn at that smoothed
+temperature. Custom 1 / 2 edit curves in `FanCurveEditorView` (FanControlCurveEditorView.swift): points
+on the 10 °C grid (`FanCurve.gridTemperatures()`, 30…100 °C; loaded off-grid points such as Boost's
+85 °C are kept), 50 RPM steps inside Mn…Mx, add / remove (≥ 2 points), `FanCurve.GridPreset` presets
+resolved for the fan, live Swift Charts chart with drag; every edit goes through
+`FanProfile.setCurve(_:sensorKey:forFan:)` on the draft (the curve is stored resolved for the fan), and
+other modes drop the fan's curve. `validationIssues(rpmRange:)` errors (on the points with RPMs
+clamped) disable Save / Apply; warnings cover falling speeds, never reaching Mx, and full speed only
+at or above the emergency threshold. The editor writes the profile with `saveProfile` / `applyProfile`
+(not `setFanCurve`, which edits the *active* profile into the programmatic "Custom").
+
 ### Temperature history (2026-10-20)
 
 `FanControlManager.temperatureHistory` (`TemperatureHistory`, Kit, `Sendable` value, main actor)
@@ -181,6 +196,13 @@ published poll. One ring buffer per key, `capacityPerKey` 1024 (≈ 34 min at 2 
 worth of samples at the slower battery / paused rates), at most 32 keys (≈ 0.5 MB worst case);
 out-of-order and non-finite samples are ignored. Queries: `history(for:window:now:)` (oldest first),
 `latest(for:)`, `range` / `minimum` / `maximum(for:window:now:)`.
+
+**Temperature widget (drop-in, 2026-10-20):** `FanControlTemperatureWidgetView` (`NookWidget.temperature`)
+charts the default keys over 1 / 5 (default) / 15 / 30 min (`FanControlTemperatureWidgetSettings`), so it
+needs no `setTemperatureHistoryKeys` request. It downsamples to ≤ 180 bucket means per series for drawing
+(min / max come from the raw samples) and breaks the line at gaps > 25 s. The history is not persisted
+and starts empty at launch; while monitoring is paused (Nook hidden) nothing is recorded. Showing the
+widget counts in `FanControlWidgetPresence` like the Fan Control widget (starts / un-pauses monitoring).
 
 **Emergency override:** `AlertEvaluator.evaluateEmergency(sensors:policy:)` is evaluated on every
 poll (session open or not) and its result is passed to `plan(..., isEmergency:)`. The latch turns

@@ -98,9 +98,6 @@
 "Unavailable sensor (%@)" = "Unavailable sensor (%@)";
 "Aggregate" = "Aggregate";
 "Individual Sensors" = "Individual Sensors";
-"Start Temperature" = "Start Temperature";
-"Maximum Temperature" = "Maximum Temperature";
-"Minimum speed at or below the start temperature, maximum speed at or above the maximum temperature." = "Minimum speed at or below the start temperature, maximum speed at or above the maximum temperature.";
 "Turn on Fan Control in the General tab to apply profiles." = "Turn on Fan Control in the General tab to apply profiles.";
 
 /* MARK: Aggregate sensor names (SensorAggregator; FanControlFormatting.sensorName) */
@@ -137,10 +134,6 @@
 "Reset to Default" = "Reset to Default";
 "Reset this profile to its default settings?" = "Reset this profile to its default settings?";
 "Your changes to this profile, including its name, are discarded." = "Your changes to this profile, including its name, are discarded.";
-"macOS (the SMC) controls every fan. Fan control returns the fans to automatic." = "macOS (the SMC) controls every fan. Fan control returns the fans to automatic.";
-"Every fan at a constant %@ RPM (limited to each fan's range). Read-only preset." = "Every fan at a constant %@ RPM (limited to each fan's range). Read-only preset.";
-"Every fan follows %@: minimum speed at the start temperature, maximum speed at the maximum temperature. Read-only preset." = "Every fan follows %@: minimum speed at the start temperature, maximum speed at the maximum temperature. Read-only preset.";
-"Editable profile. Choose a mode for each fan, then Save or Apply." = "Editable profile. Choose a mode for each fan, then Save or Apply.";
 "Dot = current speed" = "Dot = current speed";
 
 /* MARK: Fan curve and key temperatures (FanCurveView, FanControlKeyTemperaturesView) */
@@ -152,7 +145,6 @@
 "SSD" = "SSD";
 
 /* MARK: Widget settings — fixed profiles (FanControlWidgetSettingsView) */
-"Show Key Temperatures" = "Show Key Temperatures";
 "Show Fan Curve (Double Wide)" = "Show Fan Curve (Double Wide)";
 
 /* MARK: Widget apply error */
@@ -192,3 +184,48 @@
 "Hysteresis" = "Hysteresis";
 "Reset to Defaults" = "Reset to Defaults";
 "The alert and the all-fans-maximum override turn on when the hottest CPU/GPU sensor reaches these temperatures, and off again once it has cooled by the hysteresis." = "The alert and the all-fans-maximum override turn on when the hottest CPU/GPU sensor reaches these temperatures, and off again once it has cooled by the hysteresis.";
+
+/* MARK: Curves, Max preset, curve editor, Temperature widget (2026-10-20; FanControlCurveEditorView,
+   FanControlTemperatureWidgetView / …SettingsView, FanControlProfilesTabView) */
+"Max" = "Max";
+"min" = "min";
+"max" = "max";
+"%lld-point curve" = "%lld-point curve";
+"macOS (the SMC) controls every fan, so there is no curve. Fan control returns the fans to automatic." = "macOS (the SMC) controls every fan, so there is no curve. Fan control returns the fans to automatic.";
+"Every fan at a constant %@ RPM (limited to each fan's range): the curve is a flat line. Read-only preset." = "Every fan at a constant %@ RPM (limited to each fan's range): the curve is a flat line. Read-only preset.";
+"Every fan at full speed (%@ RPM, limited to each fan's maximum): a flat line at the top of the chart. The loudest setting. Read-only preset." = "Every fan at full speed (%@ RPM, limited to each fan's maximum): a flat line at the top of the chart. The loudest setting. Read-only preset.";
+"Every fan follows %@ on a smooth curve through %@, reaching full speed well before the emergency threshold. Read-only preset." = "Every fan follows %@ on a smooth curve through %@, reaching full speed well before the emergency threshold. Read-only preset.";
+"Note: CPU (max) is the hottest core, which idles at about 72–78 °C on Apple Silicon, so Boost runs the fans at about 5,500 RPM or more even when the Mac is idle." = "Note: CPU (max) is the hottest core, which idles at about 72–78 °C on Apple Silicon, so Boost runs the fans at about 5,500 RPM or more even when the Mac is idle.";
+"Now: %@ → %@ RPM." = "Now: %@ → %@ RPM.";
+"Editable profile. Choose a mode for each fan; a sensor-based fan follows its own curve (drag the points or use the rows below). Then Save or Apply." = "Editable profile. Choose a mode for each fan; a sensor-based fan follows its own curve (drag the points or use the rows below). Then Save or Apply.";
+"Fix the fan curve before saving." = "Fix the fan curve before saving.";
+"%lld points" = "%lld points";
+"Use Preset" = "Use Preset";
+"Quiet" = "Quiet";
+"Balanced" = "Balanced";
+"Full Speed" = "Full Speed";
+"Add Point" = "Add Point";
+"Remove Point" = "Remove Point";
+"now" = "now";
+"Now: %@ %@ → %@ RPM on this curve" = "Now: %@ %@ → %@ RPM on this curve";
+"(fan at %@ RPM)" = "(fan at %@ RPM)";
+"%@ is not available: the fan would run at maximum speed." = "%@ is not available: the fan would run at maximum speed.";
+"A curve needs at least two points." = "A curve needs at least two points.";
+"Every point needs a temperature between 0 and 130 °C." = "Every point needs a temperature between 0 and 130 °C.";
+"Two points have the same temperature." = "Two points have the same temperature.";
+"A point is outside this fan's range (%@–%@ RPM)." = "A point is outside this fan's range (%@–%@ RPM).";
+"The speed falls from %@ to %@ RPM between %@ and %@: the fan slows down as it gets hotter." = "The speed falls from %@ to %@ RPM between %@ and %@: the fan slows down as it gets hotter.";
+"Full speed only at %@, at or above the emergency threshold (%@)." = "Full speed only at %@, at or above the emergency threshold (%@).";
+"The curve never reaches this fan's maximum (%@ RPM). Only the emergency override (%@) runs it at full speed." = "The curve never reaches this fan's maximum (%@ RPM). Only the emergency override (%@) runs it at full speed.";
+"History" = "History";
+"Time Window" = "Time Window";
+"%lld min" = "%lld min";
+"highest %@, lowest %@" = "highest %@, lowest %@";
+"Temperature history" = "Temperature history";
+"Collecting temperatures…" = "Collecting temperatures…";
+"Turn on Fan Control in Settings to read temperatures." = "Turn on Fan Control in Settings to read temperatures.";
+"The history is kept while DynamicNotch runs (about 30 minutes) and is not saved." = "The history is kept while DynamicNotch runs (about 30 minutes) and is not saved.";
+"Show Highest and Lowest" = "Show Highest and Lowest";
+"Show Alert Threshold" = "Show Alert Threshold";
+"The dashed line is the high-temperature alert threshold (%@), set in Settings ▸ Fan Control ▸ General. CPU and GPU values turn orange within 10° below it and red at or above it." = "The dashed line is the high-temperature alert threshold (%@), set in Settings ▸ Fan Control ▸ General. CPU and GPU values turn orange within 10° below it and red at or above it.";
+"CPU, GPU and SSD temperatures are shown by the Temperature widget." = "CPU, GPU and SSD temperatures are shown by the Temperature widget.";

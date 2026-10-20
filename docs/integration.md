@@ -24,12 +24,16 @@ arm64 でない Mac ではアプリが `FanControlError.unsupportedPlatform` で
 |---|---|
 | `FanControlSettingsStorage.swift` | アプリ全体の設定保存層（2026-10-20、sindresorhus/Defaults を置換。保存形式は Defaults 8.2 と同一）: キー名 `SettingKey`、型付きキー `StoredKeys`/`StoredKey<T>`、`SettingsStore`（`SettingsStore[.x]`、`updates(.x)`）、プロパティラッパー `@StoredSetting(.x)` |
 | `FanControlWidgetSettings.swift` | `FanControlWidgetSettings` / `FanControlGeneralSettings`（`SettingsStore` で永続化）、`StoredKeys` のキー、表示用フォーマッタ |
-| `FanControlWidgetSettingsView.swift` | 設定 ▸ ウィジェット ▸ Fan Control（グリッドサイズ、表示ファン/センサー、°C/°F、プロファイル選択・目標 RPM 表示） |
+| `FanControlWidgetSettingsView.swift` | 設定 ▸ ウィジェット ▸ Fan Control（グリッドサイズ、表示ファン、°C/°F、プロファイル一覧・ファンカーブ・目標 RPM 表示。センサー選択は 2026-10-20 に温度ウィジェットへ移ったため削除） |
 | `FanControlSettingsView.swift` | 「Fan Control」設定ペイン（TabView: 一般/プロファイル/センサー＋エラーフッタ）。**全タブ共通の固定サイズ `contentSize` = 740×600 pt**（DynamicNotchApp ではホストが 760×640 の固定フレームで包む）（タブ切替でウィンドウが伸縮しない。伸びうる中身はスクロール） |
 | `FanControlGeneralTabView.swift` | 有効化、更新間隔、自動開始、非表示時停止、スリープ復帰再適用、警告、ヘルパー状態/インストール、自動制御復帰、SMC ダンプ書き出し |
-| `FanControlProfilesTabView.swift` | 固定 7 プロファイル（プリセット 5 = 読取専用でパラメータ表示、カスタム 1/2 = 編集・名前変更・初期設定に戻す）、ファンカーブ表示、適用。作成・削除は無し（kit.md「Profiles」） |
+| `FanControlProfilesTabView.swift` | 固定 7 プロファイル（プリセット 5 = 読取専用でパラメータとカーブを表示、カスタム 1/2 = 編集・名前変更・初期設定に戻す）、ファンカーブ表示、適用。作成・削除は無し（kit.md「Profiles」）。センサー連動のファンは多点カーブ編集（下記） |
+| `FanControlCurveEditorView.swift` | 多点ファンカーブ編集（2026-10-20）: Swift Charts のライブカーブ（PCHIP、制御点、緊急温度の破線、平滑化した制御温度での動作点）、点のドラッグ、10 °C グリッドの点ごとの温度ピッカー＋RPM スライダ／ステッパー、点の追加・削除、「プリセットを使用」（静音／バランス／ブースト／全速）、検証メッセージ（エラーは保存・適用を無効化）。旧「開始温度／最大温度」ステッパーを置換 |
 | `FanControlSensorsTabView.swift` | 主要な温度（CPU / GPU / SSD）＋全センサー表（キー/名前/温度、ソート可） |
-| `FanControlWidgetView.swift` | Nook ウィジェット本体（medium 100pt: ファン・主要温度・プロファイル選択 / doubleWide 250pt: ＋ファンカーブ）。`FanCurveView`・`FanControlKeyTemperaturesView` は設定ペインでも使う |
+| `FanControlWidgetView.swift` | Nook ウィジェット本体（medium 100pt: ファン・7 プロファイルの一覧 / doubleWide 250pt: 一覧＋ファン・選択中プロファイルの詳細とファンカーブ）。選択行はアクセントのチェック＋太字の白文字＋ガラスのカプセル。温度は 2026-10-20 に温度ウィジェットへ移動。`FanCurveView`・`FanControlKeyTemperaturesView`・`FanControlWidgetPresence` は他でも使う |
+| `FanControlTemperatureWidgetSettings.swift` | 温度ウィジェットの設定 `FanControlTemperatureWidgetSettings`（期間 1/5/15/30 分、既定 5 分、表示系列、最高/最低、警告しきい値線）と `StoredKeys.fanControlTemperatureWidgetSettings` |
+| `FanControlTemperatureWidgetView.swift` | 温度ウィジェット（`NookWidget.temperature`、250 pt）: CPU / GPU / SSD の現在値、期間内の最高・最低、`temperatureHistory` の折れ線（Swift Charts、間隔 25 s 超で途切れる）、高温警告しきい値の赤破線。色規則は Fan Control ウィジェットと同じ |
+| `FanControlTemperatureWidgetSettingsView.swift` | 設定 ▸ ウィジェット ▸ 温度（期間、表示系列、°C/°F（Fan Control と共有）、最高/最低・しきい値線） |
 | `FanControlLiveActivity.swift` | `FanControlAlertView`（Live Activity 表示）と `FanControlAlertCoordinator`（警告状態・一時展開通知・一般設定 `pollingInterval` / `reapplyProfileAfterWake`、および「いずれかの警告が ON」を `keepAlertsWhilePaused` として `FanControlManager` へ同期） |
 
 ## 1. パッケージの追加とリンク
@@ -153,7 +157,7 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
 
 ## 5. UI ファイルとパッチ
 
-1. `FanControl/DynamicNotchIntegration/*.swift`（9 ファイル。`FanControlSettingsStorage.swift` はアプリ全体の設定保存層）を DynamicNotch アプリターゲットに追加する。
+1. `FanControl/DynamicNotchIntegration/*.swift`（13 ファイル。`FanControlSettingsStorage.swift` はアプリ全体の設定保存層）を DynamicNotch アプリターゲットに追加する。
    各ファイルは `#if os(macOS)` で囲まれ、`SwiftUI` / `FanControlCore` / `FanControlKit` を import する（2026-10-20 まで `Defaults` も）
    （sindresorhus/Settings には依存しない。設定画面は標準の `Form` + `.formStyle(.grouped)`）。
    ホストの設定ウィンドウは SwiftUI 標準の `Settings` シーン + `TabView` を前提とし、Fan Control はそのタブの 1 つとして追加する（PATCHES.md (d)）。
@@ -163,7 +167,7 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
    そのためドロップイン 2 ファイルと PATCHES.md (d) に `import enum Settings.Settings`（Swift 6 モードでは `@preconcurrency import Settings` も）を
    併記していた。標準の `Settings` シーンへの移行でパッケージごと撤去したので、この回避策は不要になった。
 2. `PATCHES.md` の (a)〜(g) を既存ソースに適用する:
-   (a) `NookWidget.fanControl`（tag 8）、(b) Nook グリッドの View 振り分け、(c) `WidgetsSettingsTabView`、
+   (a) `NookWidget.fanControl`（tag 8）と `NookWidget.temperature`（tag 11、2026-10-20）、(b) Nook グリッドの View 振り分け、(c) `WidgetsSettingsTabView`、
    (d) 設定ウィンドウの Fan Control タブ、(e) `applicationDidFinishLaunching`、(f) `LiveActivity.fanAlert` と `LiveActivityView`、
    (g) 終了処理（パッチ不要。`FanControlManager` が `NSApplication.willTerminateNotification` で自動制御に戻す）。
 3. 文字列: `Localizable/en.strings` と `ja.strings` の項目を、プロジェクトの `en.lproj/Localizable.strings` /
@@ -280,6 +284,14 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       センサー タブ先頭に主要な温度。General / プロファイル / センサーの切替でウィンドウサイズが変わらない（ペイン 740×600 pt、ホスト固定フレーム 760×640 で、ウィンドウは常に 760×728 px）。旧形式のストア（スモークアプリの「Custom」）は
       移行で破棄され、アクティブは自動になった。スクリーンショット: `DynamicNotchApp/.derivedData/shots/profiles/`（`dw/`、`s-*/`、`preview/`＝DEBUG `fanpreview:` フック）
 - [ ] 同上の未確認: 実ノッチでの 2x1 表示（オフスクリーン描画のみ）、手動プロファイル適用中の実カーブと動作点、日本語表示、°F 表示。
+- [x] **UI 改修（2026-10-20、読取のみ・適用は押していない。開発用インスタンス `…dev-fc2` のオフスクリーン描画）**: ウィジェットの一覧は 7 件（「最大」を含む）で、
+      選択行はアクセントのチェック＋太字の白文字＋ガラスのカプセル、他の行は淡色。2x1（必要高さ 194 pt）・ダブルワイド（175 pt）とも 202 pt のセルに収まる（DEBUG `notchgeom`）。
+      ウィジェットから CPU / GPU / SSD を外した（ヘッダーの高温表示は維持）。カーブはエンジンの `FanProfile.curve(for:)`（ブーストは 5 点の PCHIP）、目標は
+      `FanControlEngine.targetRPM(for: profile…)`、動作点は `controlTemperature(for:)`。スクリーンショット `/tmp/dn-FC2-shots/`（BUILD-LOG 参照）。
+- [ ] **温度ウィジェット**（`NookWidget.temperature`、2026-10-20）: Nook に追加すると CPU / GPU / SSD の現在値・期間内の最高/最低・履歴グラフが出る。期間チップ
+      1 / 5 / 15 / 30 分で表示範囲が変わり、設定に保存される。高温警告しきい値（一般タブ）が赤破線で出て、しきい値変更に追随する。CPU/GPU が しきい値 −10 °C 以上で
+      オレンジ、以上で赤。スリープ・Nook 非表示中（ポーリング停止）の区間は線が途切れる。オフスクリーン描画では合成履歴（スパイク・欠損あり）とライブ履歴を確認済み、
+      実ノッチ・日本語・°F は未確認。
 - [ ] ファンレス機 / SMC 不可環境: 該当機なし。
 - [ ] Nook を閉じるとポーリングが止まる: 未計測。
 - [ ] 「SMC ダンプを書き出す…」: 未実施（保存パネル操作が必要）。
@@ -332,7 +344,10 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       ブーストはアイドル（`agg:cpu` ≈ 72–78 °C）でも ≈ 5500–6100 RPM になる（仕様）。
       プリセットは `defaultMode` で定義されるため、UI は `FanProfile.resolved(for:)` を渡して適用する（`FanControlProfiles.apply`）。セッションが開くこと。
 - [ ] カスタム 1/2 を編集・保存・名前変更・「初期設定に戻す」→ 適用。アクティブなスロットを保存すると次のポーリングで反映される。
-- [ ] カスタムスロットで「固定」スライダ / 「センサー連動」（センサー・開始/最大温度）を設定して保存 → 適用 → 期待通りの回転数。（2026-10-20 HelperSmokeApp: `agg:cpu` 45→75 °C を全ファンに適用 → 75 °C 超で 6800、74.35 °C で 6702 と線形カーブどおり。UI 経由は未実施。`verification/first-write-2026-10-20.md`）
+- [ ] カスタムスロットで「固定」スライダ / 「センサー連動」（センサー＋多点カーブ。2026-10-20 に開始/最大温度ステッパーをカーブ編集へ置換）を設定して保存 → 適用 → 期待通りの回転数。
+      カーブ編集: 点のドラッグ・行のスライダ／ステッパー・点の追加／削除・「プリセットを使用」でグラフが即座に変わり、動作点（「現在: CPU（最大）72°C → … RPM」）が
+      カーブ上に出る。温度ピッカーは 10 °C グリッド（30〜100 °C）の空き温度のみ。回転数が下がる区間・最大に届かないカーブ・緊急しきい値以上でしか全速にならないカーブに警告、
+      エラー（2 点未満・同温度・範囲外）では保存／適用が無効。保存後に再起動しても点が残る（`ProfileStore` の `curves`）。オフスクリーン描画のみ確認、操作は未確認。（2026-10-20 HelperSmokeApp: `agg:cpu` 45→75 °C を全ファンに適用 → 75 °C 超で 6800、74.35 °C で 6702 と線形カーブどおり。UI 経由は未実施。`verification/first-write-2026-10-20.md`）
 - [ ] プリセットは編集・名前変更できず、どのプロファイルも削除できない（作成も無い）。
 - [ ] アプリ再起動後も保存したプロファイルとアクティブ選択が残る。
 - [ ] 「自動制御に戻す」でファンが SMC 制御に戻る。機能を OFF にしても戻る。アプリ終了時（⌘Q）も戻る。

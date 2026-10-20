@@ -72,6 +72,8 @@ enum SettingKey {
     static let fanControlWidgetSettings = "fanControlWidgetSettings"
     static let fanControlGeneralSettings = "fanControlGeneralSettings"
     static let fanControlThresholdSettings = "fanControlThresholdSettings"
+    // Temperature widget (FanControlTemperatureWidgetSettings.swift, 2026-10-20)
+    static let fanControlTemperatureWidgetSettings = "fanControlTemperatureWidgetSettings"
 }
 
 // MARK: - Value encoding

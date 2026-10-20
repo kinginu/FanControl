@@ -77,6 +77,33 @@ extension FanControlWidgetSettings: Preferences, WidgetPrefs {
 
 `FanControlWidgetSettings.GridSizeChoice` の rawValue（medium = 2, doubleWide = 5）は `NookGridSizeType` と一致させてある。
 
+### (a-2) ウィジェット種別 `temperature` を追加（tag 11、2026-10-20）
+
+CPU / GPU / SSD の温度は Fan Control ウィジェットから独立した「温度」ウィジェットに移した（`FanControlTemperatureWidgetView.swift`）。
+`fanControl` と同様に末尾へ追加する（DynamicNotchApp では `#if canImport(FanControlKit)` で囲んでいる）:
+
+```swift
+    case temperature           // tag 11
+
+    // icon:         case .temperature: return "thermometer.medium"
+    // name:         case .temperature: return "Temperature"     // Localizable.strings にキーあり（「温度」）
+    // gridSizeType: case .temperature: return .doubleWide        // 常に 5 セル = 250 pt
+    // prefs:        case .temperature: return SettingsStore[.fanControlTemperatureWidgetSettings]
+    // rawValue:     case .temperature: return "temperature"   /  init?(rawValue:): case "temperature": self = .temperature
+```
+
+```swift
+extension FanControlTemperatureWidgetSettings: Preferences, WidgetPrefs {
+    init() { self.init(historyWindow: .fiveMinutes) }
+    var gridSizeType: NookWidget.NookGridSizeType { .doubleWide }
+}
+```
+
+設定キーは `SettingKey.fanControlTemperatureWidgetSettings`（= `"fanControlTemperatureWidgetSettings"`、`FanControlSettingsStorage.swift`）、
+型付きキー `StoredKeys.fanControlTemperatureWidgetSettings` は `FanControlTemperatureWidgetSettings.swift` で宣言済み。°C/°F は
+Fan Control ウィジェットの `temperatureUnit` を共用する。ウィジェットの表示は Fan Control ウィジェットと同じく `FanControlWidgetPresence`
+（監視の開始・一時停止解除）に数えられる。
+
 `Preferences` が `init()` を要求する場合（`DynamicNotchApp/` の `Preferences` はそう）、`FanControlWidgetSettings` の
 全引数既定値付き `init(gridSize:…)` ではその要件を満たさないので、同じ拡張に `init() { self.init(gridSize: .medium) }` を足す
 （2026-10-20、`DynamicNotchApp/Sources/NookWidget.swift` で実施）。
@@ -90,10 +117,15 @@ switch を検索すること）。`DynamicNotchApp/` では振り分けが無か
 ```swift
 switch widget {
 // …
-case .timer:      TimerWidgetView()
-case .fanControl: FanControlWidgetView()
+case .timer:       TimerWidgetView()
+case .fanControl:  FanControlWidgetView()
+case .temperature: FanControlTemperatureWidgetView()   // (a-2)
 }
 ```
+
+グリッドの幅を自前で決めている場合（DynamicNotchApp  `NookWidgetLayout.cells(of:)`）は `case .temperature: return 5`（250 pt）。
+どちらのウィジェットも 202 pt のセル（DynamicNotchApp  `NookWidgetLayout.cellHeight`）に収まる高さで作ってある（2026-10-20 計測: Fan Control 2x1 194 pt /
+ダブルワイド 175 pt、温度 93 pt + 伸縮するグラフ）。
 
 `RootView` が各ウィジェット設定を `.environment(\.xxxWidgetSettings, …)` で配っているが、Fan Control の View は
 `@StoredSetting(.fanControlWidgetSettings)` を直接読むので environment キーの追加は不要。
@@ -135,6 +167,8 @@ settings: { widget in
         TimerWidgetSettingsView()
     case .fanControl:
         FanControlWidgetSettingsView()
+    case .temperature:
+        FanControlTemperatureWidgetSettingsView()   // (a-2)
     default:
         BlankView()
     }
