@@ -106,6 +106,29 @@ probe（UTC、1 秒間隔。ヘルパーの書込ログは debug レベルで永
 - **要対応（安全性）**: 復帰直後の「Md=1 / Tg=0」を数秒放置するのは避けたい。候補: (1) ヘルパー自身が `NSWorkspace.didWakeNotification`／IOKit の電源通知を監視し、復帰時に即座にセッション中のファンへ最後の目標値を再書込するか `Md`=0 に戻す、(2) アプリ側の 5 秒待ちを撤廃し、復帰通知で即座に再適用する、(3) ポーリングで「Md=1 かつ Tg < Mn」を異常として即再書込する（現状の unsettled 機構の拡張）。
 - **対策（2026-10-20 実装、実機再テスト待ち）**: 候補 (1)〜(3) をすべて実装した。ヘルパー: `Sources/FanControlHelper/PowerObserver.swift`（IOKit 電源通知）＋ `SessionRegistry.prepareForSleep` / `recoverAfterWake`、判断は `Sources/FanControlXPC/PowerTransitionPolicy.swift`（スリープ前に `Md`=0 で返却、復帰時 0/1/3 秒で再適用、記録の無い手動ファンは `Md`=0）。アプリ: `FanControlManager.handleWake`（即座・2 秒・5 秒で再適用）と `Sources/FanControlKit/UnsettledFanDetector.swift`（ポーリングで「手動かつ Tg < Mn」等を検出）。手順と期待パターンは `docs/integration.md` §6 Phase 5、ログは `docs/helper.md` §5「スリープ／復帰」。
 
+## テスト 4 再テスト: スリープ／復帰の安全策（2026-10-20 11:22–11:26）
+
+ヘルパー（`PowerObserver` + `PowerTransitionPolicy`）とアプリ（復帰即再適用 + `UnsettledFanDetector`）の対策入りビルド（アプリ cdhash `f199ad2c…`）。Fan 1 を固定 3000 RPM にしてから蓋を閉じ、211 秒スリープ（11:22:44 → 11:26:15、probe の空白 209 秒）。
+
+| 時刻 | 事象 |
+|---|---|
+| 11:22:24 | app: `System will sleep; poll writes suspended` |
+| 02:22:26Z | probe: Fan 1 が manual(3000) → **automatic**（ヘルパーがスリープ前に `Md`=0 で SMC に返した） |
+| 11:26:15.175 | app: `Woke with a session open: re-applying the active profile at 0.0s, 2.0s, 5.0s` |
+| 11:26:15.205 | helper: `Power: system has powered on; wake recovery at 0.0s, 1.0s, 3.0s` |
+| 02:26:14Z | probe（復帰後最初の 1 サンプル）: **両ファン manual(0)**。helper の観測は `F0 Md=3 Tg=0, F1 Md=3 Tg=0` |
+| 11:26:15.772 | app: `Unsettled fan(s) detected, rewriting: F0 manual=true Tg=0 applied=manual(rpm: 3000), F1 manual=true Tg=0 applied=automatic` |
+| 11:26:16.009 | helper: `wake recovery 1/3: … wrote F1Md=0, F0Tg=3000` |
+| 11:26:17.027 | helper: `wake recovery 2/3: observed F0 Md=0 Tg=0, F1 Md=0 Tg=0; wrote F0Md=1, F0Tg=3000` |
+| 02:26:16Z | probe: F1 manual(3000) / F2 automatic。current は 1697（+3 s）→ 2873 → 3003（+6 s） |
+| 11:26:19.462 | helper: `wake recovery 3/3: fans already match (F0 Md=1 Tg=3000, F1 Md=0 Tg=0)` |
+
+所見:
+
+- 復帰後に `manual(0)` が出たのは **1 サンプルのみ**（合格基準は 2 連続で不合格）。約 2 秒でプロファイルが復元され、約 6 秒で回転数が追随した。
+- **新事実**: 復帰直後の SMC は、スリープ前に `Md`=0 で返していたにもかかわらず両ファンを `F<n>Md` = **3**（1 でも 0 でもない）/ `Tg`=0 で起こし、1〜2 秒後に自ら `Md`=0 に戻す。つまり復帰直後の「手動・目標 0」は SMC 側の過渡状態で、こちらの書込由来ではない。`PowerTransitionPolicy` は非 0 の `Md` を手動扱いするため、1/3 で `Md`=3 のまま `Tg` を書き（効かなかった）、2/3 で `Md`=0 を観測して `Md`=1 → `Tg` を書き直している。想定どおりリトライで吸収できた。
+- 対策前（テスト 4）は再適用まで約 5 秒だったものが約 2 秒に短縮され、ヘルパー単独でも（アプリが応答しなくても）復元される。
+
 ## 未確認のまま残ること
 
 - `Md`=1 かつ `Tg`=0（Mn 未満）の挙動（ヘルパーが範囲外として拒否するため通常は起きない）
