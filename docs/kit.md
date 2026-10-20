@@ -9,8 +9,9 @@ Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (intern
 | File | Contents |
 |---|---|
 | `FanControlManager.swift` | `@Observable` singleton `FanControlManager.shared` (design doc §3.1) |
-| `HelperInstaller.swift` | `SMAppService.daemon(plistName:)` wrapper, `HelperInstallStatus` |
-| `HelperClient.swift` | async `NSXPCConnection` client (`SMCWriter`), `HelperConnectionState` |
+| `HelperInstaller.swift` | `SMAppService.daemon(plistName:)` wrapper aware of the manual installation, `HelperInstallStatus` |
+| `HelperClient.swift` | async `NSXPCConnection` client (`SMCWriter`), `HelperConnectionState`, helper requirement selection |
+| `ManualHelperSigning.swift` | own Team ID lookup and cdhash of the root-owned manually installed helper (manual-install mode) |
 | `FanWriteStrategy.swift` | pure per-platform write sequences (unit-tested on Linux) |
 | `ApplyGenerationGate.swift` | pure drop rule for stale poll write batches (unit-tested on Linux) |
 | `FanControlPlatform.swift` | `isAppleSilicon` (`sysctl hw.optional.arm64`) and `defaultSafetyPolicy` |
@@ -227,7 +228,7 @@ the DynamicNotch drop-in UI this is `FanControlAlertCoordinator.syncManagerSetti
 | `reapplyProfileAfterWake` | `true` | `true`: 5 s wake re-apply; `false`: close an open session on wake |
 | `keepAlertsWhilePaused` | `true` | keep a slow poll while paused without a session (the drop-in coordinator mirrors `highTemperatureAlertEnabled \|\| fanAnomalyAlertEnabled`) |
 | `safetyPolicy` | `FanControlPlatform.defaultSafetyPolicy` | thresholds; taken per poll. An app that persists its own policy should start from `SafetyPolicy.default(appleSilicon: FanControlPlatform.isAppleSilicon)` |
-| `clientTeamID` | `FanControlHelperConstants.teamIdentifierPlaceholder` | Team ID in the helper code-signing requirement checked on every new helper connection (forwards to `HelperClient.clientTeamID`); set before the first helper call unless the constant was replaced |
+| `clientTeamID` | `FanControlHelperConstants.teamIdentifierPlaceholder` | Team ID in the helper code-signing requirement checked on every new helper connection (forwards to `HelperClient.clientTeamID`); set before the first helper call unless the constant was replaced; ignored in manual-install mode (below) |
 
 `HelperClient.callTimeout` (default 8 s, `<= 0` disables) is set on the `HelperClient` passed to
 `FanControlManager.init` (the shared instance uses the default).
@@ -239,6 +240,43 @@ the DynamicNotch drop-in UI this is `FanControlAlertCoordinator.syncManagerSetti
 `FanControlHelperConstants.helperCodeSigningRequirement(teamID:)` =
 `anchor apple generic and identifier "com.example.dynamicnotch.DynamicNotch.fanfi" and certificate leaf[subject.OU] = "<teamID>"`).
 Replacing the constant makes the runtime assignment unnecessary.
+
+## Helper requirement and install status (manual-install / personal mode)
+
+Ad-hoc signed builds without a Team ID cannot use `SMAppService` + the `anchor apple generic … leaf[subject.OU]`
+requirements, so the helper can instead be installed by `sudo Support/manual-install/install.sh <App.app>`
+(docs/helper.md §6). The SMAppService path is unchanged for Team-ID builds.
+
+**`HelperClient` requirement selection** (per new connection,
+`FanControlHelperConstants.helperRequirementMode(appTeamID:manualInstallDetected:)`):
+
+| Condition | Requirement on the helper |
+|---|---|
+| the app's own signature has a Team ID (`SecCodeCopySelf` → `SecCodeCopySigningInformation` → `kSecCodeInfoTeamIdentifier`) **and** no manual-install file exists | `helperCodeSigningRequirement(teamID: clientTeamID)` (as before) |
+| the app has no Team ID (ad-hoc) **or** a manual-install file exists | `manualModeHelperRequirement(cdhash:)` = `identifier "com.example.dynamicnotch.DynamicNotch.fanfi" and cdhash H"<cdhash>"` |
+
+In manual mode the cdhash is read at connect time from `/Library/PrivilegedHelperTools/com.example.dynamicnotch.DynamicNotch.fanfi`
+(`SecStaticCodeCreateWithPath` + `SecStaticCodeCheckValidity` + `kSecCodeInfoUnique`), after checking that the file and its
+directory are owned by root and not group/other-writable. Only root can have put that file there, so it is an acceptable trust
+anchor (root could subvert the app anyway); the check guards against a different binary answering on the Mach name. If the
+cdhash cannot be read, the call throws `.helperConnectionFailed(…)` without connecting. Transport errors on a manual-mode
+connection get a hint appended ("re-run sudo install.sh <app>"): the usual cause is a rebuilt app whose new cdhash the helper
+does not accept. `clientTeamID` is ignored in manual mode. `HelperClient.currentRequirementMode()`,
+`HelperInstaller.installedManualHelperCDHash()` and `HelperInstaller.appTeamIdentifier` expose the decision for diagnostics
+(the smoke app shows them).
+
+**`HelperInstaller`** checks the manual files first (`init(plistName:fileExists:)`; the probe is injectable for tests):
+
+| `/Library/LaunchDaemons/<label>.plist` | `/Library/PrivilegedHelperTools/<label>` | `status()` | `register()` | `unregister()` |
+|---|---|---|---|---|
+| present | present | `.installedManually` | no-op, returns `.installedManually` | throws `.helperConnectionFailed` ("use sudo uninstall.sh") |
+| exactly one present | | `.unknown("manual installation incomplete (… is missing); re-run …")` | throws | throws |
+| absent | absent | `SMAppService` status (as before) | `SMAppService.register()` | `SMAppService.unregister()` |
+
+`FanControlManager` treats `.installedManually` like `.enabled`: `openSMCSession()` does not call `installHelper()`, and
+`installHelper()` returns. A protocol-version mismatch with a manually installed helper throws
+`.helperRejected(code: -1, …"Re-run sudo install.sh…")` instead of unregistering/re-registering. UIs must handle the new case
+(`FanControlGeneralTabView`: 「手動インストール済み（個人利用モード）」 plus a hint naming `install.sh` / `uninstall.sh`).
 
 ## Errors
 

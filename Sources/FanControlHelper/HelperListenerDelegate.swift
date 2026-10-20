@@ -6,12 +6,19 @@ import FanControlXPC
 final class HelperListenerDelegate: NSObject, NSXPCListenerDelegate {
     private let connectionCounterLock = NSLock()
     private var nextConnectionID: UInt64 = 1
+    /// `HelperConfiguration.resolveClientRequirement()` result: the Team-ID requirement,
+    /// or the cdhash-pinned `FANCONTROL_CLIENT_REQUIREMENT` override (manual install).
+    private let clientRequirement: String
+
+    init(clientRequirement: String) {
+        self.clientRequirement = clientRequirement
+        super.init()
+    }
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection newConnection: NSXPCConnection) -> Bool {
         // macOS 13+: messages from a client that does not satisfy the requirement are
         // rejected and the connection is invalidated by the system.
-        let requirement = FanControlHelperConstants.clientCodeSigningRequirement(teamID: HelperConfiguration.teamID)
-        newConnection.setCodeSigningRequirement(requirement)
+        newConnection.setCodeSigningRequirement(clientRequirement)
 
         let owner = SessionOwner(pid: newConnection.processIdentifier, connectionID: makeConnectionID())
         newConnection.exportedInterface = makeHelperInterface()

@@ -55,6 +55,7 @@
 "Connection" = "Connection";
 "Not installed" = "Not installed";
 "Installed" = "Installed";
+"Installed manually (personal mode)" = "Installed manually (personal mode)";
 "Waiting for approval" = "Waiting for approval";
 "Missing from app bundle" = "Missing from app bundle";
 "Unknown (%@)" = "Unknown (%@)";
@@ -68,6 +69,7 @@
 "Check Again" = "Check Again";
 "Reading temperatures works without the helper. Changing fan speeds requires installing it (administrator approval is needed)." = "Reading temperatures works without the helper. Changing fan speeds requires installing it (administrator approval is needed).";
 "Install Helper…" = "Install Helper…";
+"The helper was installed manually with install.sh. After updating DynamicNotch, run sudo install.sh again; remove it with sudo uninstall.sh (FanControl/Support/manual-install/)." = "The helper was installed manually with install.sh. After updating DynamicNotch, run sudo install.sh again; remove it with sudo uninstall.sh (FanControl/Support/manual-install/).";
 "Maintenance" = "Maintenance";
 "Restore Automatic Control" = "Restore Automatic Control";
 "Export SMC Dump…" = "Export SMC Dump…";

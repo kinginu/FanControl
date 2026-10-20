@@ -260,3 +260,16 @@ TEAMID0000
 - 実 ID（Apple Development / Developer ID）での署名、`TeamIdentifier`、`anchor apple generic` 要件の充足
 - ヘルパーの entitlements（`com.apple.application-identifier` 注入）の扱い
 - `SMAppService.register()` → 承認 → `launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi`、XPC 接続（integration.md §6 Phase 2/3）
+
+## 追記: 起動確認と手動インストールモード（2026-10-20）
+
+- 上記の Debug ビルド（アドホック + Hardened Runtime）は **起動できなかった**:
+  `dyld: Library not loaded: @rpath/FanControlSmoke.debug.dylib … not valid for use in process: mapping process and mapped file (non-platform) have different Team IDs`。
+  Debug の `ENABLE_DEBUG_DYLIB`（スタブ + `.debug.dylib` 分割）とライブラリ検証の組み合わせで、アドホック署名には Team ID が無いため。
+  `project.yml` に `ENABLE_DEBUG_DYLIB: NO` を追加 → `Contents/MacOS/` は `FanControlSmoke` と `FanControlHelper` のみになり、起動することを確認（数秒起動して終了。ボタンは押していない。読取のみ）。
+  アドホック署名で DynamicNotch 本体を動かす場合も同じ設定が必要（integration.md §4「代替: 手動インストール」）。
+- Team ID が無いため、アドホック署名のまま使う手動インストール（個人利用）モードを追加した（helper.md §6）。
+  `Support/manual-install/install.sh --dry-run` をこのビルドに対して実行し、署名検証・identifier・cdhash 取得（`CDHash=` 1 行）・plist 生成・コマンド列が期待どおりであることを確認。
+  実インストール（root）・ヘルパー起動・XPC 接続は未実施（手順は `Tools/HelperSmokeApp/README.md`「手動インストールモードでのテスト」）。
+- アドホック署名 + Hardened Runtime + `com.apple.application-identifier` entitlement を持つ小さな実行ファイルは、ユーザープロセスとしては AMFI に拒否されず起動した。
+  launchd から root で起動したときの挙動は未確認。

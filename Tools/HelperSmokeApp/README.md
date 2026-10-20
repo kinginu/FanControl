@@ -5,7 +5,7 @@
 
 | ターゲット | 種類 | 内容 |
 |---|---|---|
-| `FanControlSmoke` | macOS アプリ（`LSUIElement`、メニューバー） | ローカルパッケージ `../..` の `FanControlCore` / `FanControlKit` をリンク。ウィンドウに `HelperInstaller.status()` と `FanControlManager` のファン・センサー値（読取のみ）を表示。ボタン: 「Helper version」（XPC の `version` のみ、書込なし）、「Install helper」（`SMAppService.register`）、「Apply first profile」/「Restore automatic」（SMC 書込）。実 API につながっている（**ビルド確認用。今回は押していない**） |
+| `FanControlSmoke` | macOS アプリ（`LSUIElement`、メニューバー） | ローカルパッケージ `../..` の `FanControlCore` / `FanControlKit` をリンク。ウィンドウに `HelperInstaller.status()`（手動インストール時は `installedManually`）、ヘルパー要件のモード（Team ID / manual (cdhash)、アプリの Team ID、固定するヘルパー cdhash）と `FanControlManager` のファン・センサー値（読取のみ）を表示。ボタン: 「Helper version」（XPC の `version` のみ、書込なし）、「Install helper」（`SMAppService.register`。手動インストール時は何もしない）、「Fan 1 → 3000 RPM…」（確認ダイアログの後に SMC 書込）、「Apply first profile」（Automatic）/「Restore automatic」。実 API につながっている |
 | `FanControlHelper` | Command Line Tool | `../../Sources/FanControlHelper/*.swift` を直接コンパイルし、`FanControlCore` / `FanControlSMC` / `FanControlXPC` をリンク。`-sectcreate` で `../../Support/Helper-Info.plist` を埋め込む |
 
 アプリは Copy Files でヘルパーを `Contents/MacOS/`、`../../Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` を
@@ -39,6 +39,10 @@ codesign --verify --deep --strict -v "$APP"
 既定はアドホック署名。Xcode はアドホック署名では Hardened Runtime を付けないため、`project.yml` で
 `OTHER_CODE_SIGN_FLAGS = $(inherited) --options=runtime` を指定している（実 ID の署名でも無害）。
 生成物（`*.xcodeproj`、`.derivedData/`、`.build/`）は `.gitignore` 済み。
+
+`ENABLE_DEBUG_DYLIB = NO` も指定している。既定の Debug ビルドはアプリをスタブ + `FanControlSmoke.debug.dylib`（SwiftUI プレビュー用）に分けるが、
+アドホック署名 + Hardened Runtime ではライブラリ検証がこの dylib を拒否し（`mapping process and mapped file (non-platform) have different Team IDs`）、
+アプリが起動しなかった（2026-10-20 確認。NO にした後は起動する）。
 
 ## Team ID が決まったら
 
@@ -74,3 +78,58 @@ codesign --verify --deep --strict -v "$APP"
    署名要件を満たさない場合（Team ID 不一致・アドホック署名）は接続が無効化されエラーになる。
 6. 後片付け: アプリから `HelperInstaller().unregister()`（UI には無い）、またはシステム設定で項目をオフにしてアプリを削除。
    `launchctl print` でサービスが消えたことを確認する。DynamicNotch 本体と bundle ID・Mach サービス名が同じなので、本体の検証前に必ず登録を解除する。
+
+## 手動インストールモードでのテスト（個人利用、Team ID なし。docs/helper.md §6）
+
+アドホック署名のままヘルパーを LaunchDaemon として手動で入れ、XPC 接続（Phase 2/3 相当）→ 初回書込（Phase 4）まで確かめる手順。
+**root が必要な操作と SMC 書込はユーザー自身が、各ステップを確認しながら実行する。** スモークアプリと DynamicNotch 本体は bundle ID・Mach サービス名が同じなので、
+本体を入れる前に `sudo uninstall.sh` で必ず外す。SMAppService 方式で登録済みなら先に登録を解除する（`install.sh` は検出すると中止する）。
+
+1. **ビルド**（上記「生成とビルド」と同じ。アドホック署名）:
+   ```sh
+   cd FanControl/Tools/HelperSmokeApp
+   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+   xcodegen generate
+   xcodebuild -project FanControlSmoke.xcodeproj -scheme FanControlSmoke -configuration Debug \
+     -derivedDataPath .derivedData build CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES
+   APP="$PWD/.derivedData/Build/Products/Debug/FanControlSmoke.app"
+   ```
+   アプリを別の場所（`/Applications` など）にコピーして使う場合は、コピー後のパスを `install.sh` に渡す（cdhash はコピーしても変わらないが、確認対象を一致させるため）。
+2. **予行**（root 不要・何も変更しない）:
+   ```sh
+   ../../Support/manual-install/install.sh --dry-run "$APP"
+   ```
+   アプリ／ヘルパーの identifier・cdhash、生成される plist（`Program` = `/Library/PrivilegedHelperTools/com.example.dynamicnotch.DynamicNotch.fanfi`、
+   `FANCONTROL_CLIENT_REQUIREMENT` = `identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<アプリの cdhash>"`）と実行予定のコマンドを確認する。
+   `com.apple.application-identifier` の警告は想定どおり（helper.md §6「注意」）。
+3. **インストール**（ユーザーが実行）:
+   ```sh
+   sudo ../../Support/manual-install/install.sh "$APP"
+   ../../Support/manual-install/status.sh "$APP"     # root 不要。"the app's cdhash matches the pinned requirement"
+   ```
+4. **監視を用意**（別ターミナル）:
+   ```sh
+   log stream --level debug --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'
+   ```
+5. **起動**: `open "$APP"` → メニューバーの扇アイコン ▸ Show Window。表示を確認:
+   - `HelperInstaller.status(): installedManually`
+   - `Helper requirement mode: manual (cdhash) · app team none (ad-hoc) · helper cdhash <40 桁>`（`status.sh` の installed helper cdhash と一致）
+6. **接続確認（書込なし）**: 「Helper version」→ `helper protocol 1, build 1.0 (1)`。ログに
+   `Client requirement mode: MANUAL INSTALL (personal use), client cdhash pinned to <アプリの cdhash>` と `Accepted connection …`。
+   `sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi` で `state = running`、`program = /Library/PrivilegedHelperTools/…`。
+   失敗する場合: ヘルパーが起動しない → `log show --last 5m --predicate 'process == "amfid" OR sender == "AppleMobileFileIntegrity"'` と
+   `launchctl print` の `last exit code`（78 なら `FANCONTROL_CLIENT_REQUIREMENT` が不正）。接続が無効化される → `status.sh "$APP"` で cdhash の一致を確認し、
+   違えば `sudo install.sh "$APP"` を再実行。
+7. （任意）**否定系**: アプリを再ビルド（ソースを 1 行変えるなど）して `install.sh` を再実行せずに「Helper version」→ エラー（`install.sh` 再実行の案内付き）。
+   再実行後は通る。
+8. **初回書込（Phase 4）**: `../../docs/verification/pre-write-review-2026-10-20.md` の「初回書込の手順」に従う。前提の「同じ Team ID で署名し登録・承認」は
+   ここでは「手順 3〜6 が済んでいること」に読み替える。**各ステップでユーザーが明示的に確認してから進む**:
+   1. 別ターミナルで `cd FanControl && swift run fanfi-probe --watch 1`（`F0Md`=0, `F0Tg`=0, `F0Ac`=0 を記録）と上記ログ。
+   2. 逃げ道を先に確認: 「Restore automatic」が押せること、`sudo launchctl kill SIGTERM system/com.example.dynamicnotch.DynamicNotch.fanfi` でヘルパーを止められること。
+      最後の手段は再起動。
+   3. 「Fan 1 → 3000 RPM…」→ 確認ダイアログで「Write F0Md = 1, F0Tg = 3000」（Fan 1 だけ固定 3000 RPM、Fan 2 は自動）。
+      期待: ログに `F0Md` → `F0Tg`、`fanfi-probe` で `F0Md`=1・`F0Tg`=3000・`F0Ac` が数秒で 3000 付近、`F1Md`=0 のまま。
+      **中止条件**（`F0Tg` が 0 のまま、`F0Ac` が 10 秒以上 0、ログに `badRequest` / `smcError` など）→ すぐ「Restore automatic」。
+   4. 「Restore automatic」→ `F0Md`=0、`F0Ac` がアイドルなら数十秒で 0 へ。ログに `Failed to restore` が無いこと。
+   5. 以降（Mn/Mx、2 ファン、`kill -9` など）は integration.md §6 Phase 4 の順に。結果は `docs/verification/` に保存する。
+9. **後片付け**: アプリを終了 → `sudo ../../Support/manual-install/uninstall.sh` → `status.sh` で 2 ファイルが missing、`launchctl print` でサービスが消えたこと。

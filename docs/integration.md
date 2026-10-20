@@ -118,6 +118,18 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
 証跡と見つかった不一致（launchd plist のファイル名がコードと不一致だったのを修正、ほか）は
 [`verification/helper-bundle-smoke-2026-10-20.md`](verification/helper-bundle-smoke-2026-10-20.md)。
 
+**代替: 手動インストール（個人利用モード、Team ID なし）**: Apple Developer Program が無く Team ID 署名ができない場合は、上記 1〜3 の代わりに
+アプリとヘルパーを **アドホック署名**（`CODE_SIGN_IDENTITY = -`、Hardened Runtime を付けるなら `OTHER_CODE_SIGN_FLAGS = $(inherited) --options=runtime`）でビルドし、
+ヘルパーを `sudo FanControl/Support/manual-install/install.sh <DynamicNotch.app>` で `/Library/PrivilegedHelperTools/` と `/Library/LaunchDaemons/` に手動で入れる
+（helper.md §6）。§1〜§3 のターゲット・Copy Files 構成はそのままでよい（`install.sh` はバンドル内の `Contents/MacOS/FanControlHelper` をコピーする。
+バンドル内の SMAppService 用 plist は使われない）。Team ID の置換（上記 1・2）は不要:
+ヘルパーは LaunchDaemon plist の `FANCONTROL_CLIENT_REQUIREMENT`（アプリの cdhash を固定）でクライアントを検証し、アプリは自分に Team ID が無いこと・
+手動インストールのファイルがあることを検出して、インストール済みヘルパーの cdhash を要件に使う（kit.md「Helper requirement and install status」）。
+- アプリを再ビルドするたびに cdhash が変わるので `sudo install.sh` を再実行する（しないとヘルパーが接続を拒否する）。
+- **Debug ビルドは `ENABLE_DEBUG_DYLIB = NO`**（または Release）にする。既定の Debug はアプリをスタブ + `DynamicNotch.debug.dylib` に分け、
+  アドホック + Hardened Runtime ではライブラリ検証が dylib を拒否して起動しない（2026-10-20 にスモークアプリで確認）。
+- 個人利用専用。配布には Team ID 方式を使う。手動インストールと SMAppService 登録を同時に入れない（Label / Mach サービス名が同じ）。
+
 **App Sandbox:** DynamicNotch は **サンドボックス化してはいけない**（推奨）。どうしてもサンドボックスを有効にする場合は、
 アプリの entitlements に次の 2 つの一時例外が必須（無いとアプリ内での SMC 読み取りとヘルパーへの XPC 接続がどちらも失敗する）:
 
@@ -129,7 +141,7 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
 一時例外は Mac App Store 審査で拒否されうるため、Developer ID 配布（非サンドボックス）を前提とする。
 ヘルパー（`FanControlHelper`）自体は root の launchd デーモンであり、**サンドボックス化しない**（App Sandbox entitlement を付けない）。
 
-安全検査はヘルパーが最終責任を持つ（helper.md §4）: 書込許可リスト（`F<n>Tg` / `F<n>Md` / `FS! ` / `F<n>Mn`）、
+安全検査はヘルパーが最終責任を持つ（helper.md §4）: 書込許可リスト（`F<n>Tg` / `F<n>Md` / `FS! `。`F<n>Mn` は 2026-10-20 のレビューで除外）、
 ペイロード 1〜32 バイトかつ SMC の `dataSize` と一致、`F<n>Tg`/`F<n>Mn` はセッション開始時に読んだハードウェア
 `F<n>Mn`〜`F<n>Mx`（±1 RPM 許容）、`F<n>Md` は 0/1、`FS! ` は `1 << FNum` 未満。アプリ側のポーリング書込は
 目標値の変化が 25 RPM（`FanControlManager.writeThresholdRPM`）以下なら書かない（kit.md）。
@@ -241,6 +253,18 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 - [ ] `.notFound`（plist 配置ミス）では「アプリバンドル内に見つかりません」と案内のみ表示され、インストールボタンは出ない。
 - [ ] `sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi` でサービスが見える。
 - [ ] `log stream --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'` に接続ログ。
+
+**手動インストール（個人利用モード、helper.md §6）の場合**（上の SMAppService の項目の代わり。書込はしない）:
+- [ ] `./install.sh --dry-run <App.app>` が署名検証・アプリ／ヘルパーの cdhash・生成 plist（`Program`、`FANCONTROL_CLIENT_REQUIREMENT`）を表示し、何も変更しない。
+- [ ] `sudo ./install.sh <App.app>` が完了し、`./status.sh <App.app>` で 2 ファイルが root 所有で存在、「the app's cdhash matches the pinned requirement」。
+- [ ] 一般タブのヘルパー状態が「手動インストール済み（個人利用モード）」になり、`install.sh` / `uninstall.sh` の案内が出る（インストールボタンは出ない）。
+- [ ] 接続（書込なしの `version`。スモークアプリなら「Helper version」）→ `helper protocol 1, build 1.0 (1)`。ログに
+      `Client requirement mode: MANUAL INSTALL (personal use), client cdhash pinned to <cdhash>` と `Accepted connection …`。
+- [ ] `sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi` で `path = /Library/LaunchDaemons/…plist`、`program = /Library/PrivilegedHelperTools/…`、
+      environment に `FANCONTROL_CLIENT_REQUIREMENT`。AMFI がヘルパーを拒否していないこと（`com.apple.application-identifier` の件、helper.md §6「注意」）。
+- [ ] 否定系: アプリを再ビルドして `install.sh` を再実行しないまま接続 → 接続が無効化されエラー（案内文に `install.sh` の再実行）。再実行後は接続できる。
+- [ ] 否定系: 別 identifier・別 cdhash のアドホック署名プロセスからの接続は拒否される（`codesign -s - -i com.example.dynamicnotch.DynamicNotch` で署名した別バイナリでも拒否されること）。
+- [ ] 後片付け: `sudo ./uninstall.sh` → `launchctl print` でサービスが消え、状態表示が「未インストール」に戻る。
 
 ### Phase 4: 書き込み・プロファイル
 > **最初の書込の前に** `docs/verification/pre-write-review-2026-10-20.md` の「初回書込の手順」に従う

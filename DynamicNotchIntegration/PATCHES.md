@@ -166,7 +166,8 @@ func applicationDidFinishLaunching(_ notification: Notification) {
         }
     }
     // FanControlHelperConstants.teamIdentifierPlaceholder を実 Team ID に置換していない場合のみ必要
-    // （アプリがヘルパーの署名に要求する Team ID。docs/integration.md §4）:
+    // （アプリがヘルパーの署名に要求する Team ID。docs/integration.md §4。アドホック署名の手動インストール
+    // （個人利用）モードでは使われず、インストール済みヘルパーの cdhash が要件になる。docs/helper.md §6）:
     // FanControlManager.shared.clientTeamID = "<TeamID>"
     let fanSettings = Defaults[.fanControlGeneralSettings]
     if fanSettings.isEnabled && fanSettings.autoStartMonitoring {

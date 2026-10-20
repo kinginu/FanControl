@@ -55,6 +55,7 @@
 "Connection" = "接続";
 "Not installed" = "未インストール";
 "Installed" = "インストール済み";
+"Installed manually (personal mode)" = "手動インストール済み（個人利用モード）";
 "Waiting for approval" = "承認待ち";
 "Missing from app bundle" = "アプリバンドル内に見つかりません";
 "Unknown (%@)" = "不明 (%@)";
@@ -68,6 +69,7 @@
 "Check Again" = "再確認";
 "Reading temperatures works without the helper. Changing fan speeds requires installing it (administrator approval is needed)." = "温度の読み取りはヘルパーなしで動作します。ファンの回転数を変更するにはヘルパーのインストールが必要です（管理者の承認が必要です）。";
 "Install Helper…" = "ヘルパーをインストール…";
+"The helper was installed manually with install.sh. After updating DynamicNotch, run sudo install.sh again; remove it with sudo uninstall.sh (FanControl/Support/manual-install/)." = "ヘルパーは install.sh で手動インストールされています。DynamicNotch を更新したら sudo install.sh を再実行してください。削除は sudo uninstall.sh で行います（FanControl/Support/manual-install/）。";
 "Maintenance" = "メンテナンス";
 "Restore Automatic Control" = "自動制御に戻す";
 "Export SMC Dump…" = "SMC ダンプを書き出す…";

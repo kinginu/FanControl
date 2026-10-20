@@ -25,9 +25,16 @@ import FanControlXPC
 ///   time the call throws `.helperConnectionFailed("timeout")` and the
 ///   connection is invalidated (which also ends the session, see above), so a
 ///   hung helper cannot block the `WriteSerializer` forever.
-/// - Each new connection requires the helper's code signature to satisfy
-///   `FanControlHelperConstants.helperCodeSigningRequirement(teamID: clientTeamID)`
-///   (`NSXPCConnection.setCodeSigningRequirement`).
+/// - Each new connection requires the helper's code signature to satisfy a
+///   requirement (`NSXPCConnection.setCodeSigningRequirement`) chosen per connection
+///   by `FanControlHelperConstants.helperRequirementMode(appTeamID:manualInstallDetected:)`:
+///   - Team-ID mode (the app is signed with a Team ID and no manual installation
+///     exists): `helperCodeSigningRequirement(teamID: clientTeamID)` — SMAppService path.
+///   - Manual mode (the app is ad-hoc signed, or `install.sh` installed the helper):
+///     `manualModeHelperRequirement(cdhash:)` with the cdhash of the root-owned
+///     binary at `FanControlHelperConstants.manualHelperPath`, read at connect time
+///     (`ManualHelperSigning.installedHelperCDHash`). If it cannot be read the call
+///     throws `.helperConnectionFailed` without connecting.
 ///
 /// All mutable state is guarded by `lock`; `onStateChange` is invoked outside
 /// the lock on an arbitrary thread.
@@ -44,9 +51,34 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
     private var timeout: TimeInterval = 8
 
     private let machServiceName: String
+    /// `true` while the current connection uses the manual-mode (cdhash) requirement.
+    private var manualMode = false
 
     public init(machServiceName: String = FanControlHelperConstants.machServiceName) {
         self.machServiceName = machServiceName
+    }
+
+    /// Requirement mode for the next connection (manual if the app has no Team ID or
+    /// the manual-install files exist).
+    public static func currentRequirementMode() -> HelperRequirementMode {
+        FanControlHelperConstants.helperRequirementMode(
+            appTeamID: ManualHelperSigning.ownTeamIdentifier,
+            manualInstallDetected: HelperInstaller().manualInstallState != .absent)
+    }
+
+    /// Builds the helper requirement for a new connection (file I/O in manual mode;
+    /// call without `lock`).
+    private static func makeHelperRequirement(teamID: String) throws -> (requirement: String, manual: Bool) {
+        switch currentRequirementMode() {
+        case .teamID:
+            return (FanControlHelperConstants.helperCodeSigningRequirement(teamID: teamID), false)
+        case .manualCDHash:
+            let hash = try ManualHelperSigning.installedHelperCDHash()
+            guard let requirement = FanControlHelperConstants.manualModeHelperRequirement(cdhash: hash) else {
+                throw FanControlError.helperConnectionFailed("Invalid helper cdhash \(hash)")
+            }
+            return (requirement, true)
+        }
     }
 
     deinit {
@@ -102,19 +134,39 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
 
     // MARK: Connection
 
-    private func ensureConnection() -> NSXPCConnection {
+    private func ensureConnection() throws -> (connection: NSXPCConnection, manual: Bool) {
         lock.lock()
         if let connection {
+            let manual = manualMode
             lock.unlock()
-            return connection
+            return (connection, manual)
+        }
+        let currentTeamID = teamID
+        lock.unlock()
+
+        let helperRequirement: (requirement: String, manual: Bool)
+        do {
+            helperRequirement = try Self.makeHelperRequirement(teamID: currentTeamID)
+        } catch let error as FanControlError {
+            if case .helperConnectionFailed(let reason) = error { updateState(.error(reason)) }
+            throw error
+        }
+
+        lock.lock()
+        if let connection {
+            // Another caller connected while the requirement was being computed.
+            let manual = manualMode
+            lock.unlock()
+            return (connection, manual)
         }
         generation &+= 1
         let currentGeneration = generation
         let newConnection = NSXPCConnection(machServiceName: machServiceName, options: .privileged)
         newConnection.remoteObjectInterface = makeHelperInterface()
-        // Only talk to a helper signed by our team with the helper's identifier.
-        newConnection.setCodeSigningRequirement(
-            FanControlHelperConstants.helperCodeSigningRequirement(teamID: teamID))
+        // Only talk to our own helper: signed by our team with the helper's identifier,
+        // or (manual mode) exactly the binary root installed at manualHelperPath.
+        newConnection.setCodeSigningRequirement(helperRequirement.requirement)
+        manualMode = helperRequirement.manual
         newConnection.invalidationHandler = { [weak self] in
             self?.connectionEnded(generation: currentGeneration, invalidated: true)
         }
@@ -126,7 +178,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
 
         updateState(.connecting)
         newConnection.resume()
-        return newConnection
+        return (newConnection, helperRequirement.manual)
     }
 
     private func connectionEnded(generation ended: UInt64, invalidated: Bool) {
@@ -158,7 +210,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
     /// resume the box exactly once (extra resumes are ignored). Races the reply
     /// against `callTimeout`; on timeout the connection is invalidated.
     private func call<T>(_ body: @escaping (FanControlHelperProtocol, ResumeOnce<T>) -> Void) async throws -> T {
-        let connection = ensureConnection()
+        let (connection, manual) = try ensureConnection()
         let timeout = callTimeout
         do {
             let value: T = try await withCheckedThrowingContinuation { continuation in
@@ -178,7 +230,13 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
                     box.onResume { timeoutTask.cancel() }
                 }
                 let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                    box.resume(throwing: FanControlError.helperConnectionFailed(error.localizedDescription))
+                    var reason = error.localizedDescription
+                    if manual {
+                        // Most likely cause in manual mode: the app was rebuilt, so the
+                        // helper's pinned client cdhash no longer matches.
+                        reason += " (manual helper install: if the app was rebuilt or replaced, re-run sudo \(FanControlHelperConstants.manualInstallScriptName) <app> to pin its new cdhash)"
+                    }
+                    box.resume(throwing: FanControlError.helperConnectionFailed(reason))
                 }
                 guard let helper = proxy as? FanControlHelperProtocol else {
                     box.resume(throwing: FanControlError.helperConnectionFailed("The helper proxy has an unexpected type."))

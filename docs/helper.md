@@ -1,7 +1,7 @@
 # FanControlHelper（特権ヘルパー）
 
 DynamicNotch のファン制御で SMC に書き込むための root 権限 launchd デーモン。
-`SMAppService`（macOS 13+）で登録する。読み取り（温度・RPM）はアプリ本体が `FanControlSMC.SMCClient` で直接行い、**書き込みだけ**このヘルパーを XPC 経由で使う（設計書 §3.3 の Step 7）。
+`SMAppService`（macOS 13+）で登録する（Team ID 付き署名が前提。Team ID が無い個人利用では §6 の手動インストールを使う）。読み取り（温度・RPM）はアプリ本体が `FanControlSMC.SMCClient` で直接行い、**書き込みだけ**このヘルパーを XPC 経由で使う（設計書 §3.3 の Step 7）。
 
 関連ソース:
 
@@ -13,6 +13,8 @@ DynamicNotch のファン制御で SMC に書き込むための root 権限 laun
 | `Sources/FanControlHelper/` | デーモン本体（`main.swift`, `HelperListenerDelegate`, `HelperService`, `SessionRegistry`） |
 | `Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` | launchd plist（唯一の正本） |
 | `Support/Helper-Info.plist` | ヘルパー実行ファイルに埋め込む Info.plist テンプレート |
+| `Sources/FanControlXPC/ManualInstallMode.swift` | 手動インストール（個人利用）モードの定数・要件文字列ビルダー・検証（§6） |
+| `Support/manual-install/` | 手動インストール用スクリプト `install.sh` / `uninstall.sh` / `status.sh` と LaunchDaemon plist テンプレート（§6） |
 
 ## 1. バンドル配置
 
@@ -184,3 +186,137 @@ codesign -d -r- DynamicNotch.app
    復元後、`fanfi-probe` で `F0Md` = 0 であること、および `F0Tg` が記録値（アイドル時 0）に**書き戻されていない**（SMC が自分で決めた値になる）ことをログ（"Failed to restore" が出ていないこと）と合わせて確認する。
 6. 未署名・別 Team ID のクライアントは接続が即座に無効化される。
 7. `SMAppService.daemon(plistName:).unregister()` 後、`launchctl print` でサービスが消える。
+
+## 6. 手動インストール（個人利用モード）
+
+Apple Developer Program の Team ID が無い個人利用向けに、`SMAppService` を使わずヘルパーを **素の LaunchDaemon として手動で入れる** モード。
+アプリとヘルパーはアドホック署名（`CODE_SIGN_IDENTITY = -`）でよい。§1〜§5 の SMAppService 方式（Team ID 付きビルド）はそのまま残っており、
+環境変数が無ければヘルパーの動作は従来と同じ。
+
+### 仕組み
+
+| 項目 | SMAppService 方式（§1〜§3） | 手動インストール方式 |
+|---|---|---|
+| 登録 | アプリが `SMAppService.daemon(plistName:).register()`、ユーザーが設定で承認 | ユーザーが `sudo FanControl/Support/manual-install/install.sh <App.app>` |
+| ヘルパーの場所 | `App.app/Contents/MacOS/FanControlHelper`（`BundleProgram`） | `/Library/PrivilegedHelperTools/com.example.dynamicnotch.DynamicNotch.fanfi`（root:wheel 0755、`Program`） |
+| plist | `App.app/Contents/Library/LaunchDaemons/…fanfi.plist` | `/Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist`（root:wheel 0644） |
+| ヘルパー → アプリの検証 | `anchor apple generic and identifier "…DynamicNotch" and certificate leaf[subject.OU] = "<TeamID>"` | `identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<アプリの cdhash>"`（plist の `EnvironmentVariables` → `FANCONTROL_CLIENT_REQUIREMENT`） |
+| アプリ → ヘルパーの検証 | `anchor apple generic and identifier "…fanfi" and certificate leaf[subject.OU] = "<TeamID>"` | `identifier "com.example.dynamicnotch.DynamicNotch.fanfi" and cdhash H"<インストール済みヘルパーの cdhash>"` |
+| アプリの状態表示 | `HelperInstallStatus.enabled` など | `.installedManually`（「手動インストール済み（個人利用モード）」） |
+| 削除 | アプリから `unregister()` / 設定でオフ | `sudo …/uninstall.sh` |
+
+Label / Mach サービス名は両方式で同じ（`com.example.dynamicnotch.DynamicNotch.fanfi`）。**両方式を同時に入れてはいけない**:
+`install.sh` は SMAppService 由来のジョブ（`launchctl print` の `path` が手動 plist 以外）が読み込まれていれば中止する。
+アプリ側も手動インストールのファイルがあれば `SMAppService` を呼ばない（kit.md「Helper install status」）。
+
+テンプレート `Support/manual-install/com.example.dynamicnotch.DynamicNotch.fanfi.manual.plist`（`install.sh` が値を埋めて配置する）:
+
+```xml
+<key>Label</key>              <string>com.example.dynamicnotch.DynamicNotch.fanfi</string>
+<key>Program</key>            <string>/Library/PrivilegedHelperTools/com.example.dynamicnotch.DynamicNotch.fanfi</string>
+<key>MachServices</key>       <dict><key>com.example.dynamicnotch.DynamicNotch.fanfi</key><true/></dict>
+<key>EnvironmentVariables</key>
+<dict>
+    <key>FANCONTROL_CLIENT_REQUIREMENT</key>
+    <string>identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<40 桁の 16 進>"</string>
+</dict>
+<key>RunAtLoad</key>          <false/>      <!-- Mach サービスへの接続時にオンデマンド起動 -->
+<key>ProcessType</key>        <string>Adaptive</string>
+```
+
+テンプレートのままの値（`__FILLED_IN_BY_INSTALL_SH__`）は検証を通らないため、誤ってそのまま入れてもヘルパーは起動を拒否する。
+`AssociatedBundleIdentifiers` は入れていない（SMAppService / ログイン項目表示用。手動方式では不要）。
+
+### ヘルパー側: `FANCONTROL_CLIENT_REQUIREMENT`
+
+起動時に `HelperConfiguration.resolveClientRequirement()`（純粋ロジックは `FanControlHelperConstants.resolveClientRequirement(environment:teamID:)`）が決める:
+
+- 環境変数が **無い** → 従来どおり Team ID 要件（`clientCodeSigningRequirement(teamID:)`）。ログ `Client requirement mode: Team ID (SMAppService)`。
+- 環境変数が **あり、形式が正しい** → その要件。ログ `Client requirement mode: MANUAL INSTALL (personal use), client cdhash pinned to <cdhash>`。
+  この場合 Team ID（`FanControlClientTeamID`）は参照しない（プレースホルダ警告も出ない）。
+- 環境変数が **あるが不正**（空、bundle ID だけ、cdhash なし、`or` 付きなど）→ `fault` ログ `Refusing to start: invalid FANCONTROL_CLIENT_REQUIREMENT …` を出し、
+  **リスナーを開かずに終了**（終了コード 78 = `EX_CONFIG`）。Team ID 要件や弱い要件へのフォールバックはしない。
+
+受け付ける形式は `FanControlHelperConstants.manualModeClientRequirement(cdhash:)` が作る文字列と **完全一致**（前後の空白のみ許容、16 進は大小文字可）:
+
+```
+identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<40 桁の 16 進>"
+```
+
+「`identifier "…"` と `cdhash H"` を含む」という部分一致にしなかったのは、`… and cdhash H"…" or anchor apple` のように `or` で緩めた要件まで通ってしまうため。
+さらに `SecRequirementCreateWithString` でコンパイルできることも起動時に確かめる。`install.sh` も同じ書式（`common.sh` の `client_requirement`）で書き、
+テスト（`ManualInstallScriptConsistencyTests`）が Swift 側の定数・書式とスクリプト・テンプレートの一致を確認する。
+
+### 脅威モデル（なぜ cdhash 固定なら個人利用で許容できるか）
+
+- **セキュリティ境界はヘルパーによるクライアント検証**。これを通ったプロセスは root の SMC 書込（許可リスト・値域検証つき、§4）を依頼できる。
+- **bundle ID だけの要件（`identifier "com.example.dynamicnotch.DynamicNotch"`）は偽装できる**。アドホック署名は誰でも任意の identifier で作れるため、
+  同じユーザー権限で動く任意のプロセスが `codesign -s - -i com.example.dynamicnotch.DynamicNotch` で自分を署名すれば通ってしまう。だから環境変数が cdhash を含まない場合は起動を拒否する。
+- **cdhash はコードディレクトリのハッシュ**で、実行ファイル（とバンドルの場合は Info.plist・リソースの封印）の内容に結び付く。別のプロセスが同じ cdhash を持つには
+  同一のバイナリでなければならず、同一バイナリなら DynamicNotch そのもの。Team ID 方式の「Apple の証明書チェーン + Team ID」の代わりに「このビルドそのもの」を信頼する。
+- 要件文字列は root 所有の `/Library/LaunchDaemons/…plist`（0644）にあり、書き換えられるのは root だけ。root を持つ攻撃者はヘルパーを使わずとも SMC に書けるので、ここは新たな攻撃面にならない。
+- **アプリ → ヘルパーの検証**: `HelperClient` は接続時に root 所有の `/Library/PrivilegedHelperTools/<label>` から cdhash を読み（ファイルとその親ディレクトリが uid 0 かつ group/other 書込不可で、
+  署名が `SecStaticCodeCheckValidity` を通ることを確認）、それを要件に固定する。そこに置けるのは root（＝ `sudo install.sh` したユーザー）だけなので、信頼の起点は「root が入れたもの」で、
+  そもそも system ドメインの Mach サービス名を登録できるのも root だけ。これは主に「別のバイナリが同じ Mach 名で応答している」取り違えを防ぐためのもので、SMC 書込の安全性はヘルパー側の検証が担う。
+- 弱点・前提: (1) アプリを再ビルド・置換するたびに cdhash が変わり、`install.sh` の再実行が必要（しないとヘルパーが接続を拒否する。アプリ側のエラー文に再実行の案内を付けている）。
+  (2) Gatekeeper / 公証は効かない（自分でビルドしたものを自分で入れる前提）。(3) 配布には使わない（他人の Mac では Team ID 方式を使う）。
+
+### アプリ側
+
+- 要件の選択（`FanControlHelperConstants.helperRequirementMode(appTeamID:manualInstallDetected:)`）: 実行中のアプリ自身の署名に Team ID が無い
+  （`SecCodeCopySelf` → `SecCodeCopySigningInformation` の `kSecCodeInfoTeamIdentifier` が nil）**または** 手動インストールのファイルがある → cdhash 固定、
+  それ以外 → Team ID 要件（従来どおり）。詳細は kit.md。
+- `HelperInstaller.status()` は `/Library/LaunchDaemons/<label>.plist` と `/Library/PrivilegedHelperTools/<label>` の **両方** があれば `.installedManually`。
+  片方だけなら `.unknown("manual installation incomplete …")`。手動インストール時の `register()` は何もせず `.installedManually` を返し、`unregister()` は
+  「`sudo uninstall.sh` で削除する」旨のエラーを投げる。
+- 手動インストールされたヘルパーのプロトコル版がアプリと違う場合、`openSMCSession()` は再登録を試みずに「`install.sh` を再実行」のエラーを出す。
+
+### 手順
+
+```sh
+# 0. アプリ（ヘルパー込み）をアドホック署名でビルドする。Hardened Runtime を付けるなら Debug でも
+#    ENABLE_DEBUG_DYLIB = NO にする（下記「注意」）。例: スモークアプリ
+cd FanControl/Tools/HelperSmokeApp && xcodegen generate && \
+  xcodebuild -project FanControlSmoke.xcodeproj -scheme FanControlSmoke -configuration Debug \
+  -derivedDataPath .derivedData build CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES
+APP="$PWD/.derivedData/Build/Products/Debug/FanControlSmoke.app"
+cd ../../Support/manual-install
+
+# 1. 予行（root 不要・何も変更しない）: 署名検証、cdhash、生成される plist、実行するコマンドを表示
+./install.sh --dry-run "$APP"
+# 2. インストール（ユーザーが実行）
+sudo ./install.sh "$APP"
+# 3. 状態（root 不要・読み取りのみ）。アプリを渡すと固定 cdhash との一致も確認
+./status.sh "$APP"
+sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi
+log stream --level debug --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'
+# 4. アプリを再ビルド・置換したら（cdhash が変わる）
+sudo ./install.sh "$APP"
+# 5. 削除（bootout で SIGTERM → ヘルパーはファンを自動制御に戻してから終了）
+sudo ./uninstall.sh
+```
+
+`install.sh` が行うこと（`set -euo pipefail`、何度実行してもよい）:
+
+1. `<App>/Contents/MacOS/FanControlHelper` の存在、アプリの `CFBundleIdentifier`、両方の `codesign --verify --strict`、署名 identifier（アプリ `…DynamicNotch`、ヘルパー `…fanfi`）を確認。
+2. アプリのメイン実行ファイルの cdhash を `codesign -dvvv` の `CDHash=` 行から取得（1 行だけであること・40 桁 16 進であることを確認）。
+   ユニバーサルバイナリはホストのアーキテクチャ（`uname -m`、Apple Silicon なら arm64）のスライスを `--arch` で選ぶ。そのスライスが無い・単一アーキテクチャがホストと違う場合は中止。
+3. ヘルパーに `com.apple.application-identifier` entitlement（Xcode が自動注入）が付いていれば警告を出す（下記「注意」）。
+4. SMAppService 由来の同名ジョブが読み込まれていれば中止。
+5. テンプレートから plist を生成（`plutil -replace` で `Program` と `FANCONTROL_CLIENT_REQUIREMENT`、`plutil -lint`）。
+6. 読み込み済みなら `launchctl bootout system/<label>`（終了を待つ）→ `install -o root -g wheel -m 0755` でヘルパーを配置し、配置後の署名と cdhash を再確認 →
+   `install -o root -g wheel -m 0644` で plist を配置 → `launchctl enable system/<label>` → `launchctl bootstrap system <plist>` → `launchctl print` の要約。
+
+`--dry-run` は root 不要で、検証と plist 生成までは実際に行い、生成した plist を表示し、変更系コマンド（`install`、`launchctl`）は `[dry-run] …` と表示するだけ。
+
+### 注意
+
+- **Debug ビルドのデバッグ dylib**: Xcode 26 の Debug ビルドは既定（`ENABLE_DEBUG_DYLIB`）でアプリを薄いスタブ + `<App>.debug.dylib` に分ける。
+  アドホック署名 + Hardened Runtime ではライブラリ検証がこの dylib の読込を拒否し（`mapping process and mapped file (non-platform) have different Team IDs`）、
+  **アプリが起動しない**（2026-10-20 にスモークアプリで確認）。`ENABLE_DEBUG_DYLIB = NO` にするか Release でビルドする（`Tools/HelperSmokeApp/project.yml` は NO に設定済み）。
+- **`com.apple.application-identifier`**: Xcode は Command Line Tool のヘルパーにこの entitlement を自動注入する（helper-bundle-smoke 検証記録）。
+  同じ entitlement・アドホック署名・Hardened Runtime の小さな実行ファイルはユーザープロセスとしては起動できた（2026-10-20）が、launchd から root で起動したときに
+  AMFI が拒否しないかは未確認。拒否された場合は `log show --last 5m --predicate 'process == "amfid" OR sender == "AppleMobileFileIntegrity"'` に出る。
+- macOS 13 以降、`/Library/LaunchDaemons` に入れたジョブは「ログイン項目と機能拡張 ▸ バックグラウンドでの実行を許可」に現れ、
+  追加時に通知が出ることがある。ここでオフにされると起動しない。
+- 手動インストール中は Team ID 方式（SMAppService）を登録しない。切り替えるときは先に `sudo uninstall.sh`。

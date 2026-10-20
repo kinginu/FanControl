@@ -190,6 +190,16 @@ private struct HelperStatusRow: View {
             switch manager.helperStatus {
             case .enabled:
                 EmptyView()
+            case .installedManually:
+                // Manual / personal mode (FanControl/Support/manual-install/): installed
+                // by root, so the app offers no install/uninstall action.
+                Text("The helper was installed manually with install.sh. After updating DynamicNotch, run sudo install.sh again; remove it with sudo uninstall.sh (FanControl/Support/manual-install/).")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Check Again") {
+                    manager.refreshHelperStatus()
+                }
             case .requiresApproval:
                 Text("Allow “DynamicNotch” in System Settings ▸ General ▸ Login Items & Extensions (macOS 15) / Login Items (macOS 14) to let it change fan speeds.")
                     .font(.callout)
@@ -230,6 +240,7 @@ private struct HelperStatusRow: View {
         switch manager.helperStatus {
         case .notRegistered: Text("Not installed")
         case .enabled: Text("Installed")
+        case .installedManually: Text("Installed manually (personal mode)")
         case .requiresApproval: Text("Waiting for approval")
         case .notFound: Text("Missing from app bundle")
         case .unknown(let detail): Text("Unknown (\(detail))")

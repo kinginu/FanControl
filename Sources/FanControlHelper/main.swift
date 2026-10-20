@@ -3,10 +3,30 @@ import Foundation
 import FanControlXPC
 
 // FanControlHelper: privileged launchd daemon registered by DynamicNotch through
-// `SMAppService.daemon(plistName:)`. launchd starts it on demand when DynamicNotch
+// `SMAppService.daemon(plistName:)`, or installed by `Support/manual-install/install.sh`
+// as a plain LaunchDaemon (manual / personal mode). launchd starts it on demand when DynamicNotch
 // connects to the Mach service; it then serves `FanControlHelperProtocol`.
 
-let listenerDelegate = HelperListenerDelegate()  // NSXPCListener.delegate is weak: keep a strong ref.
+// Client requirement: Team ID (SMAppService) or the cdhash-pinned override from the
+// manual-install LaunchDaemon plist. An invalid override must never fall back to
+// something weaker: refuse to listen and exit (launchd retries on the next connect,
+// throttled; the client sees an invalidated connection).
+let clientRequirement: ClientRequirement
+switch HelperConfiguration.resolveClientRequirement() {
+case .success(let resolved):
+    clientRequirement = resolved
+case .failure(let error):
+    helperLog.fault("Refusing to start: invalid \(FanControlHelperConstants.clientRequirementEnvironmentKey, privacy: .public): \(error.description, privacy: .public)")
+    exit(78)  // EX_CONFIG
+}
+switch clientRequirement.mode {
+case .teamID:
+    helperLog.notice("Client requirement mode: Team ID (SMAppService) - \(clientRequirement.requirement, privacy: .public)")
+case .manualCDHash(let hash):
+    helperLog.notice("Client requirement mode: MANUAL INSTALL (personal use), client cdhash pinned to \(hash, privacy: .public) - \(clientRequirement.requirement, privacy: .public)")
+}
+
+let listenerDelegate = HelperListenerDelegate(clientRequirement: clientRequirement.requirement)  // NSXPCListener.delegate is weak: keep a strong ref.
 let listener = NSXPCListener(machServiceName: FanControlHelperConstants.machServiceName)
 listener.delegate = listenerDelegate
 listener.resume()

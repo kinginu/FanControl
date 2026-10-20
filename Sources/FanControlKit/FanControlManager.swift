@@ -150,6 +150,8 @@ public final class FanControlManager: @unchecked Sendable {
     /// `NSXPCConnection.setCodeSigningRequirement` on every new helper connection).
     /// Defaults to `FanControlHelperConstants.teamIdentifierPlaceholder`; set it at
     /// launch (before the first helper call) unless that constant was replaced.
+    /// Ignored in manual-install mode (ad-hoc signed app or `install.sh` installation),
+    /// where the helper's cdhash is pinned instead (`HelperClient`).
     public var clientTeamID: String {
         get { helperClient.clientTeamID }
         set { helperClient.clientTeamID = newValue }
@@ -395,10 +397,16 @@ public final class FanControlManager: @unchecked Sendable {
         try await recordingErrors {
             let status = self.installer.status()
             await MainActor.run { self.helperStatus = status }
-            if status != .enabled {
+            if status != .enabled && status != .installedManually {
                 try await self.installHelper()
             }
             var (version, _) = try await self.helperClient.version()
+            if version != FanControlHelperConstants.protocolVersion, status == .installedManually {
+                // Only root can replace a manually installed helper.
+                throw FanControlError.helperRejected(
+                    code: -1,
+                    message: "The manually installed helper speaks protocol \(version), the app needs \(FanControlHelperConstants.protocolVersion). Re-run sudo \(FanControlHelperConstants.manualInstallScriptName) with this app.")
+            }
             if version != FanControlHelperConstants.protocolVersion {
                 // A helper from an older/newer app build is still registered.
                 self.helperClient.invalidate()
@@ -440,7 +448,8 @@ public final class FanControlManager: @unchecked Sendable {
         await MainActor.run { self.syncSessionFlag() }
     }
 
-    /// Registers the helper daemon. If the user still has to approve it, opens
+    /// Registers the helper daemon (no-op for a manual installation, see
+    /// `HelperInstaller.register()`). If the user still has to approve it, opens
     /// System Settings > General > Login Items & Extensions (macOS 15) / Login
     /// Items (macOS 14) and throws `.helperNotInstalled`
     /// (show `helperApprovalInstructions`).
@@ -449,7 +458,7 @@ public final class FanControlManager: @unchecked Sendable {
             let status = try self.installer.register()
             await MainActor.run { self.helperStatus = status }
             switch status {
-            case .enabled:
+            case .enabled, .installedManually:
                 return
             case .requiresApproval:
                 await MainActor.run { HelperInstaller.openSystemSettingsLoginItems() }
@@ -473,7 +482,7 @@ public final class FanControlManager: @unchecked Sendable {
         lastError = nil
     }
 
-    /// Re-reads `SMAppService` status into `helperStatus`.
+    /// Re-reads the install status (manual installation or `SMAppService`) into `helperStatus`.
     public func refreshHelperStatus() {
         let status = installer.status()
         if Thread.isMainThread {

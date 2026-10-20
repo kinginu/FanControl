@@ -25,6 +25,12 @@ settings:
     # `-o runtime`, so the signature lacks flag 0x10000. Pass it explicitly. With a real
     # identity Xcode adds `-o runtime` itself; the duplicate is harmless (codesign ORs the flags).
     OTHER_CODE_SIGN_FLAGS: "$(inherited) --options=runtime"
+    # Debug builds otherwise split the app into a stub + FanControlSmoke.debug.dylib (SwiftUI
+    # previews). With ad-hoc signing + Hardened Runtime, library validation refuses to load that
+    # dylib ("mapping process and mapped file (non-platform) have different Team IDs": ad-hoc code
+    # has no Team ID), so the Debug app would not launch. Manual-install mode needs a launchable
+    # ad-hoc build (README「手動インストールモードでのテスト」).
+    ENABLE_DEBUG_DYLIB: NO
 targets:
   FanControlHelper:
     type: tool

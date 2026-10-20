@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the MANUAL-INSTALL (personal use) LaunchDaemon of FanControlHelper.
+  Do not install this file directly: install.sh copies it to
+  /Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist (root:wheel 0644) and fills in
+    Program                                              absolute path of the installed helper
+    EnvironmentVariables.FANCONTROL_CLIENT_REQUIREMENT   identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<app cdhash>"
+  The helper refuses to start if FANCONTROL_CLIENT_REQUIREMENT is present but does not pin a cdhash
+  (FanControlHelperConstants.validateManualClientRequirement). The SMAppService path uses
+  ../LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist instead (BundleProgram, no env var).
+  See docs/helper.md 「手動インストール（個人利用モード）」.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.example.dynamicnotch.DynamicNotch.fanfi</string>
+	<key>Program</key>
+	<string>/Library/PrivilegedHelperTools/com.example.dynamicnotch.DynamicNotch.fanfi</string>
+	<key>MachServices</key>
+	<dict>
+		<key>com.example.dynamicnotch.DynamicNotch.fanfi</key>
+		<true/>
+	</dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>FANCONTROL_CLIENT_REQUIREMENT</key>
+		<string>__FILLED_IN_BY_INSTALL_SH__</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>ProcessType</key>
+	<string>Adaptive</string>
+</dict>
+</plist>
