@@ -520,8 +520,11 @@ provisional.
 workload; the host drives it (DynamicNotch: `WorkloadProfileCoordinator`, a 2 s tick plus
 `NSWorkspace` launch / terminate / activate notifications) and applies the profile that each
 `WorkloadDecision` names when it is not already active. Settings are
-`WorkloadAutomationSettings` (Codable, unknown / missing keys fall back to defaults; the host
-stores them as JSON under `fanControl.workloadAutomation`).
+`WorkloadAutomationSettings` (Codable, unknown / missing keys fall back to defaults), stored by
+FanControlUI under `fanControlWorkloadAutomation` (`FanControlSettingKey.automation`). The UI
+(`FanControlAutomationTabView`, `FanControlAutomationIndicator`) shows
+`FanControlAutomationState.shared`, which the host's driver writes (`status`, loads, last apply
+error) and whose `onResume` it sets.
 
 **Precedence** (`WorkloadProfilePrecedence`), highest first:
 
@@ -550,6 +553,23 @@ stores them as JSON under `fanControl.workloadAutomation`).
 tick deltas between calls (`CPULoadTicks.usage`, 32-bit wrap-safe; `nil` on the first call), GPU
 from the highest IOAccelerator `PerformanceStatistics` "Device Utilization %".
 
+**Switching to F2's `FanProfileArbiter`.** Until F2 lands, the coordinator applies profiles
+itself and implements the precedence on its own (manual picks detected from `activeProfileID`,
+power proposals through `requestLowerLayerProfile`). Its only write path is the adapter closure
+`WorkloadProfileCoordinator.applyWorkloadProfile(profile, isReturn)`. Once the arbiter exists:
+
+```swift
+WorkloadProfileCoordinator.shared.applyWorkloadProfile = { profile, isReturn in
+    if isReturn { await FanProfileArbiter.shared.release(.workload) }   // arbiter picks the next layer
+    else { try await FanProfileArbiter.shared.claim(.workload, profile: profile) }
+}
+```
+
+(adjust to the arbiter's real API). Then the arbiter owns return-to-previous and the lower layers:
+F2 claims `.power` instead of calling `requestLowerLayerProfile`, and manual picks should reach the
+engine from the arbiter's `.manual` layer (`noteManualSelection`) rather than from the
+`activeProfileID` diff.
+
 ## Settings owned by the app
 
 The kit does not depend on the app's settings store. The app copies its settings into these
@@ -576,12 +596,13 @@ manager, for hosts that want the stock settings and editors:
 
 | Area | Public API |
 |---|---|
-| Settings pane | `FanControlSettingsView` (fixed `contentSize` 740×600; General / Profiles / Sensors as a segmented control), and each tab on its own: `FanControlGeneralTabView(actionError:)`, `FanControlProfilesTabView(actionError:initialSelection:)`, `FanControlSensorsTabView()` |
+| Settings pane | `FanControlSettingsView` (fixed `contentSize` 740×600; General / Profiles / Sensors / Automation as a segmented control), and each tab on its own: `FanControlGeneralTabView(actionError:)`, `FanControlProfilesTabView(actionError:initialSelection:)`, `FanControlSensorsTabView()`, `FanControlAutomationTabView()` |
+| Workload automation | `FanControlAutomationState.shared` (host-written state, `indicatorText`, `statusText`), `FanControlAutomationIndicator` (one line for a widget header), `FanControlAutomationProfiles` ("Workload automation") |
 | Curves and charts | `FanCurveView` (read-only curve of a profile, live operating point), `FanCurveEditorView` (multi-point editor, `hasErrors` / `messages` validation), `FanCurveLegend`, `FanControlTemperatureChart` + `FanControlTemperatureSeries` (history chart), `FanControlKeyTemperaturesView`, `FanControlSelectionPill` |
 | Alerts | `FanControlAlertCoordinator.shared` (`currentAlert`, `onAlertChange`, `transientNotificationName`); it also mirrors the stored general settings and thresholds into the manager ("Settings owned by the app") |
 | Errors | `FanControlErrorFooter`, `fanControlPerform`, `fanControlErrorMessage`, `fanControlRejectionHelp` |
 | Formatting | `FanControlFormatting`, `FanControlSensorNames`, `FanControlProfiles` (the seven fixed profiles, `apply`) |
-| Stored settings | `FanControlWidgetSettings`, `FanControlGeneralSettings`, `FanControlThresholdSettings`, `FanControlTemperatureWidgetSettings`; keys `FanControlSettingKey` (`.widget`, `.general`, `.thresholds`, `.temperatureWidget`: `value`, `updates()`, `name`) and the property wrapper `@FanControlSetting(.widget)` |
+| Stored settings | `FanControlWidgetSettings`, `FanControlGeneralSettings`, `FanControlThresholdSettings`, `FanControlTemperatureWidgetSettings`; keys `FanControlSettingKey` (`.widget`, `.general`, `.thresholds`, `.temperatureWidget`, `.automation`: `value`, `updates()`, `name`) and the property wrapper `@FanControlSetting(.widget)` |
 
 Settings live in `UserDefaults.standard` under the former sindresorhus/Defaults key names, as
 sorted-key JSON strings (byte-compatible with Defaults 8.2; `Tests/FanControlUITests`). The store

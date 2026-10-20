@@ -330,3 +330,22 @@ Live Activity 設定（`LiveActivitiesSettings` の有効/無効リスト）で�
 「スリープ解除後にプロファイルを再適用」設定を `FanControlManager.reapplyProfileAfterWake` に同期するだけでよく、
 これは (e) で生成する `FanControlAlertCoordinator`（`FanControlUI`）が起動時と設定変更時（設定の変更ストリーム）に自動で行う
 （同時に「いずれかの警告が ON」を `FanControlManager.keepAlertsWhilePaused` に同期し、Nook 非表示中も警告用の低頻度ポーリングを続ける）。
+
+## (h) 負荷連動プロファイル（F3、2026-10-20）— 起動 1 行とホスト側コーディネータ
+
+「Automation」サブタブ（`FanControlAutomationTabView`、`FanControlSettingsView` の tag 3）とウィジェット見出しの 1 行表示
+（`FanControlAutomationIndicator`、「Auto: Boost (Xcode)」）は FanControlUI にある。設定は `FanControlSettingKey.automation`、
+表示する実行時の状態は `FanControlAutomationState.shared`。これを書き込むのはホストのコーディネータで、DynamicNotchApp では
+`DynamicNotchApp/Sources/Support/WorkloadProfileCoordinator.swift`（FanControlKit の `WorkloadProfileEngine` を `NSWorkspace` の通知と
+2 秒周期の CPU/GPU 負荷サンプリング `SystemLoadSampler` で駆動する）。ドロップインの `FanControlWidgetView` は見出しに
+`FanControlAutomationIndicator()` を 1 行置くだけ（`// F3:`）。
+
+(e) の `FanControlStartup.applicationDidFinishLaunching()` の末尾に次を追加する。
+
+```swift
+WorkloadProfileCoordinator.shared.start()
+```
+
+優先順位（手動 > 緊急 > 負荷連動 > 電源連動 (F2) > 既定）と規則、F2 の `FanProfileArbiter` への切替方法は docs/kit.md
+「Workload automation」。アービタが入るまで、電源連動など下位の切替は `WorkloadProfileCoordinator.shared.requestLowerLayerProfile(_:)`
+を通す（直接 `applyProfile` すると手動選択と判定され、自動化が一時停止する）。

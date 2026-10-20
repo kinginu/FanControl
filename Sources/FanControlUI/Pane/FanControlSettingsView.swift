@@ -36,6 +36,7 @@ public struct FanControlSettingsView: View {
                 Text("General").tag(0)
                 Text("Profiles").tag(1)
                 Text("Sensors").tag(2)
+                Text("Automation").tag(3)   // F3: workload-linked profiles
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -45,6 +46,7 @@ public struct FanControlSettingsView: View {
                 switch selection {
                 case 1: FanControlProfilesTabView(actionError: $actionError)
                 case 2: FanControlSensorsTabView()
+                case 3: FanControlAutomationTabView()   // F3:
                 default: FanControlGeneralTabView(actionError: $actionError)
                 }
             }

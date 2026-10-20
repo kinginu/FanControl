@@ -139,6 +139,7 @@ struct FanControlWidgetView: View {
             Text("Fans")
                 .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
+            FanControlAutomationIndicator()   // F3: "Auto: Boost (Xcode)" (FanControlUI)
             if manager.highTempAlertActive {
                 Image(systemName: "thermometer.high")
                     .foregroundStyle(.red)
