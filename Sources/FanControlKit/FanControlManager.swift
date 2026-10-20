@@ -178,6 +178,17 @@ public final class FanControlManager {
     /// Silicon; see `SafetyPolicy.defaultEmergencySensorPrefixes`).
     /// Not persisted by the kit.
     public var safetyPolicy: SafetyPolicy = FanControlPlatform.defaultSafetyPolicy
+
+    /// Copies user-set thresholds (clamped by `ThresholdBounds`) into
+    /// `safetyPolicy`, keeping `emergencySensorPrefixes` and
+    /// `enforceHardwareMinimum`. Assigns only on a change; the next poll
+    /// evaluates the alert and the emergency latch against the new values
+    /// (design doc §5.6). The app calls this when its threshold setting changes.
+    public func applySafetyThresholds(_ thresholds: SafetyThresholds) {
+        let clamped = ThresholdBounds.clamped(thresholds)
+        guard safetyPolicy.thresholds != clamped else { return }
+        safetyPolicy.thresholds = clamped
+    }
     /// When `true` (default) and a write session is still open when the Mac
     /// wakes, the active profile is re-applied **immediately** on
     /// `NSWorkspace.didWakeNotification` and again `wakeReapplyDelays` later
