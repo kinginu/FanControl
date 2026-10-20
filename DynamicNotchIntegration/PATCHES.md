@@ -86,7 +86,7 @@ CPU / GPU / SSD の温度は Fan Control ウィジェットから独立した「
     case temperature           // tag 11
 
     // icon:         case .temperature: return "thermometer.medium"
-    // name:         case .temperature: return "Temperature"     // Localizable.strings にキーあり（「温度」）
+    // name:         case .temperature: return "Temperature"     // Localizable.strings にキーあり
     // gridSizeType: case .temperature: return .doubleWide        // 常に 5 セル = 250 pt
     // prefs:        case .temperature: return SettingsStore[.fanControlTemperatureWidgetSettings]
     // rawValue:     case .temperature: return "temperature"   /  init?(rawValue:): case "temperature": self = .temperature

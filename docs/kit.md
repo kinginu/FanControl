@@ -672,7 +672,7 @@ the peer), and an interrupted `NSXPCConnection` silently reconnects on the next 
 `HelperConnectionState` is `.disconnected` / `.connecting` / `.connected` / `.error(String)` (transient) /
 `.rejected(reason: HelperRejectionReason)`. `HelperRejectionReason.description` is English and names the remedy
 ("the installed helper is pinned to a different build of the app; re-run sudo install.sh <this app>"); the UI shows its own
-localized text (`fanControlRejectionHelp(_:)` in `FanControlSettingsView.swift`, en/ja strings).
+localized text (`fanControlRejectionHelp(_:)` in `FanControlSettingsView.swift`, en strings).
 
 ## Errors
 

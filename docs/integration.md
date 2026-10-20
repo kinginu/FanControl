@@ -16,7 +16,7 @@ arm64 でない Mac ではアプリが `FanControlError.unsupportedPlatform` で
 | `FanControl/Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` | launchd plist（唯一の正本。パッケージ内の他の場所にコピーは無い） |
 | `FanControl/DynamicNotchIntegration/*.swift` | DynamicNotch ターゲットにコピーするドロップイン UI ファイル（下表） |
 | `FanControl/DynamicNotchIntegration/PATCHES.md` | 既存ソースへの手作業パッチ (a)〜(g) |
-| `FanControl/DynamicNotchIntegration/Localizable/{en,ja}.strings` | 追加文字列（UTF-8 ソース） |
+| `FanControl/DynamicNotchIntegration/Localizable/en.strings` | 追加文字列（UTF-8 ソース。英語のみ。`ja.strings` は 2026-10-20 に削除、アプリは英語のみ） |
 
 ドロップインファイル:
 
@@ -170,10 +170,9 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
    (a) `NookWidget.fanControl`（tag 8）と `NookWidget.temperature`（tag 11、2026-10-20）、(b) Nook グリッドの View 振り分け、(c) `WidgetsSettingsTabView`、
    (d) 設定ウィンドウの Fan Control タブ、(e) `applicationDidFinishLaunching`、(f) `LiveActivity.fanAlert` と `LiveActivityView`、
    (g) 終了処理（パッチ不要。`FanControlManager` が `NSApplication.willTerminateNotification` で自動制御に戻す）。
-3. 文字列: `Localizable/en.strings` と `ja.strings` の項目を、プロジェクトの `en.lproj/Localizable.strings` /
-   `ja.lproj/Localizable.strings`（ソース側）にマージする。アプリ内に同梱されているのはコンパイル済み（バイナリ/UTF-16 plist）の
-   `.strings` なので、ビルド成果物ではなくソースを編集する。String Catalog（`.xcstrings`）を使っている場合は
-   ビルド後に自動抽出されたキーへ ja 訳を入力する（キーは英語文字列そのもの）。
+3. 文字列: `Localizable/en.strings` の項目を、プロジェクトの `en.lproj/Localizable.strings`（ソース側）にマージする
+   （キーは英語文字列そのもの）。アプリは英語のみ（ユーザー決定 2026-10-20）なので ja は作らない。DynamicNotchApp 
+   `DynamicNotchApp/` では `Support/merge-strings.py` が `Localization/en.lproj` だけを生成する。
 4. ビルドして警告/エラーを解消する。`DynamicNotchApp/` への適用（2026-10-20）で必要だった差分は 2 点:
    `FanControlWidgetSettings` に `init()`（`Preferences` が `init()` を要求し、全引数既定値の init では満たせない。PATCHES.md (a)）、
    XcodeGen ではローカルパッケージ参照に `group:` を付けないと `../FanControl` のソースグループと衝突してドロップインがターゲットから落ちる
@@ -291,12 +290,11 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 - [ ] **温度ウィジェット**（`NookWidget.temperature`、2026-10-20）: Nook に追加すると CPU / GPU / SSD の現在値・期間内の最高/最低・履歴グラフが出る。期間チップ
       1 / 5 / 15 / 30 分で表示範囲が変わり、設定に保存される。高温警告しきい値（一般タブ）が赤破線で出て、しきい値変更に追随する。CPU/GPU が しきい値 −10 °C 以上で
       オレンジ、以上で赤。スリープ・Nook 非表示中（ポーリング停止）の区間は線が途切れる。オフスクリーン描画では合成履歴（スパイク・欠損あり）とライブ履歴を確認済み、
-      実ノッチ・日本語・°F は未確認。
+      実ノッチ・°F は未確認。
 - [ ] ファンレス機 / SMC 不可環境: 該当機なし。
 - [ ] Nook を閉じるとポーリングが止まる: 未計測。
 - [ ] 「SMC ダンプを書き出す…」: 未実施（保存パネル操作が必要）。
-- [x] 日本語: `ja.lproj`（生成物、`DynamicNotchApp/Support/merge-strings.py`）で「ファン制御」ペイン、「一般 / プロファイル / センサー」、「CPU（最大）」等の集約名、
-      ウィジェットの「ファン」「温度」が日本語になる（`fc-ja/`）。プロファイル名「Custom」はユーザー作成名なので英語のまま。
+- [—] 日本語: 2026-10-20 夕方に廃止（アプリは英語のみ。`ja.lproj` と `Localizable/ja.strings` を削除）。それ以前は `ja.lproj` で日本語表示を確認していた（`fc-ja/`）。
 - DynamicNotchApp の制約: Live Activity をノッチ左右に出す経路（`LiveActivityView`）がDynamicNotchApp では使われていないため、PATCHES.md (f) の `fanAlert` 表示は確認できない。
 
 ### Phase 2/3: ヘルパー登録
