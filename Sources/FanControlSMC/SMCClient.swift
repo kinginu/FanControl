@@ -1,15 +1,17 @@
 #if os(macOS)
 import Foundation
+import Synchronization
 import FanControlCore
 
 /// IOKit-backed `SMCReader` with a key-info cache.
 ///
 /// `writeBytes(_:to:)` talks to the SMC directly and only succeeds as root; the app must
 /// go through FanControlHelper (XPC) instead.
-public final class SMCClient: SMCReader, @unchecked Sendable {
+/// Thread-safe (checked `Sendable`): the connection serializes its calls and the
+/// cache is a `Mutex`.
+public final class SMCClient: SMCReader, Sendable {
     private let connection: SMCConnection
-    private let cacheLock = NSLock()
-    private var keyInfoCache: [UInt32: SMCKeyInfo] = [:]
+    private let keyInfoCache = Mutex<[UInt32: SMCKeyInfo]>([:])
 
     /// Opens a new AppleSMC connection.
     public convenience init() throws {
@@ -28,10 +30,7 @@ public final class SMCClient: SMCReader, @unchecked Sendable {
     // MARK: SMCReader
 
     public func keyInfo(_ key: SMCKey) throws -> SMCKeyInfo {
-        cacheLock.lock()
-        let cached = keyInfoCache[key.code]
-        cacheLock.unlock()
-        if let cached { return cached }
+        if let cached = keyInfoCache.withLock({ $0[key.code] }) { return cached }
 
         var input = SMCParamStruct()
         input.key = key.code
@@ -42,9 +41,7 @@ public final class SMCClient: SMCReader, @unchecked Sendable {
                               attributes: output.keyInfo.dataAttributes,
                               rawType: output.keyInfo.dataType)
 
-        cacheLock.lock()
-        keyInfoCache[key.code] = info
-        cacheLock.unlock()
+        keyInfoCache.withLock { $0[key.code] = info }
         return info
     }
 

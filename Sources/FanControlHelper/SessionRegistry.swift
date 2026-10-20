@@ -1,5 +1,6 @@
 #if os(macOS)
 import Foundation
+import Synchronization
 import FanControlCore
 import FanControlSMC
 import FanControlXPC
@@ -36,30 +37,72 @@ struct HelperResult {
 ///   sleep the fans the session forces are handed back to the SMC; after wake the
 ///   client's last writes (`lastWritten`) are re-applied and any other fan left in
 ///   manual mode is handed back (`PowerTransitionPolicy`, first-write test 4).
-public final class SessionRegistry: @unchecked Sendable {
+public final class SessionRegistry: Sendable {
     public static let shared = SessionRegistry()
 
-    private let lock = NSLock()
-    private var owner: SessionOwner?
-    private var openedAt: Date?
-    private var client: SMCClient?
-    /// Original values captured before the first write of each key in this session, in write order.
-    private var originals: [(key: SMCKey, bytes: [UInt8])] = []
-    /// `FNum` read at session open (`nil` if unreadable).
-    private var fanCount: Int?
-    /// Hardware `F<n>Mn...F<n>Mx` per fan, read at session open (`F<n>Mn` is
-    /// read-only on Apple Silicon). Fans missing here cannot have targets written.
-    private var fanLimits: [Int: ClosedRange<Double>] = [:]
-    /// The client's last successful write per key (its intent), re-applied on wake.
-    /// The helper's own sleep/wake writes are not recorded here.
-    private var lastWritten: [SMCKey: [UInt8]] = [:]
+    /// All session state; every entry point holds the mutex for its whole duration
+    /// (SMC I/O included), so XPC calls and power notifications are serialized.
+    private let state = Mutex(SessionState())
 
     private init() {}
 
     func open(for requester: SessionOwner) -> HelperResult {
-        lock.lock()
-        defer { lock.unlock() }
+        state.withLock { $0.open(for: requester) }
+    }
 
+    /// Writes `bytes` to `key`. Caller has already validated the key against the allowlist
+    /// and the byte count against 1...32.
+    func write(_ bytes: [UInt8], to key: SMCKey, from requester: SessionOwner) -> HelperResult {
+        state.withLock { $0.write(bytes, to: key, from: requester) }
+    }
+
+    func close(for requester: SessionOwner) -> HelperResult {
+        state.withLock { $0.close(for: requester) }
+    }
+
+    /// Ends any open session and restores fans (SIGTERM / helper shutdown).
+    public func shutdown() {
+        state.withLock { $0.shutdown() }
+    }
+
+    /// Called when a connection is invalidated/interrupted. No-op unless `owner` holds the session.
+    func release(owner released: SessionOwner) {
+        state.withLock { $0.release(owner: released) }
+    }
+
+    /// Key info lookup; uses the session's SMC connection if open, else a temporary one.
+    func keyInfo(_ key: SMCKey) -> Result<SMCKeyInfo, FanControlError> {
+        state.withLock { $0.keyInfo(key) }
+    }
+
+    /// `kIOMessageSystemWillSleep` (see `SessionState.prepareForSleep()`).
+    func prepareForSleep() {
+        state.withLock { $0.prepareForSleep() }
+    }
+
+    /// `kIOMessageSystemHasPoweredOn` (see `SessionState.recoverAfterWake(attempt:of:)`).
+    func recoverAfterWake(attempt: Int, of total: Int) {
+        state.withLock { $0.recoverAfterWake(attempt: attempt, of: total) }
+    }
+}
+
+/// The state behind `SessionRegistry` (only touched with its mutex held).
+private struct SessionState {
+    var owner: SessionOwner?
+    var openedAt: Date?
+    var client: SMCClient?
+    /// Original values captured before the first write of each key in this session, in write order.
+    var originals: [(key: SMCKey, bytes: [UInt8])] = []
+    /// `FNum` read at session open (`nil` if unreadable).
+    var fanCount: Int?
+    /// Hardware `F<n>Mn...F<n>Mx` per fan, read at session open (`F<n>Mn` is
+    /// read-only on Apple Silicon). Fans missing here cannot have targets written.
+    var fanLimits: [Int: ClosedRange<Double>] = [:]
+    /// The client's last successful write per key (its intent), re-applied on wake.
+    /// The helper's own sleep/wake writes are not recorded here.
+    var lastWritten: [SMCKey: [UInt8]] = [:]
+
+    mutating func open(for requester: SessionOwner) -> HelperResult {
         if let current = owner {
             if current == requester {
                 return .ok("session already open")
@@ -97,10 +140,7 @@ public final class SessionRegistry: @unchecked Sendable {
 
     /// Writes `bytes` to `key`. Caller has already validated the key against the allowlist
     /// and the byte count against 1...32.
-    func write(_ bytes: [UInt8], to key: SMCKey, from requester: SessionOwner) -> HelperResult {
-        lock.lock()
-        defer { lock.unlock() }
-
+    mutating func write(_ bytes: [UInt8], to key: SMCKey, from requester: SessionOwner) -> HelperResult {
         guard let current = owner, let client else {
             return HelperResult(code: .sessionNotOpen, message: "no session is open")
         }
@@ -114,7 +154,7 @@ public final class SessionRegistry: @unchecked Sendable {
 
     /// Validated write (allowlist already checked by the caller or by construction):
     /// `HelperWritePolicy.validate`, original-value snapshot, write.
-    private func performWriteLocked(_ bytes: [UInt8], to key: SMCKey, using client: SMCClient) -> HelperResult {
+    private mutating func performWriteLocked(_ bytes: [UInt8], to key: SMCKey, using client: SMCClient) -> HelperResult {
         let info: SMCKeyInfo
         do {
             info = try client.keyInfo(key)
@@ -151,10 +191,7 @@ public final class SessionRegistry: @unchecked Sendable {
         return .ok()
     }
 
-    func close(for requester: SessionOwner) -> HelperResult {
-        lock.lock()
-        defer { lock.unlock() }
-
+    mutating func close(for requester: SessionOwner) -> HelperResult {
         guard let current = owner else {
             return HelperResult(code: .sessionNotOpen, message: "no session is open")
         }
@@ -166,18 +203,14 @@ public final class SessionRegistry: @unchecked Sendable {
     }
 
     /// Ends any open session and restores fans (SIGTERM / helper shutdown).
-    public func shutdown() {
-        lock.lock()
-        defer { lock.unlock() }
+    mutating func shutdown() {
         guard owner != nil || client != nil else { return }
         helperLog.notice("Helper shutting down; ending session and restoring fans")
         endSessionLocked()
     }
 
     /// Called when a connection is invalidated/interrupted. No-op unless `owner` holds the session.
-    func release(owner released: SessionOwner) {
-        lock.lock()
-        defer { lock.unlock() }
+    mutating func release(owner released: SessionOwner) {
         guard owner == released else { return }
         helperLog.notice("Owner pid \(released.pid, privacy: .public) went away; releasing session")
         endSessionLocked()
@@ -185,8 +218,6 @@ public final class SessionRegistry: @unchecked Sendable {
 
     /// Key info lookup; uses the session's SMC connection if open, else a temporary one.
     func keyInfo(_ key: SMCKey) -> Result<SMCKeyInfo, FanControlError> {
-        lock.lock()
-        defer { lock.unlock() }
         do {
             let reader = try client ?? SMCClient()
             defer { if reader !== client { reader.close() } }
@@ -203,9 +234,7 @@ public final class SessionRegistry: @unchecked Sendable {
     /// `kIOMessageSystemWillSleep`: hands every fan the session forces back to the
     /// SMC (`PowerTransitionPolicy.sleepHandBack`). Keeps the session and the client's
     /// intent for `recoverAfterWake`. Returns quickly; failures are only logged.
-    func prepareForSleep() {
-        lock.lock()
-        defer { lock.unlock() }
+    mutating func prepareForSleep() {
         guard let owner, let client else {
             helperLog.notice("Power: system will sleep; no session open, nothing to hand back")
             return
@@ -214,7 +243,8 @@ public final class SessionRegistry: @unchecked Sendable {
         let snapshot = PowerTransitionPolicy.snapshot(using: client, fanCount: fanCount ?? 0)
         let writes = PowerTransitionPolicy.sleepHandBack(remembered: remembered, snapshot: snapshot)
         let done = performPowerWritesLocked(writes, using: client)
-        helperLog.notice("Power: system will sleep; session of pid \(owner.pid, privacy: .public) open, handed back to the SMC: \(done, privacy: .public); remembered targets: \(self.describe(remembered, using: client), privacy: .public)")
+        let rememberedTargets = describe(remembered, using: client)
+        helperLog.notice("Power: system will sleep; session of pid \(owner.pid, privacy: .public) open, handed back to the SMC: \(done, privacy: .public); remembered targets: \(rememberedTargets, privacy: .public)")
     }
 
     /// `kIOMessageSystemHasPoweredOn`, attempt `attempt` of `total`
@@ -222,9 +252,7 @@ public final class SessionRegistry: @unchecked Sendable {
     /// remembered targets and hands back any other manual fan
     /// (`PowerTransitionPolicy.wakeRecovery`). Without one: only logs a warning if a
     /// fan is in manual mode (another tool may own it; nothing is written).
-    func recoverAfterWake(attempt: Int, of total: Int) {
-        lock.lock()
-        defer { lock.unlock() }
+    mutating func recoverAfterWake(attempt: Int, of total: Int) {
         guard let owner, let client else {
             guard attempt == 1 else { return }
             guard let reader = try? SMCClient() else {
@@ -255,7 +283,7 @@ public final class SessionRegistry: @unchecked Sendable {
         helperLog.notice("Power: wake recovery \(attempt, privacy: .public)/\(total, privacy: .public) (session of pid \(owner.pid, privacy: .public)): observed \(observed, privacy: .public); wrote \(done, privacy: .public)")
     }
 
-    // MARK: Private (lock held)
+    // MARK: Private
 
     private func rememberedFansLocked(using client: SMCClient) -> [PowerTransitionPolicy.RememberedFan] {
         PowerTransitionPolicy.rememberedFans(lastWritten: lastWritten,
@@ -264,7 +292,7 @@ public final class SessionRegistry: @unchecked Sendable {
 
     /// Writes `writes` in order through the validated path (not recorded as client
     /// intent). A failed write does not stop the list. Returns a log summary.
-    private func performPowerWritesLocked(_ writes: [PowerTransitionPolicy.Write], using client: SMCClient) -> String {
+    private mutating func performPowerWritesLocked(_ writes: [PowerTransitionPolicy.Write], using client: SMCClient) -> String {
         guard !writes.isEmpty else { return "nothing" }
         return writes.map { write in
             let value = describeValue(write.bytes, key: write.key, using: client)
@@ -293,7 +321,7 @@ public final class SessionRegistry: @unchecked Sendable {
         return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
-    private func endSessionLocked() {
+    private mutating func endSessionLocked() {
         if let client {
             restoreOriginalsLocked(using: client)
             client.close()
@@ -321,7 +349,7 @@ public final class SessionRegistry: @unchecked Sendable {
     }
 
     /// Reads `FNum` and every fan's hardware `F<n>Mn` / `F<n>Mx` into the session cache.
-    private func readHardwareLimitsLocked(using client: SMCClient) {
+    private mutating func readHardwareLimitsLocked(using client: SMCClient) {
         fanCount = nil
         fanLimits = [:]
         guard let rawCount = try? client.readNumber(.fanCount), rawCount.isFinite, rawCount >= 0 else {

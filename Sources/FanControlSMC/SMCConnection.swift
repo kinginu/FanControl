@@ -1,15 +1,17 @@
 #if os(macOS)
 import Foundation
 import IOKit
+import Synchronization
 import FanControlCore
 
 /// A user-client connection to the `AppleSMC` IOService.
 ///
 /// Reading does not require privileges; writing does (only the root helper should write).
-/// All calls are serialized with a lock, so one instance may be shared across threads.
-public final class SMCConnection: @unchecked Sendable {
-    private var connection: io_connect_t = 0
-    private let lock = NSLock()
+/// All calls are serialized by a `Mutex` around the connection handle, so one instance
+/// may be shared across threads (checked `Sendable`).
+public final class SMCConnection: Sendable {
+    /// The user-client handle; 0 once closed. Held for the whole IOKit round trip.
+    private let connection: Mutex<io_connect_t>
 
     /// Opens the AppleSMC user client. Throws `FanControlError.smcUnavailable` on failure.
     public init() throws {
@@ -25,7 +27,7 @@ public final class SMCConnection: @unchecked Sendable {
         var conn: io_connect_t = 0
         let openResult = IOServiceOpen(service, mach_task_self_, 0, &conn)
         guard openResult == KERN_SUCCESS, conn != 0 else { throw FanControlError.smcUnavailable }
-        connection = conn
+        connection = Mutex(conn)
     }
 
     deinit {
@@ -42,11 +44,11 @@ public final class SMCConnection: @unchecked Sendable {
 
     /// Closes the connection. Further calls throw `smcUnavailable`. Idempotent.
     public func close() {
-        lock.lock()
-        defer { lock.unlock() }
-        if connection != 0 {
-            IOServiceClose(connection)
-            connection = 0
+        connection.withLock { connection in
+            if connection != 0 {
+                IOServiceClose(connection)
+                connection = 0
+            }
         }
     }
 
@@ -55,9 +57,13 @@ public final class SMCConnection: @unchecked Sendable {
     /// Throws `readFailed`/`writeFailed` (depending on `input.data8`) with the
     /// `kern_return_t` or the SMC result byte, and `keyNotFound` for result `0x84`.
     func call(_ input: inout SMCParamStruct) throws -> SMCParamStruct {
-        lock.lock()
-        defer { lock.unlock() }
+        try connection.withLock { connection in
+            try Self.call(&input, on: connection)
+        }
+    }
 
+    /// One round trip on `connection` (the caller holds the mutex).
+    private static func call(_ input: inout SMCParamStruct, on connection: io_connect_t) throws -> SMCParamStruct {
         let keyName = SMCKey(code: input.key).name
         let isWrite = input.data8 == kSMCWriteKey
         func failure(_ code: Int32) -> FanControlError {

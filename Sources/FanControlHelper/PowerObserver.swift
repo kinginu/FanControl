@@ -8,8 +8,9 @@ import FanControlXPC
 /// `PowerTransitionPolicy`, executed by `SessionRegistry`).
 ///
 /// The helper runs `dispatchMain()` (no CFRunLoop on the main thread), so the
-/// notification port is attached to a private dispatch queue
-/// (`IONotificationPortSetDispatchQueue`) instead of a run-loop source.
+/// notification port is attached to a private serial dispatch queue
+/// (`IONotificationPortSetDispatchQueue`) instead of a run-loop source. That queue
+/// is also this actor's executor, so the IOKit callback runs isolated to it.
 ///
 /// - `kIOMessageCanSystemSleep`: always allowed (idle sleep is not vetoed).
 /// - `kIOMessageSystemWillSleep`: `SessionRegistry.prepareForSleep()` (hands the
@@ -19,7 +20,7 @@ import FanControlXPC
 /// - `kIOMessageSystemHasPoweredOn`: `SessionRegistry.recoverAfterWake` at
 ///   `PowerTransitionPolicy.wakeRetryDelays` (0 s, 1 s, 3 s). A new sleep cancels
 ///   the attempts still pending.
-final class PowerObserver: @unchecked Sendable {
+actor PowerObserver {
     static let shared = PowerObserver()
 
     // IOMessage.h: iokit_common_msg(x) = sys_iokit (0xE0000000) | sub_iokit_common (0) | x.
@@ -30,7 +31,12 @@ final class PowerObserver: @unchecked Sendable {
     static let systemHasPoweredOn: UInt32 = 0xE000_0300
     static let systemWillPowerOn: UInt32 = 0xE000_0320
 
-    private let queue = DispatchQueue(label: "com.example.dynamicnotch.DynamicNotch.fanfi.power")
+    private nonisolated let queue = DispatchSerialQueue(label: "com.example.dynamicnotch.DynamicNotch.fanfi.power")
+
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        queue.asUnownedSerialExecutor()
+    }
+
     private var rootPort: io_connect_t = 0
     private var notifyPort: IONotificationPortRef?
     private var notifier: io_object_t = 0
@@ -41,14 +47,25 @@ final class PowerObserver: @unchecked Sendable {
 
     /// Registers for system power notifications. Returns `false` (and logs) on failure;
     /// the helper keeps running without sleep/wake handling in that case.
+    /// Synchronous (runs on `queue` with `queue.sync`).
     @discardableResult
-    func start() -> Bool {
+    nonisolated func start() -> Bool {
+        queue.sync {
+            assumeIsolated { $0.register() }
+        }
+    }
+
+    private func register() -> Bool {
         guard rootPort == 0 else { return true }
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         let port = IORegisterForSystemPower(refcon, &notifyPort, { refcon, _, messageType, messageArgument in
             guard let refcon else { return }
-            Unmanaged<PowerObserver>.fromOpaque(refcon).takeUnretainedValue()
-                .handle(messageType: messageType, argument: messageArgument)
+            // The argument is only an opaque token for IOAllowPowerChange.
+            let token = Int(bitPattern: messageArgument)
+            // Delivered on `queue` (IONotificationPortSetDispatchQueue below), the executor.
+            Unmanaged<PowerObserver>.fromOpaque(refcon).takeUnretainedValue().assumeIsolated {
+                $0.handle(messageType: messageType, token: token)
+            }
         }, &notifier)
         guard port != 0, let notifyPort else {
             helperLog.error("Power: IORegisterForSystemPower failed; sleep/wake fan handling is disabled")
@@ -61,8 +78,7 @@ final class PowerObserver: @unchecked Sendable {
     }
 
     /// Runs on `queue`.
-    private func handle(messageType: UInt32, argument: UnsafeMutableRawPointer?) {
-        let token = Int(bitPattern: argument)
+    private func handle(messageType: UInt32, token: Int) {
         switch messageType {
         case Self.canSystemSleep:
             IOAllowPowerChange(rootPort, token)
@@ -81,7 +97,8 @@ final class PowerObserver: @unchecked Sendable {
             helperLog.notice("Power: system has powered on; wake recovery at \(delays.map { "\($0)s" }.joined(separator: ", "), privacy: .public)")
             for (index, delay) in delays.enumerated() {
                 queue.asyncAfter(deadline: .now() + delay) { [self] in
-                    guard epoch == current else { return }
+                    let isCurrent = assumeIsolated { $0.epoch == current }
+                    guard isCurrent else { return }
                     SessionRegistry.shared.recoverAfterWake(attempt: index + 1, of: delays.count)
                 }
             }
