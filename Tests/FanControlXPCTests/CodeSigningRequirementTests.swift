@@ -178,23 +178,25 @@ struct CodeSigningRequirementTests {
     #endif
 }
 
-/// The XPC wire contract (`FanControlHelperProtocol`, protocol version 1).
+/// The XPC wire contract (`FanControlHelperProtocol`, protocol version 2).
 struct HelperWireContractTests {
     @Test func protocolVersion() {
         // Bumping it requires updating the history table in FanControlHelperProtocol.swift.
-        #expect(C.protocolVersion == 1)
+        #expect(C.protocolVersion == 2)  // F2: 2 adds setLowPowerMode
+        #expect(C.lowPowerModeProtocolVersion == 2)
     }
 
     @Test func errorCodeRawValuesAreStable() {
         let expected: [FanControlHelperErrorCode: Int] = [
             .ok: 0, .notSessionOwner: 1, .sessionNotOpen: 2, .invalidKey: 3,
             .keyNotAllowed: 4, .smcUnavailable: 5, .smcError: 6, .badRequest: 7,
+            .commandFailed: 8, .rateLimited: 9,  // F2
         ]
         #expect(FanControlHelperErrorCode.allCases.count == expected.count)
         for code in FanControlHelperErrorCode.allCases {
             #expect(code.rawValue == expected[code], Comment(rawValue: code.description))
         }
-        #expect(FanControlHelperErrorCode(rawValue: 8) == nil)
+        #expect(FanControlHelperErrorCode(rawValue: 10) == nil)  // F2: 8 and 9 are taken
         #expect(FanControlHelperErrorCode(rawValue: -1) == nil)
         #expect(FanControlHelperErrorCode.badRequest.description == "badRequest")
     }
@@ -203,7 +205,8 @@ struct HelperWireContractTests {
     @Test func selectorsArePinned() {
         let proto: Protocol = FanControlHelperProtocol.self
         let selectors = ["versionWithReply:", "openSessionWithReply:", "writeKey:bytes:reply:",
-                         "closeSessionWithReply:", "readKeyInfo:reply:"]
+                         "closeSessionWithReply:", "readKeyInfo:reply:",
+                         "setLowPowerMode:reply:"]  // F2 (protocol 2)
         for name in selectors {
             let method = protocol_getMethodDescription(proto, NSSelectorFromString(name), true, true)
             #expect(method.name != nil, Comment(rawValue: name))
