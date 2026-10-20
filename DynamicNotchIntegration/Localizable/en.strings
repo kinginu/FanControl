@@ -123,6 +123,7 @@
 "SMC unavailable" = "SMC unavailable";
 "Last updated %@ ago" = "Last updated %@ ago";
 "Refresh" = "Refresh";
+"Constant or unreliable value, probably not a temperature. Not used for the hottest sensors." = "Constant or unreliable value, probably not a temperature. Not used for the hottest sensors.";
 
 /* MARK: Nook widget (FanControlWidgetView) and Live Activity (FanControlLiveActivity) */
 "Fan control disabled" = "Fan control disabled";

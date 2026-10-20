@@ -5,7 +5,10 @@
 // with its SMC key, name and temperature (replaces the earlier sensor table,
 // design doc §4.4). Sensor names are community-sourced (`SensorCatalog`).
 // Aggregate sensors ("CPU (max)", …; `SensorAggregator`) are listed first,
-// whatever the sort order, with a "sum" icon in the key column.
+// whatever the sort order, with a "sum" icon in the key column. Keys excluded
+// from ranking (`SensorCatalog.isExcludedFromRanking`, e.g. `Tf*`: constant /
+// probably not a temperature) stay listed, with a marker and tooltip, and go
+// after the real sensors when sorting by temperature.
 
 import SwiftUI
 import Defaults
@@ -21,7 +24,10 @@ struct FanControlSensorsTabView: View {
     private var manager: FanControlManager { FanControlManager.shared }
 
     private var rows: [SensorReading] {
-        FanControlFormatting.aggregatesFirst(manager.sensorReadings.sorted(using: sortOrder))
+        let sorted = manager.sensorReadings.sorted(using: sortOrder)
+        let sortedByTemperature = sortOrder.first?.keyPath == \SensorReading.temperature
+        return FanControlFormatting.aggregatesFirst(
+            sortedByTemperature ? FanControlFormatting.rankableFirst(sorted) : sorted)
     }
 
     var body: some View {
@@ -33,6 +39,10 @@ struct FanControlSensorsTabView: View {
                             Image(systemName: "sum")
                                 .foregroundStyle(.secondary)
                                 .help(Text("Aggregate"))
+                        } else if sensor.isExcludedFromRanking {
+                            Image(systemName: "questionmark.circle")
+                                .foregroundStyle(.tertiary)
+                                .help(Text("Constant or unreliable value, probably not a temperature. Not used for the hottest sensors."))
                         }
                         Text(verbatim: sensor.id)
                             .font(.body.monospaced())
@@ -47,7 +57,8 @@ struct FanControlSensorsTabView: View {
                 TableColumn("Temperature", value: \.temperature) { sensor in
                     Text(verbatim: FanControlFormatting.temperature(sensor, unit: widgetSettings.temperatureUnit))
                         .monospacedDigit()
-                        .foregroundStyle(isHot(sensor) ? Color.red : Color.primary)
+                        .foregroundStyle(isHot(sensor) ? Color.red
+                                         : sensor.isExcludedFromRanking ? Color.secondary : Color.primary)
                 }
                 .width(min: 80, ideal: 90, max: 110)
             }

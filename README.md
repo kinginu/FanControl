@@ -42,7 +42,7 @@ Linux 上で確認済み:
 Mac（Apple Silicon, macOS 26, Swift 6.3.3 / Command Line Tools）で確認済み:
 
 - 実 macOS SDK に対して `swift build` が警告 0 で通る（Swift 5 言語モード。`-swift-version 6` でも診断 0）
-- `swift test` で 133 tests（22 suites）が通る（2026-10-20、手動インストールモード追加後）
+- `swift test` で 139 tests（23 suites）が通る（2026-10-20、ランキング除外キー追加後）
 - 実機の SMC 読取（2026-10-19、Mac14,9 / M2 Pro）: `fanfi-probe` でファン 2 基（2317〜6800 RPM）と温度キー 259 個を取得。
   書込は未試行。結果と所見は `docs/integration.md` §6 Phase 1、生出力は `docs/verification/`
 - Mac14,9 のダンプに基づく Apple Silicon 対応（2026-10-19）: `TemperatureSampleFilter`（`Tp*` の 0 °C 付近の偽値を置換）、
@@ -57,7 +57,7 @@ Mac（Apple Silicon, macOS 26, Swift 6.3.3 / Command Line Tools）で確認済�
   `Tools/IntegrationTypeCheck` で `swift build`（Swift 5 / Swift 6 言語モードとも警告・エラー 0）。DynamicNotch 側はスタブ（`docs/integration.md` §7）
 
 テストは Swift Testing（`import Testing`）で書かれている。XCTest は Xcode.app にしか同梱されないため
-XCTest から移行した。Xcode.app があれば（確認済み: Xcode 26.6 で `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` → 133 tests 通過）、または Linux の Swift 6 ツールチェーンでは、そのまま `swift test` で動く。
+XCTest から移行した。Xcode.app があれば（確認済み: Xcode 26.6 で `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` → 139 tests 通過）、または Linux の Swift 6 ツールチェーンでは、そのまま `swift test` で動く。
 Command Line Tools だけの環境では Testing.framework の検索パスを自分で渡す必要がある（下記）。
 SMC の読取確認は `swift run fanfi-probe`（`--dump` で全キー、`--watch N` で繰返し）。読み取り専用で sudo も不要。
 

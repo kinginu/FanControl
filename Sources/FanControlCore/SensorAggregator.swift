@@ -134,7 +134,9 @@ public enum SensorAggregator {
     /// `readings` (CPU, GPU) followed by the readings that none of them covers
     /// (e.g. battery, storage). Member keys of a present overview aggregate and
     /// the non-overview aggregates are dropped, so the hottest core does not
-    /// appear twice. Order otherwise follows `readings`.
+    /// appear twice. Keys excluded from ranking
+    /// (`SensorCatalog.isExcludedFromRanking(_:)`, e.g. `Tf*`) are dropped too.
+    /// Order otherwise follows `readings`.
     public static func overview(_ readings: [SensorReading],
                                 definitions: [SensorAggregateDefinition]) -> [SensorReading] {
         let present = Set(readings.map(\.id))
@@ -142,9 +144,26 @@ public enum SensorAggregator {
         let overviewIDs = Set(overviewDefinitions.map(\.id))
         let aggregates = readings.filter { overviewIDs.contains($0.id) }
         let others = readings.filter { reading in
-            !isAggregate(reading.id) && !overviewDefinitions.contains { $0.contains(reading.id) }
+            !isAggregate(reading.id) && !reading.isExcludedFromRanking
+                && !overviewDefinitions.contains { $0.contains(reading.id) }
         }
         return aggregates + others
+    }
+
+    /// The `limit` hottest finite readings of `overview(_:definitions:)`,
+    /// hottest first (ties keep `overview` order). This is the widget's
+    /// automatic "3 hottest sensors" selection: CPU (max) / GPU (max) stand in
+    /// for their member keys, and non-thermal keys (`Tf*`, …) never compete.
+    public static func hottestOverview(_ readings: [SensorReading],
+                                       definitions: [SensorAggregateDefinition],
+                                       limit: Int = 3) -> [SensorReading] {
+        let candidates = overview(readings, definitions: definitions).filter { $0.temperature.isFinite }
+        let ranked = candidates.enumerated().sorted { lhs, rhs in
+            lhs.element.temperature != rhs.element.temperature
+                ? lhs.element.temperature > rhs.element.temperature
+                : lhs.offset < rhs.offset
+        }
+        return ranked.prefix(max(0, limit)).map(\.element)
     }
 }
 

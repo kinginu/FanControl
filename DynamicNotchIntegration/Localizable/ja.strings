@@ -123,6 +123,7 @@
 "SMC unavailable" = "SMC を利用できません";
 "Last updated %@ ago" = "%@前に更新";
 "Refresh" = "更新";
+"Constant or unreliable value, probably not a temperature. Not used for the hottest sensors." = "一定値または不安定な値で、温度ではない可能性があります。最も高温のセンサーの選択には使いません。";
 
 /* MARK: Nook widget (FanControlWidgetView) and Live Activity (FanControlLiveActivity) */
 "Fan control disabled" = "ファン制御は無効です";

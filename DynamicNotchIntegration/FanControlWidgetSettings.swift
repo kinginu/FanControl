@@ -79,19 +79,19 @@ struct FanControlWidgetSettings: Defaults.Serializable, Codable, Equatable, Hash
 
     /// The sensors to display: the user's selection in selection order, or,
     /// when nothing is selected, the 3 hottest finite readings of
-    /// `SensorAggregator.overview` — the CPU (max) / GPU (max) aggregates stand
-    /// in for their individual core keys (so the hottest core is not listed
-    /// twice), other sensors (battery, storage, …) compete as before. Without
-    /// aggregates (e.g. an older kit or no CPU/GPU keys) this is the plain
-    /// 3 hottest sensors.
+    /// `SensorAggregator.overview` (`SensorAggregator.hottestOverview`) — the
+    /// CPU (max) / GPU (max) aggregates stand in for their individual core keys
+    /// (so the hottest core is not listed twice), other sensors (battery,
+    /// storage, …) compete as before, and non-thermal / unreliable keys
+    /// (`SensorCatalog.isExcludedFromRanking`, e.g. `Tf06` on Mac14,9) never
+    /// take part. Without aggregates (e.g. an older kit or no CPU/GPU keys)
+    /// this is the plain 3 hottest (rankable) sensors. An explicit selection
+    /// is honoured as-is, excluded keys included.
     func visibleSensors(from readings: [SensorReading],
                         aggregateDefinitions: [SensorAggregateDefinition] = FanControlPlatform.sensorAggregateDefinitions)
         -> [SensorReading] {
         guard let keys = visibleSensorKeys else {
-            return Array(SensorAggregator.overview(readings, definitions: aggregateDefinitions)
-                .filter { $0.temperature.isFinite }
-                .sorted { $0.temperature > $1.temperature }
-                .prefix(3))
+            return SensorAggregator.hottestOverview(readings, definitions: aggregateDefinitions, limit: 3)
         }
         return keys.compactMap { key in readings.first { $0.id == key } }
     }
@@ -212,6 +212,14 @@ enum FanControlFormatting {
     /// `readings` with the aggregates moved to the front (each part keeps its order).
     static func aggregatesFirst(_ readings: [SensorReading]) -> [SensorReading] {
         readings.filter(\.isAggregate) + readings.filter { !$0.isAggregate }
+    }
+
+    /// `readings` with the keys excluded from ranking
+    /// (`SensorCatalog.isExcludedFromRanking`, e.g. `Tf*`) moved to the end,
+    /// order otherwise unchanged (stable). Used when sorting by temperature so
+    /// constant / non-thermal values do not top the list.
+    static func rankableFirst(_ readings: [SensorReading]) -> [SensorReading] {
+        readings.filter { !$0.isExcludedFromRanking } + readings.filter(\.isExcludedFromRanking)
     }
 
     /// Localized display name for a profile: built-in names ("Automatic",

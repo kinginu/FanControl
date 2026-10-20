@@ -193,6 +193,20 @@ aggregates (CPU, GPU) plus the readings they do not cover; the widget uses it fo
 "3 hottest" list so a core is not listed twice. `fanfi-probe` prints the aggregates of the filtered
 samples after each temperature readout.
 
+**Non-thermal / unreliable keys** (`SensorCatalog.isExcludedFromRanking(_:)`, also
+`SensorReading.isExcludedFromRanking`): keys that must not take part in automatic "hottest"
+selection or ranking. The table is data: `SensorCatalog.rankingExcludedPrefixes` = `["Tf"]` (on
+every machine; meaning unknown, on Mac14,9 `Tf06`/`Tf16`/`Tf26` hold constant 79-105 values and
+other `Tf*` keys are constant, negative or ≈ 0) and `SensorCatalog.rankingExcludedKeys` = the keys
+that read a constant on Mac14,9 (`TH1a`, `TH1b`, `TVMD`, `Ta0C/D/G/H/K/L/V`, `Tz11`…`Tz18`,
+`Tz1j`); aggregate ids are never excluded. Discovery is unchanged (the keys are still read,
+published in `sensorReadings` and selectable explicitly). `SensorAggregator.overview` drops them,
+`SensorAggregator.hottestOverview(_:definitions:limit:)` (the widget's automatic "3 hottest"
+selection: the `limit` hottest finite overview readings, ties in overview order) therefore never
+picks them, and `FanControlManager.hottestSensor`'s fallback (no emergency-prefix sensor) skips
+them. No excluded key matches an emergency prefix or aggregate member, so emergency handling,
+alerts and aggregates are unchanged (tested in `SensorRankingTests`).
+
 **Safety policy selection:** `safetyPolicy` starts as `FanControlPlatform.defaultSafetyPolicy`
 = `SafetyPolicy.default(appleSilicon: FanControlPlatform.isAppleSilicon)`. On Apple Silicon the
 emergency prefixes are `Tp/Te/TC/Tg` (`TG*` excluded: on Mac14,9 those are `ioft` battery-area

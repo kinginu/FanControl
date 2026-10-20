@@ -24,7 +24,8 @@ public enum SensorCatalog {
     /// Deliberately left unnamed (no community backing found; behaviour noted
     /// in docs/integration.md §6): `TCMb`/`TCMz`/`TCDX`/`TCHP`, `TVM*`/`TVm*`,
     /// `TPD*`/`TRD*`, `Th0*` (on Apple Silicon not the Intel heat pipe),
-    /// `TD*`, `Tf*`, `TG*`, `Ta0*`, `Tz*`, `TS*`.
+    /// `TD*`, `Tf*`, `TG*`, `Ta0*`, `Tz*`, `TS*`. Several of these are also
+    /// excluded from ranking (`isExcludedFromRanking(_:)`).
     public static let knownNames: [String: String] = [
         // [Intel]
         "TC0P": "CPU Proximity",
@@ -103,6 +104,58 @@ public enum SensorCatalog {
         return "Sensor \(key)"
     }
 
+    // MARK: - Non-thermal / unreliable keys
+
+    /// Key prefixes excluded from automatic "hottest sensor" selection and
+    /// ranking (`isExcludedFromRanking(_:)`). Applied on every machine.
+    ///
+    /// - `Tf`: meaning unknown (no community naming found, see `knownNames`);
+    ///   the exclusion rests on Mac14,9 evidence only. On Mac14,9 (M2 Pro) / macOS 26 several `Tf*` keys hold
+    ///   values that do not behave like temperatures: `Tf06`/`Tf16`/`Tf26` are
+    ///   constant within a session but differ between sessions (94.50 / 79.42 /
+    ///   79.42 on 2026-10-19, 105.31 / 93.08 / 88.81 on 2026-10-20, both idle),
+    ///   `Tf02`/`Tf12`/`Tf22` are constant negative (≈ −12), `Tf00`/`Tf10`/`Tf20`
+    ///   ≈ 0, `Tf01`/`Tf11`/`Tf21` and `Tf05`/`Tf15`/`Tf25` constant 5-22. The
+    ///   remaining `Tf*` keys (`Tf04`, `Tf08`…`Tf2E`) vary like temperatures
+    ///   (≈ 50-60 °C) but are excluded with the family: `Tf06` alone ranked
+    ///   first in the widget's "3 hottest" and hid the CPU/GPU aggregates
+    ///   (docs/integration.md §6).
+    public static let rankingExcludedPrefixes: [String] = ["Tf"]
+
+    /// Exact keys excluded from automatic "hottest sensor" selection and
+    /// ranking, because they read a constant (often 0) value on Mac14,9 /
+    /// macOS 26 (`fanfi-probe`, 2026-10-19 and 2026-10-20, several reads each):
+    ///
+    /// - always 0.00: `TH1a`, `TH1b`, `TVMD`, `Ta0C`, `Ta0G`, `Ta0K`,
+    ///   `Tz11`…`Tz18`, `Tz1j`.
+    /// - constant 9.50: `Ta0D`, `Ta0H`, `Ta0L`.
+    /// - `Ta0V`: 0.00 on 2026-10-20, but 52.97 on 2026-10-19 (`Ta0W` behaves
+    ///   the same, 62.47 → 9.50, and is **not** listed: it can read a
+    ///   plausible value). Listed because it reads 0 most of the time.
+    ///
+    /// Kept as exact keys (not prefixes) so that sibling keys on other models
+    /// are not hidden on the strength of one machine.
+    public static let rankingExcludedKeys: Set<String> = [
+        "TH1a", "TH1b", "TVMD",
+        "Ta0C", "Ta0D", "Ta0G", "Ta0H", "Ta0K", "Ta0L", "Ta0V",
+        "Tz11", "Tz12", "Tz13", "Tz14", "Tz15", "Tz16", "Tz17", "Tz18", "Tz1j",
+    ]
+
+    /// `true` if `key` is a non-thermal or unreliable SMC key that must not
+    /// take part in automatic selection or ranking ("3 hottest sensors",
+    /// `SensorAggregator.overview`, the hottest-sensor fallback, sorting by
+    /// temperature). Discovery is unaffected: such keys are still read and
+    /// listed (the Sensors tab shows them, marked and sorted last), and can
+    /// still be chosen explicitly. Aggregate ids are never excluded.
+    ///
+    /// None of these keys matches `SafetyPolicy.defaultEmergencySensorPrefixes`
+    /// or an aggregate's members, so emergency handling and aggregates exclude
+    /// them by construction (tested).
+    public static func isExcludedFromRanking(_ key: String) -> Bool {
+        guard !SensorAggregator.isAggregate(key) else { return false }
+        return rankingExcludedKeys.contains(key) || rankingExcludedPrefixes.contains { key.hasPrefix($0) }
+    }
+
     /// Enumerates every SMC key (`#KEY` / `key(at:)`), keeps keys starting with
     /// `"T"` that have a numeric data type (`sp78`, `flt `, other fixed point or
     /// integers), reads them and keeps the ones whose value lies in
@@ -137,4 +190,10 @@ public enum SensorCatalog {
             return SensorReading(id: name, name: displayName(for: name), temperature: value, sensorType: .smc)
         }
     }
+}
+
+public extension SensorReading {
+    /// `SensorCatalog.isExcludedFromRanking(id)`: a non-thermal or unreliable
+    /// key that automatic "hottest" selection and ranking skip.
+    var isExcludedFromRanking: Bool { SensorCatalog.isExcludedFromRanking(id) }
 }

@@ -180,10 +180,13 @@ public final class FanControlManager: @unchecked Sendable {
     public var sensorAggregateDefinitions: [SensorAggregateDefinition] { aggregateDefinitions }
 
     /// Hottest CPU/GPU sensor (per `safetyPolicy.emergencySensorPrefixes`),
-    /// falling back to the hottest sensor overall.
+    /// falling back to the hottest sensor overall, skipping keys excluded from
+    /// ranking (`SensorCatalog.isExcludedFromRanking(_:)`, e.g. `Tf*`).
     public var hottestSensor: SensorReading? {
         FanControlEngine.hottestEmergencySensor(sensorReadings, policy: safetyPolicy)
-            ?? sensorReadings.filter { $0.temperature.isFinite }.max { $0.temperature < $1.temperature }
+            ?? sensorReadings
+                .filter { $0.temperature.isFinite && !$0.isExcludedFromRanking }
+                .max { $0.temperature < $1.temperature }
     }
 
     // MARK: - Private (main thread)
