@@ -74,7 +74,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
     private var sessionOpen = false
     private var state: HelperConnectionState = .disconnected
     private var stateHandler: (@Sendable (HelperConnectionState) -> Void)?
-    private var teamID: String = FanControlHelperConstants.teamIdentifierPlaceholder
+    private var teamID: String = FanControlHelperConstants.clientTeamID ?? FanControlHelperConstants.teamIdentifierPlaceholder
     private var timeout: TimeInterval = 8
 
     private let machServiceName: String
@@ -86,9 +86,23 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
     /// connection is created or interrupted). Distinguishes "dropped right after the
     /// first message" (requirement failure on the helper side) from a crash.
     private var peerReplied = false
+    /// Test seam (`init(connectionFactory:)`); `nil` in production.
+    private let connectionFactory: (@Sendable () -> NSXPCConnection)?
 
     public init(machServiceName: String = FanControlHelperConstants.machServiceName) {
         self.machServiceName = machServiceName
+        self.connectionFactory = nil
+    }
+
+    /// Test seam (internal, for `@testable` end-to-end tests): every new connection
+    /// comes from `connectionFactory` (e.g. `NSXPCConnection(listenerEndpoint:)` of an
+    /// in-process anonymous listener) instead of the privileged Mach service. The
+    /// install-dependent parts are skipped: no manual pin check, no helper
+    /// code-signing requirement (the factory may set its own), and a constant install
+    /// fingerprint. Everything else (gate, timeout, session flag, state) is unchanged.
+    init(connectionFactory: @escaping @Sendable () -> NSXPCConnection) {
+        self.machServiceName = "injected"
+        self.connectionFactory = connectionFactory
     }
 
     /// Requirement mode for the next connection (manual if the app has no Team ID or
@@ -125,6 +139,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
     /// Identity of the installation the next connection would talk to (cheap file
     /// attributes; call without `lock`). A sticky rejection is dropped when it changes.
     private func installFingerprint() -> String {
+        if connectionFactory != nil { return "injected" }
         switch Self.currentRequirementMode() {
         case .manualCDHash: return "manual|" + ManualHelperSigning.installFingerprint()
         case .teamID: return "team|" + clientTeamID
@@ -186,7 +201,8 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
     }
 
     /// Team ID the helper's code signature must carry. Takes effect for the next
-    /// connection (set it before the first call). Defaults to
+    /// connection (set it before the first call). Defaults to the app's Info.plist
+    /// `FanControlClientTeamID` (`FanControlHelperConstants.clientTeamID`), else
     /// `FanControlHelperConstants.teamIdentifierPlaceholder`.
     public var clientTeamID: String {
         get { lock.withLock { teamID } }
@@ -230,19 +246,22 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
         let currentTeamID = teamID
         lock.unlock()
 
-        // Manual mode: if the plist pins another build of the app, the helper would
-        // refuse us; report it without connecting at all.
-        if Self.currentRequirementMode() == .manualCDHash,
-           case .mismatch(let pinned, let app) = ManualHelperSigning.clientPinCheck() {
-            throw reject(.clientNotPinned(pinnedCDHash: pinned, appCDHash: app), fingerprint: fingerprint)
-        }
-
-        let helperRequirement: (requirement: String, manual: Bool)
-        do {
-            helperRequirement = try Self.makeHelperRequirement(teamID: currentTeamID)
-        } catch let error as FanControlError {
-            if case .helperConnectionFailed(let reason) = error { updateState(.error(reason)) }
-            throw error
+        let helperRequirement: (requirement: String, manual: Bool)?
+        if connectionFactory == nil {
+            // Manual mode: if the plist pins another build of the app, the helper would
+            // refuse us; report it without connecting at all.
+            if Self.currentRequirementMode() == .manualCDHash,
+               case .mismatch(let pinned, let app) = ManualHelperSigning.clientPinCheck() {
+                throw reject(.clientNotPinned(pinnedCDHash: pinned, appCDHash: app), fingerprint: fingerprint)
+            }
+            do {
+                helperRequirement = try Self.makeHelperRequirement(teamID: currentTeamID)
+            } catch let error as FanControlError {
+                if case .helperConnectionFailed(let reason) = error { updateState(.error(reason)) }
+                throw error
+            }
+        } else {
+            helperRequirement = nil  // test seam: the factory configures the connection
         }
 
         lock.lock()
@@ -254,12 +273,16 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
         }
         generation &+= 1
         let currentGeneration = generation
-        let newConnection = NSXPCConnection(machServiceName: machServiceName, options: .privileged)
+        let newConnection = connectionFactory?()
+            ?? NSXPCConnection(machServiceName: machServiceName, options: .privileged)
         newConnection.remoteObjectInterface = makeHelperInterface()
         // Only talk to our own helper: signed by our team with the helper's identifier,
         // or (manual mode) exactly the binary root installed at manualHelperPath.
-        newConnection.setCodeSigningRequirement(helperRequirement.requirement)
-        manualMode = helperRequirement.manual
+        if let helperRequirement {
+            newConnection.setCodeSigningRequirement(helperRequirement.requirement)
+        }
+        let manual = helperRequirement?.manual ?? false
+        manualMode = manual
         peerReplied = false
         newConnection.invalidationHandler = { [weak self] in
             self?.connectionEnded(generation: currentGeneration, invalidated: true)
@@ -272,7 +295,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
 
         updateState(.connecting)
         newConnection.resume()
-        return (newConnection, helperRequirement.manual)
+        return (newConnection, manual)
     }
 
     private func connectionEnded(generation ended: UInt64, invalidated: Bool) {

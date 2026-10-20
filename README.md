@@ -223,6 +223,8 @@ swift test            # Swift Testing; needs Xcode, or see CONTRIBUTING.md for C
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+The app ↔ helper XPC contract has end-to-end tests (`Tests/FanControlKitTests/EndToEnd/`) that need no root, launchd or SMC writes: `HelperClient` talks over a real `NSXPCConnection` to an in-process fake helper (`NSXPCListener.anonymous()`, backed by an in-memory SMC and the real `HelperWritePolicy` / `PowerTransitionPolicy`) through session open, write order (`Md` before `Tg`), rollback after a partial failure, restore (`Md` = 0 only), release on disconnect, call timeout, protocol-version mismatch and code-signing rejection. They run as part of `swift test`; on their own with `swift test --filter HelperEndToEnd` (about 5 s). Scope and limits: [docs/kit.md](docs/kit.md) "Testing".
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).

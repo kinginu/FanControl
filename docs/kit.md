@@ -574,6 +574,46 @@ it produces a single write. On Mac14,9, `F<i>Md` is `ui8 ` (`01` / `00`) and `F<
 little-endian `flt ` (2317 RPM = `00 d0 10 45`, the same bytes as `F<i>Mn`). `F<i>Mn` is never
 written.
 
+## Testing
+
+Unit tests use Swift Testing (`swift test`; with Xcode installed but `xcode-select`
+on the Command Line Tools, prefix `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`).
+
+**End-to-end helper contract** (`Tests/FanControlKitTests/EndToEnd/`, suite
+"Helper end-to-end (in-process XPC)", run alone with
+`swift test --filter HelperEndToEnd`, about 5 s): a real `NSXPCConnection` from
+`HelperClient` to an in-process `FakeHelper` served by `NSXPCListener.anonymous()`,
+backed by a thread-safe `FakeSMC` (Mac14,9 layout: `F<n>Md` ui8 0xd0, `F<n>Tg` flt
+0xd4, read-only `Mn`/`Mx`). No root, launchd, signing or SMC hardware. The client is
+built with the internal test seam `HelperClient(connectionFactory:)` (`@testable`),
+which skips only the install-dependent parts (manual pin check, helper code-signing
+requirement, install fingerprint); gate, timeout, session flag and state handling
+are the production code.
+
+- Covered: version handshake, open/close session, `FanWriteStrategy` write order
+  (`Md` before `Tg`), helper validation (allowlist, `Mn...Mx`, mode 0/1), partial
+  failure + rollback (`Md`=1 accepted, `Tg` failed → `Md`=0), restore on close /
+  disconnect / client deallocation / helper shutdown (`Md`=0 only, `Tg` not written
+  back), call timeout (hung helper → connection invalidated → session released),
+  protocol-version mismatch surfaced by `version()`, `notSessionOwner` and same-pid
+  reclaim, sleep hand-back and wake re-apply (`PowerTransitionPolicy`), and the
+  rejection paths with **real** code-signing requirements: a requirement on the
+  helper the peer does not meet → `.rejected(.helperSignatureMismatch)` (sticky,
+  later calls do not connect, `resetRejection()` clears it); the helper's client
+  requirement (as `HelperListenerDelegate` sets it) or a helper dropping the
+  connection on the first message → transient first, `.rejected(.droppedByHelper)`
+  on the second attempt after the 2 s backoff; a listener refusing the connection
+  → transient `.error` with backoff, never a rejection.
+- Not covered: `FanControlManager` / `FanControlPoller` (their reader is the IOKit
+  `SMCClient`; the tests replay `applyTargets` + `rollBackFailedWrites` with the same
+  `FanWriteStrategy` calls), the helper executable's own `SessionRegistry` /
+  `HelperService` / `PowerObserver` (the fake duplicates their glue around the real
+  `HelperWritePolicy` / `PowerTransitionPolicy`; keep it in step), the privileged
+  Mach service, launchd, `SMAppService`, manual-install cdhash pinning, and process
+  death (`kill -9`) — all verified on hardware instead (`docs/verification/`).
+- Observed: with a failing client-side requirement on the helper, the first message
+  still reaches the peer and only its reply is discarded.
+
 ## Still to verify on hardware
 
 - The `SMAppService` registration and approval flow, and both code-signing requirements, with
