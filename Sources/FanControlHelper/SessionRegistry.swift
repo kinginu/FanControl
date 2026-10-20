@@ -27,9 +27,8 @@ struct HelperResult {
 /// - The original bytes of every key written during the session are recorded before
 ///   the first write (a write is refused if that snapshot cannot be taken). When the
 ///   session closes or the owner disappears, `HelperWritePolicy.restore` hands the fans
-///   back to the SMC: mode keys first (`F<n>Md` = 0, `FS! ` = snapshot with this
-///   session's bits cleared), and `F<n>Tg` is written back (clamped into `Mn...Mx`)
-///   only for fans without a mode key. The Apple Silicon idle snapshot `Tg` = 0 is
+///   back to the SMC: mode keys first (`F<n>Md` = 0), and `F<n>Tg` is written back
+///   (clamped into `Mn...Mx`) only for fans whose `F<n>Md` was not written. The Apple Silicon idle snapshot `Tg` = 0 is
 ///   therefore never written while `F<n>Md` = 1 (pre-write review 2026-10-20).
 /// - Written values are validated by `HelperWritePolicy.validate` (the helper is the
 ///   safety authority), including the key's write attribute (`0x40`).
@@ -48,12 +47,9 @@ public final class SessionRegistry: @unchecked Sendable {
     private var originals: [(key: SMCKey, bytes: [UInt8])] = []
     /// `FNum` read at session open (`nil` if unreadable).
     private var fanCount: Int?
-    /// Hardware `F<n>Mn...F<n>Mx` per fan, read at session open (before any write can
-    /// change `F<n>Mn`). Fans missing here cannot have speed keys written.
+    /// Hardware `F<n>Mn...F<n>Mx` per fan, read at session open (`F<n>Mn` is
+    /// read-only on Apple Silicon). Fans missing here cannot have targets written.
     private var fanLimits: [Int: ClosedRange<Double>] = [:]
-    /// `FS! ` bits this session has newly set (not already set in its snapshot); cleared from the
-    /// snapshot on restore and handed back on sleep / wake.
-    private var touchedForceBits: UInt64 = 0
     /// The client's last successful write per key (its intent), re-applied on wake.
     /// The helper's own sleep/wake writes are not recorded here.
     private var lastWritten: [SMCKey: [UInt8]] = [:]
@@ -93,7 +89,6 @@ public final class SessionRegistry: @unchecked Sendable {
         openedAt = Date()
         client = newClient
         originals = []
-        touchedForceBits = 0
         lastWritten = [:]
         readHardwareLimitsLocked(using: newClient)
         helperLog.info("Session opened by pid \(requester.pid, privacy: .public) (connection \(requester.connectionID, privacy: .public))")
@@ -118,7 +113,7 @@ public final class SessionRegistry: @unchecked Sendable {
     }
 
     /// Validated write (allowlist already checked by the caller or by construction):
-    /// `HelperWritePolicy.validate`, original-value snapshot, `FS! ` bookkeeping, write.
+    /// `HelperWritePolicy.validate`, original-value snapshot, write.
     private func performWriteLocked(_ bytes: [UInt8], to key: SMCKey, using client: SMCClient) -> HelperResult {
         let info: SMCKeyInfo
         do {
@@ -129,7 +124,7 @@ public final class SessionRegistry: @unchecked Sendable {
             return HelperResult(code: .smcError, message: "key info for '\(key.name)' failed: \(error)")
         }
         if let rejection = HelperWritePolicy.validate(bytes, for: key, info: info,
-                                                      fanCount: fanCount, fanLimits: fanLimits) {
+                                                      fanLimits: fanLimits) {
             return HelperResult(code: rejection.code, message: rejection.message)
         }
 
@@ -148,20 +143,6 @@ public final class SessionRegistry: @unchecked Sendable {
             }
             originals.append((key, original))
         }
-        if key == .forceBits {
-            // Only bits this session sets on top of the snapshot are "touched": bits already set
-            // before the session (SMC or another tool) are left as they were on restore / sleep / wake.
-            // Recorded before the write: if the SMC applied it despite an error, restore still clears it.
-            let snapshot = originals.first(where: { $0.key == key })?.bytes ?? []
-            if let bits = HelperWritePolicy.newlySetForceBits(written: bytes, snapshot: snapshot,
-                                                              type: info.dataType) {
-                touchedForceBits |= bits
-            } else if let bits = HelperWritePolicy.forceBits(of: bytes, type: info.dataType) {
-                // Undecodable snapshot (should not happen: size is checked above): fall back to all bits.
-                touchedForceBits |= bits
-            }
-        }
-
         do {
             try client.writeBytes(bytes, to: key)
         } catch {
@@ -277,7 +258,7 @@ public final class SessionRegistry: @unchecked Sendable {
     // MARK: Private (lock held)
 
     private func rememberedFansLocked(using client: SMCClient) -> [PowerTransitionPolicy.RememberedFan] {
-        PowerTransitionPolicy.rememberedFans(lastWritten: lastWritten, touchedForceBits: touchedForceBits,
+        PowerTransitionPolicy.rememberedFans(lastWritten: lastWritten,
                                              keyInfo: { try? client.keyInfo($0) })
     }
 
@@ -324,7 +305,6 @@ public final class SessionRegistry: @unchecked Sendable {
         openedAt = nil
         client = nil
         originals = []
-        touchedForceBits = 0
         lastWritten = [:]
         fanCount = nil
         fanLimits = [:]
@@ -334,7 +314,6 @@ public final class SessionRegistry: @unchecked Sendable {
     private func restoreOriginalsLocked(using client: SMCClient) {
         HelperWritePolicy.restore(
             originals: originals,
-            touchedForceBits: touchedForceBits,
             fanLimits: fanLimits,
             keyInfo: { try? client.keyInfo($0) },
             write: { try client.writeBytes($1, to: $0) },
@@ -346,7 +325,7 @@ public final class SessionRegistry: @unchecked Sendable {
         fanCount = nil
         fanLimits = [:]
         guard let rawCount = try? client.readNumber(.fanCount), rawCount.isFinite, rawCount >= 0 else {
-            helperLog.error("Cannot read FNum; FS! writes will be refused")
+            helperLog.error("Cannot read FNum; target writes will be refused")
             return
         }
         let count = Int(min(rawCount, 10))

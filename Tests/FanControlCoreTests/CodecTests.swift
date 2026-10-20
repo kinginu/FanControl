@@ -9,8 +9,10 @@ struct SMCKeyTests {
         #expect(key.code == 0x234B_4559)
         #expect(SMCKey(code: 0x234B_4559).name == "#KEY")
         #expect(SMCKey(code: key.code) == key)
-        #expect(SMCKey.forceBits.name == "FS! ")
-        #expect(SMCKey.forceBits.description == "FS! ")
+        // Trailing space is part of the name (e.g. the legacy Intel `FS! ` key).
+        let spaced: SMCKey = "FS! "
+        #expect(spaced.name == "FS! ")
+        #expect(spaced.description == "FS! ")
         let literal: SMCKey = "TC0P"
         #expect(literal.name == "TC0P")
     }
@@ -35,9 +37,10 @@ struct SMCKeyTests {
     }
 
     @Test func testCodable() throws {
-        let data = try JSONEncoder().encode([SMCKey.forceBits])
+        let spaced: SMCKey = "FS! "
+        let data = try JSONEncoder().encode([spaced])
         #expect(String(decoding: data, as: UTF8.self) == "[\"FS! \"]")
-        #expect(try JSONDecoder().decode([SMCKey].self, from: data) == [.forceBits])
+        #expect(try JSONDecoder().decode([SMCKey].self, from: data) == [spaced])
         #expect(throws: (any Error).self) {
             try JSONDecoder().decode([SMCKey].self, from: Data("[\"TOOLONG\"]".utf8))
         }

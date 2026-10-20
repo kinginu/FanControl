@@ -15,25 +15,45 @@ struct FanWriteStrategyTests {
         ])
     }
 
-    private func intel(mask: [UInt8] = [0x00, 0x02]) -> MockSMCReader {
-        MockSMCReader([
-            ("FNum", .ui8, [2]),
-            ("FS! ", .ui16, mask),
-            ("F0Tg", .fpe2, Bytes.fpe2(1200)),
-            ("F1Tg", .fpe2, Bytes.fpe2(1300)),
-        ])
-    }
-
     private func names(_ writes: [(SMCKey, [UInt8])]) -> [String] { writes.map { $0.0.name } }
     private func bytes(_ writes: [(SMCKey, [UInt8])]) -> [[UInt8]] { writes.map { $0.1 } }
 
-    @Test func testDetectsStyles() {
-        #expect(FanWriteStrategy(reader: appleSilicon(), fanIndices: [0, 1]).style(for: 0) == .modeKey)
-        #expect(FanWriteStrategy(reader: intel(), fanIndices: [0, 1]).style(for: 1) == .forceBits)
-        let bare = MockSMCReader([("F0Tg", .fpe2, Bytes.fpe2(1000))])
-        #expect(FanWriteStrategy(reader: bare, fanIndices: [0]).style(for: 0) == .targetOnly)
-        // No F2Tg -> not controllable.
-        #expect(FanWriteStrategy(reader: appleSilicon(), fanIndices: [0, 1, 2]).style(for: 2) == nil)
+    @Test func testDetectsControllableFans() {
+        let strategy = FanWriteStrategy(reader: appleSilicon(), fanIndices: [0, 1, 2])
+        #expect(Set(strategy.fans.keys) == [0, 1])
+        #expect(strategy.fans[0]?.mode.dataType == .ui8)
+        // No F2Tg -> not controllable, and not reported as missing a mode key.
+        #expect(strategy.fansMissingModeKey.isEmpty)
+    }
+
+    /// Apple Silicon only (Intel dropped 2026-10-20): a fan with `F<n>Tg` but no
+    /// `F<n>Md` (Intel `FS! ` layout, or a target-only SMC) is rejected with a clear
+    /// error instead of falling back to `FS! ` or target-only writes.
+    @Test func testRejectsFanSetWithoutModeKey() throws {
+        let intelLayout = MockSMCReader([
+            ("FNum", .ui8, [2]),
+            ("FS! ", .ui16, [0x00, 0x00]),
+            ("F0Tg", .fpe2, Bytes.fpe2(1200)),
+            ("F1Tg", .fpe2, Bytes.fpe2(1300)),
+        ])
+        let strategy = FanWriteStrategy(reader: intelLayout, fanIndices: [0, 1])
+        #expect(strategy.fans.isEmpty)
+        #expect(strategy.fansMissingModeKey == [0, 1])
+        #expect(throws: FanControlError.fanModeKeyMissing(fan: 0)) {
+            try strategy.setManual(fan: 0, rpm: 2000)
+        }
+        #expect(throws: FanControlError.fanModeKeyMissing(fan: 1)) {
+            try strategy.setAutomatic(fan: 1)
+        }
+        #expect(try strategy.rollbackWrites(afterFailureOf: [0: .manual(rpm: 2000)]).isEmpty)
+
+        // Mixed: one fan with F<n>Md, one without -> the whole list is refused.
+        let mixed = MockSMCReader([("F0Md", .ui8, [0]), ("F0Tg", .flt, Bytes.flt(0)), ("F1Tg", .flt, Bytes.flt(0))])
+        let partial = FanWriteStrategy(reader: mixed, fanIndices: [0, 1])
+        #expect(throws: FanControlError.fanModeKeyMissing(fan: 1)) {
+            try partial.writes(for: [0: .manual(rpm: 2000), 1: .manual(rpm: 2000)])
+        }
+        #expect(FanControlError.fanModeKeyMissing(fan: 1).errorDescription?.contains("F1Md") == true)
     }
 
     @Test func testAppleSiliconManualWritesModeThenFloatTarget() throws {
@@ -50,37 +70,11 @@ struct FanWriteStrategyTests {
         #expect(bytes(writes) == [[0]])
     }
 
-    @Test func testIntelManualSetsBitPreservingOthers() throws {
-        let strategy = FanWriteStrategy(reader: intel(), fanIndices: [0, 1])
-        let writes = try strategy.setManual(fan: 0, rpm: 2000)
-        #expect(names(writes) == ["FS! ", "F0Tg"])
-        #expect(bytes(writes) == [[0x00, 0x03], Bytes.fpe2(2000)])
-    }
-
-    @Test func testIntelAutomaticClearsBit() throws {
-        let strategy = FanWriteStrategy(reader: intel(mask: [0x00, 0x03]), fanIndices: [0, 1])
-        let writes = try strategy.setAutomatic(fan: 1)
-        #expect(names(writes) == ["FS! "])
-        #expect(bytes(writes) == [[0x00, 0x01]])
-    }
-
-    @Test func testBatchOrdersModesBeforeTargetsAndMergesMask() throws {
-        let strategy = FanWriteStrategy(reader: intel(mask: [0x00, 0x00]), fanIndices: [0, 1])
-        let writes = try strategy.writes(for: [1: .manual(rpm: 4000), 0: .manual(rpm: 2500)])
-        #expect(names(writes) == ["FS! ", "F0Tg", "F1Tg"])
-        #expect(bytes(writes) == [[0x00, 0x03], Bytes.fpe2(2500), Bytes.fpe2(4000)])
-
+    @Test func testBatchOrdersModesBeforeTargets() throws {
         let silicon = FanWriteStrategy(reader: appleSilicon(), fanIndices: [0, 1])
         let mixed = try silicon.writes(for: [0: .manual(rpm: 2000), 1: .automatic])
         #expect(names(mixed) == ["F0Md", "F1Md", "F0Tg"])
         #expect(bytes(mixed) == [[1], [0], Bytes.flt(2000)])
-    }
-
-    @Test func testTargetOnlyFan() throws {
-        let bare = MockSMCReader([("F0Tg", .fpe2, Bytes.fpe2(1000))])
-        let strategy = FanWriteStrategy(reader: bare, fanIndices: [0])
-        #expect(names(try strategy.setManual(fan: 0, rpm: 1800)) == ["F0Tg"])
-        #expect(try strategy.setAutomatic(fan: 0).isEmpty)
     }
 
     @Test func testUnknownFanThrows() {
@@ -119,8 +113,8 @@ struct FanWriteStrategyTests {
 
     @Test func testMac14_9UsesModeKeyAndReadsLimits() throws {
         let strategy = FanWriteStrategy(reader: mac14_9(), fanIndices: [0, 1])
-        #expect(strategy.forceBits == nil)
-        #expect(strategy.style(for: 0) == .modeKey)
+        #expect(strategy.fansMissingModeKey.isEmpty)
+        #expect(strategy.fans[0]?.mode.dataType == .ui8)
         #expect(strategy.fans[1]?.rpmLimits == 2317...6800)
         let writes = try strategy.writes(for: [0: .manual(rpm: 2317), 1: .manual(rpm: 6800)])
         #expect(names(writes) == ["F0Md", "F1Md", "F0Tg", "F1Tg"])
@@ -148,13 +142,6 @@ struct FanWriteStrategyTests {
         #expect(bytes(rollback) == [[0]])
         #expect(try strategy.rollbackWrites(afterFailureOf: [1: .automatic]).isEmpty)
 
-        let intelStrategy = FanWriteStrategy(reader: intel(mask: [0x00, 0x03]), fanIndices: [0, 1])
-        let intelRollback = try intelStrategy.rollbackWrites(afterFailureOf: [0: .manual(rpm: 2000)])
-        #expect(names(intelRollback) == ["FS! "])
-        #expect(bytes(intelRollback) == [[0x00, 0x02]])
-
-        let bare = FanWriteStrategy(reader: MockSMCReader([("F0Tg", .fpe2, Bytes.fpe2(1000))]), fanIndices: [0])
-        #expect(try bare.rollbackWrites(afterFailureOf: [0: .manual(rpm: 1800)]).isEmpty)
     }
 
     @Test func testKitInfo() {

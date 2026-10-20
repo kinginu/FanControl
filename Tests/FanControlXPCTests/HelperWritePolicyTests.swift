@@ -34,7 +34,7 @@ private final class RecordingWriter {
 struct HelperWritePolicyTests {
 
     private func validate(_ bytes: [UInt8], _ key: SMCKey, _ info: SMCKeyInfo) -> HelperWritePolicy.Rejection? {
-        HelperWritePolicy.validate(bytes, for: key, info: info, fanCount: 2, fanLimits: Mac14_9.limits)
+        HelperWritePolicy.validate(bytes, for: key, info: info, fanLimits: Mac14_9.limits)
     }
 
     // MARK: Validation
@@ -77,19 +77,21 @@ struct HelperWritePolicyTests {
         #expect(validate(Mac14_9.flt(3000), "F0Tg", readOnlyTarget)?.code == .badRequest)
     }
 
-    @Test func testForceBitsValidation() {
+    /// Intel dropped 2026-10-20: `FS! ` is refused by validation too (defence in
+    /// depth behind the allowlist), even with a write-capable attribute.
+    @Test func testRejectsForceBitsKey() {
         let fs = SMCKeyInfo(dataSize: 2, dataType: .ui16, attributes: 0xd4)
-        #expect(validate([0x00, 0x03], .forceBits, fs) == nil)
-        #expect(validate([0x00, 0x04], .forceBits, fs)?.code == .badRequest) // fan 2 >= FNum
-        #expect(HelperWritePolicy.validate([0, 1], for: .forceBits, info: fs, fanCount: nil, fanLimits: [:])?.code == .smcError)
+        #expect(validate([0x00, 0x01], "FS! ", fs)?.code == .badRequest)
+        let writableMin = SMCKeyInfo(dataSize: 4, dataType: .flt, attributes: 0xd4)
+        #expect(validate(Mac14_9.flt(2317), "F0Mn", writableMin)?.code == .badRequest)
     }
 
     // MARK: Restore
 
     @discardableResult
-    private func restore(_ originals: [(key: SMCKey, bytes: [UInt8])], touched: UInt64 = 0,
+    private func restore(_ originals: [(key: SMCKey, bytes: [UInt8])],
                          writer: RecordingWriter) -> [HelperWritePolicy.RestoreWrite] {
-        HelperWritePolicy.restore(originals: originals, touchedForceBits: touched, fanLimits: Mac14_9.limits,
+        HelperWritePolicy.restore(originals: originals, fanLimits: Mac14_9.limits,
                                   keyInfo: Mac14_9.info, write: writer.write)
     }
 
@@ -114,7 +116,7 @@ struct HelperWritePolicyTests {
         var logs: [String] = []
         let result = HelperWritePolicy.restore(
             originals: [("F0Md", [0]), ("F0Tg", Mac14_9.flt(0)), ("F1Md", [0])],
-            touchedForceBits: 0, fanLimits: Mac14_9.limits, keyInfo: Mac14_9.info,
+            fanLimits: Mac14_9.limits, keyInfo: Mac14_9.info,
             write: writer.write, log: { logs.append($0) })
         // Two attempts at F0Md, then F1Md; the sub-minimum Tg snapshot is never written.
         #expect(writer.writes.map(\.0) == ["F0Md", "F0Md", "F1Md"])
@@ -129,31 +131,6 @@ struct HelperWritePolicyTests {
         #expect(writer.writes.map(\.1) == [Mac14_9.flt(2317), Mac14_9.flt(3000)])
     }
 
-    @Test func testPreExistingForceBitsAreNotTouchedBySession() {
-        let fs = SMCKeyInfo(dataSize: 2, dataType: .ui16, attributes: 0xd4)
-        // Snapshot FS! = 0b10 (fan 1 forced by another tool); the app writes 0b11 to force fan 0.
-        let touched = HelperWritePolicy.newlySetForceBits(written: [0x00, 0x03], snapshot: [0x00, 0x02],
-                                                           type: fs.dataType)
-        #expect(touched == 0b01)
-        let writer = RecordingWriter()
-        restore([("FS! ", [0x00, 0x02])], touched: touched ?? 0, writer: writer)
-        // Restore writes the snapshot back unchanged: fan 1 stays forced.
-        #expect(writer.writes.map(\.0) == ["FS! "])
-        #expect(writer.writes.map(\.1) == [[0x00, 0x02]])
-        // Undecodable payloads.
-        #expect(HelperWritePolicy.newlySetForceBits(written: [0x00, 0x03], snapshot: [1, 2, 3, 4, 5, 6, 7, 8, 9],
-                                                     type: .hex) == nil)
-    }
-
-    @Test func testIntelForceBitsClearedAndTargetsOfForcedFansSkipped() {
-        let writer = RecordingWriter()
-        // Snapshot FS! = 0b10 (fan 1 forced by someone else), this session forced fan 0.
-        restore([("FS! ", [0x00, 0x02]), ("F0Tg", [0x00, 0x00]), ("F0Mn", [0x1f, 0x40])], touched: 0b01, writer: writer)
-        // Mn first, then FS! with only our bit cleared; F0Tg skipped (fan 0 handed back).
-        #expect(writer.writes.map(\.0) == ["F0Mn", "FS! "])
-        #expect(writer.writes.map(\.1) == [[0x1f, 0x40], [0x00, 0x02]])
-    }
-
     @Test func testEmptySessionWritesNothing() {
         let writer = RecordingWriter()
         #expect(restore([], writer: writer).isEmpty)
@@ -162,9 +139,8 @@ struct HelperWritePolicyTests {
 
     @Test func testModeKeyClassification() {
         #expect(HelperWritePolicy.isModeKey("F0Md"))
-        #expect(HelperWritePolicy.isModeKey(.forceBits))
+        #expect(!HelperWritePolicy.isModeKey("FS! "))
         #expect(!HelperWritePolicy.isModeKey("F0Tg"))
         #expect(!HelperWritePolicy.isModeKey("FNum"))
-        #expect(HelperWritePolicy.clearingBits(0b01, in: [0x00, 0x03]) == [0x00, 0x02])
     }
 }

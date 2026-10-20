@@ -323,6 +323,12 @@ public enum FanControlError: Error, Equatable, Sendable, LocalizedError {
     case sessionNotOpen
     case rpmOutOfRange(fan: Int, rpm: Int, allowed: ClosedRange<Int>)
     case unsupportedDataType(String)
+    /// The host is not an Apple Silicon Mac (Intel support dropped 2026-10-20).
+    /// The associated value describes the detected hardware.
+    case unsupportedPlatform(String)
+    /// Fan `fan` has `F<n>Tg` but no `F<n>Md` mode key, so it cannot be put into
+    /// manual mode with the (only supported) Apple Silicon write scheme.
+    case fanModeKeyMissing(fan: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -350,6 +356,10 @@ public enum FanControlError: Error, Equatable, Sendable, LocalizedError {
             return "\(rpm) RPM is outside the allowed range \(allowed.lowerBound)-\(allowed.upperBound) RPM for fan \(fan)."
         case .unsupportedDataType(let type):
             return "Unsupported SMC data type \"\(type)\"."
+        case .unsupportedPlatform(let detail):
+            return "Fan control requires a Mac with Apple silicon (\(detail))."
+        case .fanModeKeyMissing(let fan):
+            return "Fan \(fan) has no SMC mode key \"F\(fan)Md\" and cannot be controlled on this Mac."
         }
     }
 }

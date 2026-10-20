@@ -5,12 +5,13 @@ import FanControlCore
 struct UnsettledFanDetectorTests {
     private let fans = [FanDevice(id: 0, name: "Fan 1", minRPM: 2317, maxRPM: 6800),
                         FanDevice(id: 1, name: "Fan 2", minRPM: 2317, maxRPM: 6800)]
-    private let modeKey: [Int: FanWriteStrategy.ControlStyle] = [0: .modeKey, 1: .modeKey]
+    private let controllable: Set<Int> = [0, 1]
     private typealias O = UnsettledFanDetector.Observation
 
     private func detect(_ applied: [Int: FanTarget], _ observed: [Int: O],
-                        styles: [Int: FanWriteStrategy.ControlStyle]? = nil) -> Set<Int> {
-        UnsettledFanDetector.unsettledFans(fans: fans, styles: styles ?? modeKey, applied: applied, observed: observed)
+                        controllable: Set<Int>? = nil) -> Set<Int> {
+        UnsettledFanDetector.unsettledFans(fans: fans, controllable: controllable ?? self.controllable,
+                                           applied: applied, observed: observed)
     }
 
     @Test func settledFansAreNotFlagged() {
@@ -42,14 +43,8 @@ struct UnsettledFanDetectorTests {
         #expect(detect([:], [1: O(isManual: true, targetRPM: 3000)]).isEmpty)
     }
 
-    @Test func targetOnlyFansIgnoreMode() {
-        let styles: [Int: FanWriteStrategy.ControlStyle] = [0: .targetOnly]
-        #expect(detect([0: .manual(rpm: 3000)], [0: O(isManual: false, targetRPM: 3000)], styles: styles).isEmpty)
-        #expect(detect([0: .manual(rpm: 3000)], [0: O(isManual: false, targetRPM: 0)], styles: styles) == [0])
-    }
-
     @Test func uncontrollableOrUnreadFansSkipped() {
-        #expect(detect([0: .manual(rpm: 3000)], [0: O(isManual: true, targetRPM: 0)], styles: [:]).isEmpty)
+        #expect(detect([0: .manual(rpm: 3000)], [0: O(isManual: true, targetRPM: 0)], controllable: []).isEmpty)
         #expect(detect([0: .manual(rpm: 3000)], [:]).isEmpty)
     }
 }

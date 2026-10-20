@@ -57,7 +57,9 @@ enum Fixtures {
         return Array(bytes.prefix(16))
     }
 
-    /// Intel-style SMC: fpe2 fan keys, sp78 temperatures, FS! force bits.
+    /// Intel-era SMC layout: fpe2 fan keys, sp78 temperatures, an `FS! ` force
+    /// bitmask and no `F<n>Md`. Intel is unsupported since 2026-10-20; the fixture
+    /// only covers generic decoding (fpe2/sp78) and that `FS! ` is ignored.
     static func intel() -> MockSMCReader {
         MockSMCReader([
             ("#KEY", .ui32, [0, 0, 0, 20]),

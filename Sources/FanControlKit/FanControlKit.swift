@@ -5,8 +5,8 @@
 ///   evaluates alerts and drives fans through the privileged helper.
 /// - `HelperInstaller`: `SMAppService` registration of FanControlHelper.
 /// - `HelperClient`: async `NSXPCConnection` client (`SMCWriter`) for the helper.
-/// - `FanWriteStrategy`: pure computation of the per-platform SMC write
-///   sequence (Apple Silicon `F<i>Md` vs Intel `FS! `).
+/// - `FanWriteStrategy`: pure computation of the SMC write sequence
+///   (`F<i>Md` + `F<i>Tg`; Apple Silicon only, Intel dropped 2026-10-20).
 ///
 /// Everything except `FanWriteStrategy`, `FanTarget` and the two status enums is
 /// macOS-only; on other platforms the module is (almost) empty.

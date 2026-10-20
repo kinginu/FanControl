@@ -35,7 +35,7 @@ final class HelperService: NSObject, FanControlHelperProtocol {
             reply(FanControlHelperErrorCode.badRequest.rawValue, "payload must be 1...32 bytes, got \(bytes.count)")
             return
         }
-        // Value validation (mode 0/1, RPM within hardware Mn...Mx, FS! bits < 1 << FNum)
+        // Value validation (mode 0/1, RPM within hardware Mn...Mx)
         // happens in SessionRegistry.write, which holds the per-session hardware limits.
         let result = SessionRegistry.shared.write([UInt8](bytes), to: smcKey, from: owner)
         if result.code != .ok {

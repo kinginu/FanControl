@@ -3,7 +3,9 @@ import Testing
 @testable import FanControlCore
 
 struct FanDiscoveryTests {
-    @Test func testIntelFans() throws {
+    /// Intel-era layout (unsupported since 2026-10-20): fpe2 fan keys still decode
+    /// generically, but `FS! ` is no longer read, so no fan reports manual mode.
+    @Test func testLegacyFixedPointFansIgnoreForceBits() throws {
         let reader = Fixtures.intel()
         let fans = try FanDiscovery.discoverFans(using: reader)
         #expect(fans == [
@@ -12,8 +14,8 @@ struct FanDiscoveryTests {
         ])
         #expect(FanDiscovery.readCurrentRPMs(fans: fans, using: reader) == [0: 1210, 1: 2500])
         #expect(FanDiscovery.readTargetRPMs(fans: fans, using: reader) == [0: 1200, 1: 2500])
-        // FS! = 0x0002 -> fan 1 forced.
-        #expect(FanDiscovery.fanControlModes(fans: fans, using: reader) == [0: .automatic, 1: .constant(rpm: 2500)])
+        // FS! = 0x0002 (fan 1 forced on Intel) is ignored: no F<n>Md -> automatic.
+        #expect(FanDiscovery.fanControlModes(fans: fans, using: reader) == [0: .automatic, 1: .automatic])
     }
 
     @Test func testAppleSiliconFans() throws {

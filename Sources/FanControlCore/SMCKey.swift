@@ -38,7 +38,7 @@ public struct SMCKey: Hashable, Codable, Sendable, CustomStringConvertible, Expr
         self = key
     }
 
-    /// The 4-character ASCII name (e.g. `"FS! "` including the trailing space).
+    /// The 4-character ASCII name (e.g. `"F0Md"`).
     public var name: String {
         let bytes = [UInt8(truncatingIfNeeded: code >> 24),
                      UInt8(truncatingIfNeeded: code >> 16),
@@ -72,10 +72,6 @@ public extension SMCKey {
     static let keyCount: SMCKey = "#KEY"
     /// `FNum`: number of fans (ui8).
     static let fanCount: SMCKey = "FNum"
-    /// `FS! `: Intel-era "force" bitmask, bit *i* = fan *i* under manual control.
-    /// Note the trailing space.
-    static let forceBits: SMCKey = "FS! "
-
     /// `F<i>Md`: fan mode (0 = automatic, non-zero = manual/forced).
     static func fanMode(_ i: Int) -> SMCKey { fanKey(i, "Md") }
     /// `F<i>Ac`: actual (measured) fan speed in RPM.

@@ -11,8 +11,7 @@ import FanControlCore
 /// the safety authority, so it does not rely on the app's wake notification:
 ///
 /// - **Will sleep** (`sleepHandBack`): every fan the open session has forced is
-///   handed back to the SMC for the sleep (`F<n>Md` = 0, or the session's `FS! `
-///   bits cleared). `F<n>Tg` is not written. The session's intent (the client's last
+///   handed back to the SMC for the sleep (`F<n>Md` = 0). `F<n>Tg` is not written. The session's intent (the client's last
 ///   successful writes) is kept, so it can be re-applied on wake.
 /// - **Has powered on** (`wakeRecovery`), tried at `wakeRetryDelays` (the SMC may
 ///   reject writes right at wake); each attempt re-reads the fans, so it is idempotent:
@@ -21,10 +20,12 @@ import FanControlCore
 ///     is in manual mode with a target off by more than `targetToleranceRPM` gets
 ///     its target re-written;
 ///   - any other fan found in manual mode (e.g. `F<n>Md` = 1 with no remembered
-///     target, as the SMC woke Fan 2) is handed back to the SMC (`F<n>Md` = 0 /
-///     `FS! ` bit cleared).
+///     target, as the SMC woke Fan 2) is handed back to the SMC (`F<n>Md` = 0).
 /// - **Wake without a session**: `manualFans` lists fans left in manual mode; the
 ///   helper only logs a warning (another tool may own them).
+///
+/// Apple Silicon only: the Intel `FS! ` bitmask is neither read nor written
+/// (removed 2026-10-20).
 public enum PowerTransitionPolicy {
 
     /// Delays (seconds after `kIOMessageSystemHasPoweredOn`) of the wake recovery
@@ -55,9 +56,8 @@ public enum PowerTransitionPolicy {
         public enum Control: Equatable, Sendable {
             /// `F<n>Md`; `onBytes` is the last (non-zero) payload written.
             case modeKey(onBytes: [UInt8])
-            /// Bit `fan` of `FS! ` (set by this session).
-            case forceBit
-            /// Neither: only `F<n>Tg` was written.
+            /// Only `F<n>Tg` was written (no `F<n>Md` in this session; never
+            /// produced by `FanWriteStrategy`, kept so such a target is still re-applied).
             case targetOnly
         }
 
@@ -99,45 +99,24 @@ public enum PowerTransitionPolicy {
 
     public struct Snapshot: Equatable, Sendable {
         public var fans: [FanState]
-        /// Raw `FS! ` (`nil`: key absent or unreadable).
-        public var forceBytes: [UInt8]?
-        /// `forceBytes` decoded as a bitmask.
-        public var forceMask: UInt64?
 
-        public init(fans: [FanState], forceBytes: [UInt8]? = nil, forceMask: UInt64? = nil) {
+        public init(fans: [FanState]) {
             self.fans = fans
-            self.forceBytes = forceBytes
-            self.forceMask = forceMask
         }
 
         func state(of fan: Int) -> FanState? { fans.first { $0.fan == fan } }
-
-        func isManual(_ fan: Int) -> Bool {
-            if state(of: fan)?.isModeOn == true { return true }
-            guard let mask = forceMask, fan < 64 else { return false }
-            return mask & (UInt64(1) << UInt64(fan)) != 0
-        }
     }
 
     // MARK: - Session intent
 
     /// The fans the session forces, from the client's last successful write per key
     /// (`lastWritten`; the helper's own power writes are not recorded there).
-    /// `touchedForceBits` are the `FS! ` bits the session has set at some point on top of its
-    /// snapshot (`HelperWritePolicy.newlySetForceBits`); pre-existing bits are never included.
-    public static func rememberedFans(lastWritten: [SMCKey: [UInt8]], touchedForceBits: UInt64,
+    public static func rememberedFans(lastWritten: [SMCKey: [UInt8]],
                                       keyInfo: (SMCKey) -> SMCKeyInfo?) -> [RememberedFan] {
         var controls: [Int: RememberedFan.Control] = [:]
         var targets: [Int: [UInt8]] = [:]
         for (key, bytes) in lastWritten {
-            if key == .forceBits {
-                guard let info = keyInfo(key),
-                      let mask = HelperWritePolicy.forceBits(of: bytes, type: info.dataType) else { continue }
-                let bits = mask & touchedForceBits
-                for fan in 0..<10 where bits & (UInt64(1) << UInt64(fan)) != 0 && controls[fan] == nil {
-                    controls[fan] = .forceBit
-                }
-            } else if let (fan, suffix) = HelperWritePolicy.fanKeyParts(key) {
+            if let (fan, suffix) = HelperWritePolicy.fanKeyParts(key) {
                 switch suffix {
                 case "Md" where bytes.contains { $0 != 0 }:
                     controls[fan] = .modeKey(onBytes: bytes)
@@ -148,12 +127,10 @@ public enum PowerTransitionPolicy {
                 }
             }
         }
-        // Fans with only a target written (no mode key / FS! bit in this session).
-        // A fan whose last `F<n>Md` write was 0, or whose `FS! ` bit the session set and
-        // cleared again, was handed back by the client and is not forced.
+        // Fans with only a target written (no mode key in this session). A fan whose
+        // last `F<n>Md` write was 0 was handed back by the client and is not forced.
         for fan in targets.keys where controls[fan] == nil
-            && lastWritten[.fanMode(fan)] == nil
-            && touchedForceBits & (UInt64(1) << UInt64(fan)) == 0 {
+            && lastWritten[.fanMode(fan)] == nil {
             controls[fan] = .targetOnly
         }
         return controls.keys.sorted().map { fan in
@@ -166,7 +143,7 @@ public enum PowerTransitionPolicy {
 
     // MARK: - Snapshot
 
-    /// Reads `F<n>Md` / `F<n>Tg` for fans `0..<fanCount` and `FS! `. Never throws:
+    /// Reads `F<n>Md` / `F<n>Tg` for fans `0..<fanCount`. Never throws:
     /// unreadable values are `nil`.
     public static func snapshot(using reader: SMCReader, fanCount: Int) -> Snapshot {
         var fans: [FanState] = []
@@ -175,48 +152,30 @@ public enum PowerTransitionPolicy {
             let target = (try? reader.readNumber(.fanTarget(fan))).flatMap { $0.isFinite ? $0 : nil }
             fans.append(FanState(fan: fan, modeBytes: mode, targetRPM: target))
         }
-        var forceBytes: [UInt8]?
-        var forceMask: UInt64?
-        if let info = try? reader.keyInfo(.forceBits), let bytes = try? reader.readBytes(.forceBits) {
-            forceBytes = bytes
-            forceMask = HelperWritePolicy.forceBits(of: bytes, type: info.dataType)
-        }
-        return Snapshot(fans: fans, forceBytes: forceBytes, forceMask: forceMask)
+        return Snapshot(fans: fans)
     }
 
     // MARK: - Plans
 
     /// Writes that hand every remembered mode-controlled fan back to the SMC before
-    /// sleep: `F<n>Md` = 0 (ascending fan index), then one `FS! ` write with the
-    /// remembered bits cleared (only if `FS! ` could be read). No `F<n>Tg` writes.
+    /// sleep: `F<n>Md` = 0 (ascending fan index). No `F<n>Tg` writes.
     public static func sleepHandBack(remembered: [RememberedFan], snapshot: Snapshot) -> [Write] {
         var writes: [Write] = []
-        var clearBits: UInt64 = 0
         for fan in remembered.sorted(by: { $0.fan < $1.fan }) {
-            switch fan.control {
-            case .modeKey(let onBytes):
+            if case .modeKey(let onBytes) = fan.control {
                 let size = snapshot.state(of: fan.fan)?.modeBytes?.count ?? onBytes.count
                 writes.append(Write(key: .fanMode(fan.fan), bytes: [UInt8](repeating: 0, count: max(size, 1))))
-            case .forceBit:
-                clearBits |= UInt64(1) << UInt64(fan.fan)
-            case .targetOnly:
-                break
             }
-        }
-        if clearBits != 0, let bytes = snapshot.forceBytes {
-            writes.append(Write(key: .forceBits, bytes: HelperWritePolicy.clearingBits(clearBits, in: bytes)))
         }
         return writes
     }
 
     /// Writes for one wake recovery attempt (empty when the fans already match).
-    /// Order: `F<n>Md` writes (ascending), one `FS! ` write, then `F<n>Tg` writes
-    /// (ascending), so a target is never written before its fan is forced.
+    /// Order: `F<n>Md` writes (ascending), then `F<n>Tg` writes (ascending), so a
+    /// target is never written before its fan is forced.
     public static func wakeRecovery(remembered: [RememberedFan], snapshot: Snapshot) -> [Write] {
         var modeWrites: [Write] = []
         var targetWrites: [Write] = []
-        var setBits: UInt64 = 0
-        var clearBits: UInt64 = 0
         let byFan = Dictionary(remembered.map { ($0.fan, $0) }, uniquingKeysWith: { first, _ in first })
         let fanIndices = Set(snapshot.fans.map(\.fan)).union(byFan.keys).sorted()
 
@@ -229,10 +188,6 @@ public enum PowerTransitionPolicy {
                     let modeOn = state?.isModeOn ?? false
                     if !modeOn { modeWrites.append(Write(key: .fanMode(index), bytes: onBytes)) }
                     if !modeOn || targetOff { targetWrites.append(Write(key: .fanTarget(index), bytes: targetBytes)) }
-                case .forceBit:
-                    let forced = snapshot.isManual(index)
-                    if !forced { setBits |= UInt64(1) << UInt64(index) }
-                    if !forced || targetOff { targetWrites.append(Write(key: .fanTarget(index), bytes: targetBytes)) }
                 case .targetOnly:
                     if targetOff { targetWrites.append(Write(key: .fanTarget(index), bytes: targetBytes)) }
                 }
@@ -241,34 +196,13 @@ public enum PowerTransitionPolicy {
             // Not (re-)appliable: a manual fan here has nothing valid to run at -> SMC.
             if let state, state.isModeOn, let mode = state.modeBytes {
                 modeWrites.append(Write(key: .fanMode(index), bytes: [UInt8](repeating: 0, count: mode.count)))
-            } else if let mask = snapshot.forceMask, index < 64, mask & (UInt64(1) << UInt64(index)) != 0 {
-                clearBits |= UInt64(1) << UInt64(index)
             }
-        }
-        if setBits != 0 || clearBits != 0, let bytes = snapshot.forceBytes {
-            let cleared = HelperWritePolicy.clearingBits(clearBits, in: bytes)
-            modeWrites.append(Write(key: .forceBits, bytes: settingBits(setBits, in: cleared)))
         }
         return modeWrites + targetWrites
     }
 
-    /// Fans found in manual mode (`F<n>Md` ≠ 0 or `FS! ` bit set), ascending.
+    /// Fans found in manual mode (`F<n>Md` ≠ 0), ascending.
     public static func manualFans(_ snapshot: Snapshot) -> [Int] {
-        var fans = Set(snapshot.fans.filter(\.isModeOn).map(\.fan))
-        if let mask = snapshot.forceMask {
-            fans.formUnion((0..<10).filter { mask & (UInt64(1) << UInt64($0)) != 0 })
-        }
-        return fans.sorted()
-    }
-
-    /// `bytes` read as a big-endian integer with `mask` set, re-serialised at the same width.
-    static func settingBits(_ mask: UInt64, in bytes: [UInt8]) -> [UInt8] {
-        var out = bytes
-        for i in 0..<out.count {
-            let shift = (out.count - 1 - i) * 8
-            guard shift < 64 else { continue }
-            out[i] |= UInt8(truncatingIfNeeded: mask >> UInt64(shift))
-        }
-        return out
+        snapshot.fans.filter(\.isModeOn).map(\.fan).sorted()
     }
 }

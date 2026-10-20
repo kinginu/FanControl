@@ -2,8 +2,8 @@ import Foundation
 
 /// Discovers fans and reads their state through an `SMCReader`.
 ///
-/// Works for both Intel-era SMCs (`fpe2` fan keys) and Apple Silicon
-/// (`flt ` fan keys) because all numeric reads go through `readNumber`.
+/// All numeric reads go through `readNumber`, so the key's data type
+/// (`flt ` on Apple Silicon) is decoded generically.
 public enum FanDiscovery {
 
     /// Reads `FNum` and builds a `FanDevice` for each fan whose `F<i>Mn` and
@@ -37,26 +37,16 @@ public enum FanDiscovery {
     }
 
     /// Best-effort detection of each fan's current control mode:
-    /// 1. If `F<i>Md` exists: non-zero → manual, zero → automatic.
-    /// 2. Otherwise, if `FS! ` exists: bit *i* set → manual.
-    /// 3. Otherwise `.automatic`.
+    /// - `F<i>Md` non-zero → manual; zero, absent or unreadable → automatic
+    ///   (Apple Silicon only; the Intel `FS! ` bitmask is no longer read).
     ///
     /// Manual fans are reported as `.constant(rpm:)` using the current target
     /// (falling back to the measured speed, then the fan's minimum).
     public static func fanControlModes(fans: [FanDevice], using reader: SMCReader) -> [Int: FanControlMode] {
-        let forceBits: UInt64? = reader.exists(.forceBits)
-            ? (try? reader.readNumber(.forceBits)).flatMap { $0.isFinite ? UInt64(min(max(0, $0), 65535)) : nil }
-            : nil
         var modes: [Int: FanControlMode] = [:]
         for fan in fans {
-            let manual: Bool
-            if reader.exists(.fanMode(fan.id)) {
-                manual = ((try? reader.readNumber(.fanMode(fan.id))) ?? 0) != 0
-            } else if let bits = forceBits {
-                manual = bits & (UInt64(1) << UInt64(fan.id)) != 0
-            } else {
-                manual = false
-            }
+            let manual = reader.exists(.fanMode(fan.id))
+                && ((try? reader.readNumber(.fanMode(fan.id))) ?? 0) != 0
             if manual {
                 let rpm = finite(try? reader.readNumber(.fanTarget(fan.id)))
                     ?? finite(try? reader.readNumber(.fanActual(fan.id)))

@@ -41,17 +41,16 @@ public enum FanControlHelperConstants {
 
     /// Regular expressions (anchored) for SMC keys the helper is willing to write.
     /// - `F<n>Tg`: fan target speed
-    /// - `F<n>Md`: fan mode (Apple Silicon: 1 = forced/manual, 0 = automatic)
-    /// - `FS! `:  Intel forced-fan bitmask
+    /// - `F<n>Md`: fan mode (1 = forced/manual, 0 = automatic)
     ///
-    /// `F<n>Mn` (the Intel "set min to desired" technique) is deliberately **not**
-    /// allowed: `FanWriteStrategy` never writes it, and on Apple Silicon it is
-    /// read-only (attribute `0x84` on Mac14,9). Unlock keys such as `Ftst` are not
-    /// allowed either (pre-write review 2026-10-20).
+    /// Apple Silicon only (Intel dropped 2026-10-20): the Intel `FS! ` force
+    /// bitmask is **not** allowed, nor is `F<n>Mn` (the Intel "set min to
+    /// desired" technique; read-only on Apple Silicon, attribute `0x84` on
+    /// Mac14,9). Unlock keys such as `Ftst` are not allowed either (pre-write
+    /// review 2026-10-20).
     public static let allowedWriteKeyPatterns: [String] = [
         "^F[0-9]Tg$",
         "^F[0-9]Md$",
-        "^FS! $",
     ]
 
     /// Compiled `allowedWriteKeyPatterns` (built once; the patterns are constants).

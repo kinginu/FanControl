@@ -4,9 +4,17 @@ import Testing
 
 struct FanControlHelperConstantsTests {
     @Test func testAllowedKeys() {
-        for key in ["F0Tg", "F9Md", "FS! "] {
+        for key in ["F0Tg", "F9Md"] {
             #expect(FanControlHelperConstants.isWriteAllowed(key: key), Comment(rawValue: key))
         }
+    }
+
+    /// Apple Silicon only (Intel dropped 2026-10-20): no Intel force-bit key and
+    /// no `F<n>Mn` pattern in the allowlist.
+    @Test func testAllowlistHasNoIntelKeys() {
+        #expect(FanControlHelperConstants.allowedWriteKeyPatterns == ["^F[0-9]Tg$", "^F[0-9]Md$"])
+        #expect(!FanControlHelperConstants.allowedWriteKeyPatterns.contains { $0.contains("FS!") || $0.contains("Mn") })
+        #expect(!FanControlHelperConstants.isWriteAllowed(key: "FS! "))
     }
 
     @Test func testRejectedKeys() {

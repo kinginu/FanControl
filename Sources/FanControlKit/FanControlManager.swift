@@ -826,9 +826,11 @@ public final class FanControlManager: @unchecked Sendable {
     /// differs from `appliedTargets` by a mode change or more than
     /// `writeThresholdRPM` (always included: `force`, or the fan is unsettled).
     private func changedTargetsOnQueue(_ desired: [Int: FanTarget], force: Bool) -> [Int: FanTarget] {
-        let controllable = strategy?.fans ?? [:]
+        // Fans without `F<n>Md` are passed through so `FanWriteStrategy.writes`
+        // fails with `.fanModeKeyMissing` instead of silently skipping them.
+        let controllable = Set((strategy?.fans ?? [:]).keys).union(strategy?.fansMissingModeKey ?? [])
         var result: [Int: FanTarget] = [:]
-        for (fan, target) in desired where controllable[fan] != nil {
+        for (fan, target) in desired where controllable.contains(fan) {
             if force || unsettledFans.contains(fan) {
                 result[fan] = target
                 continue
@@ -1006,7 +1008,7 @@ public final class FanControlManager: @unchecked Sendable {
         for fan in fans {
             observed[fan.id] = .init(isManual: modes[fan.id]?.isManual, targetRPM: targets[fan.id])
         }
-        let found = UnsettledFanDetector.unsettledFans(fans: fans, styles: strategy.fans.mapValues(\.style),
+        let found = UnsettledFanDetector.unsettledFans(fans: fans, controllable: Set(strategy.fans.keys),
                                                        applied: appliedTargets, observed: observed)
         let newly = found.subtracting(unsettledFans)
         guard !newly.isEmpty else { return }
