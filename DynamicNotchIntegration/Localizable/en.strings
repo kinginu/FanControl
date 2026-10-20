@@ -157,3 +157,5 @@
 
 /* MARK: Widget apply error */
 "Helper refused this build — see Settings" = "Helper refused this build — see Settings";
+"Preset" = "Preset";
+"Preset (read-only)" = "Preset (read-only)";

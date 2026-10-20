@@ -152,9 +152,9 @@ private struct ProfileList: View {
                     Image(systemName: "checkmark")
                         .foregroundStyle(.secondary)
                 } else if !profile.isCustomSlot {
-                    Image(systemName: "lock.fill")
+                    Text("Preset")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
             }
             .tag(profile.id)
@@ -193,6 +193,9 @@ private struct ProfileEditor: View {
                 } else {
                     Text(verbatim: FanControlFormatting.profileName(draft))
                         .font(.headline)
+                    Text("Preset (read-only)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if isActive {
                     Text("Active")
