@@ -377,6 +377,14 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       ウィジェットをグリッドから外しても Nook を開けば一時停止が解ける／Nook を閉じたまま設定 ▸ Fan Control ▸ センサーを開くと通常間隔で更新され
       （「最終更新」が増え続けない）、閉じると一時停止に戻る／設定をオフにすると即座に通常間隔に戻ることを確認。
 - [ ] 「ファン制御を有効にする」を素早くオフ→オン（ダブルクリック）しても監視が止まらない（ウィジェットが「SMC unavailable」にならない）ことを確認。
+- [ ] **温度閾値の設定**（§5.6、2026-10-20 実装）: 一般タブ「温度しきい値」で「高温警告」を現在の CPU/GPU 最高温度より低く（例: アイドル 50 °C なら 70 °C）すると、
+      次のポーリング（設定変更時に即時 1 回ポーリング）でウィジェットが赤表示・Live Activity「高温」になり、「ヒステリシス」分下回るまで解除されない。
+      書込セッション中に「緊急（全ファン最大）」を現在温度以下（最小 71 °C）にすると全ファンが最大に強制され、戻すと（ヒステリシス分下がっていれば）プロファイル目標に戻る。
+      「既定値に戻す」で 90 / 95 / 5 °C に戻り、ボタンが無効化される。ステッパー: 警告 70〜100、緊急（警告 + 1）〜105（警告を上げると緊急が押し上げられ、緊急を下げると警告が引き下げられる）、
+      ヒステリシス 1〜10。値は Defaults キー `fanControlThresholdSettings` に保存され、再起動後も維持される（`defaults read <bundle id> fanControlThresholdSettings`）。
+      `emergencySensorPrefixes` は変わらない（UI なし）。
+- [ ] **センサー名のローカライズ**（§5.7、2026-10-20 実装）: 日本語環境で設定 ▸ Fan Control ▸ センサーの「名前」列が「CPU 高性能コア 09」「GPU 0f」「バッテリー 1」「NAND（SSD）」
+      「センサー Tz11」のように表示され、「キー」列に SMC キーがそのまま残る。英語環境では従来と同じ名前（`SensorCatalog.displayName(for:)`）。
 
 ## 7. この Linux 環境で検証できなかったこと
 
@@ -420,7 +428,10 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
   `FanControlError.fanModeKeyMissing` で拒否する（フォールバックしない）。
 - **新しい Apple Silicon の `Ftst` キー**（§5.7, helper.md §4）: 一部機種では `F<n>Md` だけでは目標値が効かず `Ftst` アンロックが必要との報告がある。現状ヘルパーの書込許可リスト外（2026-10-20 のレビューで `F<n>Mn` も許可リストから外した）。Phase 4 で実機確認後に追加を判断。
   Mac14,9（M2 Pro）/ macOS 26 には `Ftst` キー自体が存在しない（読取で keyNotFound、§6 Phase 1）。この機種では許可リストに足しても書けない。
-- **温度閾値**（§5.6）: 警告 90°C（ヒステリシス 5°C）、強制最大 95°C は暫定値。機種別に妥当性を確認し、設定 UI に出すか決める（現状 UI には出していない）。
+- **温度閾値**（§5.6）: 警告 90°C（ヒステリシス 5°C）、強制最大 95°C は暫定の既定値。**設定 UI は実装済み（2026-10-20）**: 一般タブ「温度しきい値」の
+  ステッパー 3 つと「既定値に戻す」（`FanControlThresholdSettings`、Defaults キー `fanControlThresholdSettings`。範囲は `ThresholdBounds`: 警告 70〜100、
+  緊急（警告 + 1）〜105、ヒステリシス 1〜10 °C）。`FanControlAlertCoordinator.syncManagerSettings()` が `FanControlManager.applySafetyThresholds(_:)` で
+  `safetyPolicy` に反映（接頭辞と `enforceHardwareMinimum` は変えない）。残り: 既定値の機種別妥当性、警告と緊急で別々のヒステリシスが要るか、°F 表示時もステッパーは °C のまま（要判断）、実機確認（§6 Phase 5）。
   対象センサー接頭辞は実装済み: `Tp/Te/TC/Tg`（`SafetyPolicy.defaultEmergencySensorPrefixes`。Mac14,9 では `TG*` は GPU ではなく 33 °C 前後の `ioft` キー。
   Intel 用の `TG` 入りの表は 2026-10-20 に削除）。`Tf06` は 94.5〜105 °C の一定値だが接頭辞外（§6 Phase 1 の所見参照。ランキング除外キーは緊急判定の接頭辞に一致しないことをテストで確認）。
   要確認: 他の Apple Silicon 機種でも `TG*` が GPU でないか、`TC*`（`TCMz` 等）を対象に含めたままでよいか。
@@ -428,7 +439,11 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
   センサー連動の CPU センサー → 集約センサーで対応: `agg:cpu`（`Tp/Te/TC` の最大値）などを仮想センサーとして提供し、センサー連動の既定センサーを `agg:cpu` にした（kit.md「Aggregate sensors」）。
   残る判断: `agg:cpu` に `TC*` を含めるか（Mac14,9 の `TCMz` は `Tp*` 最大値と一致し無害だが、他機種の `TC*` の意味は未確認）、最大値以外（平均など）の集約が必要か。
 - **センサー名**（§5.7）: `SensorCatalog` の名称はコミュニティ情報で英語固定。Apple Silicon 向けに一部追加済み（§6 Phase 1）。
-  未決: `TCMz`/`TCMb`/`TCDX`、`TVM*`、`TPD*`/`TRD*`、`Th0*`、`TD*`、`Tf*` などの名称（根拠が見つからず「Sensor XXXX」のまま）、他機種での検証、`Tp*` の P/E コア区別（コミュニティ間で不一致）、ローカライズ方針。
+  **ローカライズは実装済み（2026-10-20）**: `SensorCatalog.nameComponents(for:)`（ラベルキー + そのまま付ける接尾辞）と drop-in の `FanControlSensorNames.localized(_:)`
+  （`FanControlSensorsTabView.swift`）。`displayName(for:)` / `SensorReading.name` は英語のまま（保存値・従来キー、Mac14,9 の全 259 キーで出力不変をテスト）。
+  センサータブと Live Activity は対応済み。ウィジェット（`FanControlWidgetView.swift`）とプロファイルタブ（`FanControlProfilesTabView.swift`）は
+  まだ `FanControlFormatting.sensorName`（集約名のみローカライズ）を使っており、`FanControlSensorNames.localized` への置き換えが残る。
+  未決: `TCMz`/`TCMb`/`TCDX`、`TVM*`、`TPD*`/`TRD*`、`Th0*`、`TD*`、`Tf*` などの名称（根拠が見つからず「Sensor XXXX」のまま）、他機種での検証、`Tp*` の P/E コア区別（コミュニティ間で不一致）。
   非温度／不安定キー: `SensorCatalog.rankingExcludedPrefixes`（`Tf`、全機種）と `rankingExcludedKeys`（Mac14,9 で一定値の `TH1a`/`TH1b`/`TVMD`/`Ta0C/D/G/H/K/L/V`/`Tz11`〜`Tz18`/`Tz1j`）を
   自動選択・ランキングから除外（表示・明示選択は可）。`Tf*` の意味は不明で、除外は Mac14,9 の観察のみに基づく（`Tf04` 等は温度らしく変動するが一括除外）。
   他機種で除外キーが実温度だった場合や、別の一定値キーが上位に来る場合は表を見直す。

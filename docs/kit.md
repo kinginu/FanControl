@@ -321,6 +321,32 @@ GPU is `Tg*`). Since Intel was dropped (2026-10-20) there is one list; `default(
 `SafetyPolicy`'s stored properties and Codable keys are unchanged; a persisted policy that still
 contains `TG` decodes as stored.
 
+**User-set thresholds (design doc §5.6, 2026-10-20):** `SafetyThresholds` (Core, Codable,
+missing keys decode to the defaults) holds the three adjustable values — `highTemperatureAlert`
+(default 90 °C), `emergencyTemperature` (95 °C), `alertHysteresis` (5 °C) — and
+`SafetyPolicy.thresholds` reads / writes exactly those three fields (`emergencySensorPrefixes` and
+`enforceHardwareMinimum` are kept). `ThresholdBounds` (pure) clamps them: alert `alertRange` =
+70…100 °C, emergency `emergencyRange(forAlert:)` = (alert + 1)…105 °C, hysteresis
+`hysteresisRange` = 1…10 °C; non-finite values become the default. `settingHighTemperatureAlert` /
+`settingEmergencyTemperature` / `settingAlertHysteresis(_:in:)` change one value and re-clamp the
+others (raising the alert pushes the emergency threshold to at least alert + 1; lowering the
+emergency threshold, allowed down to `emergencyOverallRange.lowerBound` = 71 °C, pulls the alert to
+at most emergency − 1). `SafetyPolicy.clamped()` clamps a whole policy.
+`FanControlManager.applySafetyThresholds(_:)` copies clamped thresholds into `safetyPolicy` (only
+on a change); the next poll evaluates the alert and the emergency latch against them. The hysteresis
+applies to both the alert and the emergency latch.
+
+**Sensor names (design doc §5.7, 2026-10-20):** `SensorCatalog.nameComponents(for:)` returns
+`SensorNameComponents` (`labelKey`, `suffix`, `isFallback`) so a UI can localize the label and
+append the suffix verbatim (`name(label:)`): exact names (`TB1T` → "Battery" + "1", `TH0x` → "NAND
+(SSD)"), prefix names (`Tp09` → "CPU Performance Core" + "09"), aggregates (`agg:cpu` → "CPU (max)"),
+fallback (`"Sensor"` + key, `isFallback`). Label keys: `SensorCatalog.labelKeys` ("CPU Performance
+Core", "CPU Efficiency Core", "GPU", "Battery", "Airflow Left", "Airflow Right", "NAND (SSD)", "Palm
+Rest", "Wireless", "Memory", "Storage", "Sensor"). `displayName(for:)` (= `englishName`) and
+`knownNames` keep their English output unchanged (tested for all 259 `T*` keys of the Mac14,9 dump);
+it stays the value of `SensorReading.name`. The drop-in `FanControlSensorNames.localized(_:)`
+(`FanControlSensorsTabView.swift`) localizes through Localizable.strings.
+
 **Platform check:** `FanControlPlatform.isSupported` (`FanControlHost.isAppleSilicon`, `sysctl
 hw.optional.arm64`, true on Apple Silicon also under Rosetta). `FanControlManager.init` logs an
 error on unsupported hardware, and `requireSupported()` runs before every SMC open, so polls,
@@ -403,7 +429,16 @@ override (`SafetyPolicy`) still forces every fan to max when hot, whatever the p
 The kit does not depend on sindresorhus `Defaults`. The app copies its settings into these
 settable properties (main thread), at launch before `startMonitoring()` and on every change. In
 the DynamicNotch drop-in UI this is `FanControlAlertCoordinator.syncManagerSettings()`, driven by
-`Defaults.updates(.fanControlGeneralSettings)`.
+`Defaults.updates(.fanControlGeneralSettings)` and `Defaults.updates(.fanControlThresholdSettings)`.
+
+The temperature thresholds have their own Defaults key, **`fanControlThresholdSettings`**
+(`FanControlThresholdSettings` in `FanControlGeneralTabView.swift`, not part of
+`FanControlGeneralSettings`): `highTemperatureAlert` 90, `emergencyTemperature` 95,
+`alertHysteresis` 5 (°C; missing keys decode to these). The General tab edits them with three
+1 °C steppers ("Temperature Thresholds": "High Temperature Alert", "Emergency (All Fans
+Maximum)", "Hysteresis", within `ThresholdBounds`) and "Reset to Defaults";
+`syncManagerSettings()` calls `manager.applySafetyThresholds(_:)` and, while monitoring, polls once
+so the alert / emergency state follows immediately.
 
 | Property | Default | Effect |
 |---|---|---|
@@ -412,7 +447,7 @@ the DynamicNotch drop-in UI this is `FanControlAlertCoordinator.syncManagerSetti
 | `batteryPollingInterval` | 10 s | battery interval used while `slowPollingOnBattery` (not exposed in the UI) |
 | `reapplyProfileAfterWake` | `true` | `true`: re-apply on wake at 0 / 2 / 5 s; `false`: close an open session immediately on wake |
 | `keepAlertsWhilePaused` | `true` | keep a slow poll while paused without a session (the drop-in coordinator mirrors `highTemperatureAlertEnabled \|\| fanAnomalyAlertEnabled`) |
-| `safetyPolicy` | `FanControlPlatform.defaultSafetyPolicy` | thresholds; taken per poll. An app that persists its own policy should start from `SafetyPolicy.default` |
+| `safetyPolicy` | `FanControlPlatform.defaultSafetyPolicy` | thresholds; taken per poll. An app that persists its own policy should start from `SafetyPolicy.default`. The drop-in coordinator mirrors only the thresholds, via `applySafetyThresholds(_:)` from `FanControlThresholdSettings` (below) |
 | `clientTeamID` | `FanControlHelperConstants.teamIdentifierPlaceholder` | Team ID in the helper code-signing requirement checked on every new helper connection (forwards to `HelperClient.clientTeamID`); set before the first helper call unless the constant was replaced; ignored in manual-install mode (below) |
 
 `HelperClient.callTimeout` (default 8 s, `<= 0` disables) is set on the `HelperClient` passed to
@@ -591,8 +626,9 @@ runtime behaviour. Still to verify on hardware:
 SMC reads (the `SMCClient` path behind `FanControlManager` polling and `exportSMCDump()`) are verified
 on Mac14,9 / macOS 26 with the read-only `fanfi-probe` executable (`swift run fanfi-probe`,
 `--dump`, `--watch N`); results and per-model findings are in `docs/integration.md` §6 Phase 1.
-- Whether the provisional thresholds (alert 90 °C, emergency 95 °C, hysteresis 5 °C, sensor
-  prefixes `Tp/Te/TC/Tg`) suit each Apple Silicon model (design doc §5.6).
+- Whether the default thresholds (alert 90 °C, emergency 95 °C, hysteresis 5 °C, sensor
+  prefixes `Tp/Te/TC/Tg`) suit each Apple Silicon model (design doc §5.6). The three temperatures
+  are user-adjustable in the General tab since 2026-10-20; the prefixes are not.
 - Sleep/wake: on Mac14,9 the SMC resets `F<i>Tg` to 0 and keeps `F<i>Md` = 1 across sleep
   (first-write test 4). The immediate wake re-apply, the helper's own sleep hand-back / wake
   recovery and the unsettled detection are implemented but not yet re-tested on hardware
