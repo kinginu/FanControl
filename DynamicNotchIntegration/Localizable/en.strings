@@ -159,3 +159,8 @@
 "Helper refused this build — see Settings" = "Helper refused this build — see Settings";
 "Preset" = "Preset";
 "Preset (read-only)" = "Preset (read-only)";
+
+/* MARK: Power-aware polling and conflicting controllers (General tab, Live Activity) */
+"Slow Down Polling on Battery (10 s)" = "Slow Down Polling on Battery (10 s)";
+"Another fan control app (%@) is running. If both write at the same time they will override each other." = "Another fan control app (%@) is running. If both write at the same time they will override each other.";
+"%@ is running" = "%@ is running";

@@ -25,6 +25,19 @@ struct FanControlGeneralTabView: View {
         // Grouped form (System Settings style); scrolls inside the pane's fixed size
         // (FanControlSettingsView.contentSize).
         Form {
+            // Another fan control app (FanFi) is running: both writing override each other.
+            if !manager.conflictingControllers.isEmpty {
+                Section {
+                    Label {
+                        Text("Another fan control app (\(conflictingNames)) is running. If both write at the same time they will override each other.")
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow)
+                    }
+                }
+            }
+
             Section("Fan Control") {
                 Toggle("Enable Fan Control", isOn: isEnabled)
 
@@ -39,6 +52,7 @@ struct FanControlGeneralTabView: View {
                     }
                 }
 
+                Toggle("Slow Down Polling on Battery (10 s)", isOn: $general.slowPollingOnBattery)
                 Toggle("Start Monitoring at Launch", isOn: $general.autoStartMonitoring)
                 Toggle("Pause When Nook Is Hidden", isOn: $general.pauseWhenNookHidden)
                 Toggle("Re-apply Profile After Wake", isOn: $general.reapplyProfileAfterWake)
@@ -70,8 +84,9 @@ struct FanControlGeneralTabView: View {
             }
         }
         .formStyle(.grouped)
-        // `pollingInterval` / `reapplyProfileAfterWake` reach the manager through
-        // `FanControlAlertCoordinator.syncManagerSettings()` (Defaults.updates).
+        // `pollingInterval` / `slowPollingOnBattery` / `reapplyProfileAfterWake` reach the
+        // manager through `FanControlAlertCoordinator.syncManagerSettings()` (Defaults.updates).
+        .onAppear { manager.refreshConflictingControllers() }
     }
 
     /// Turning the feature on starts monitoring; turning it off stops
@@ -101,6 +116,11 @@ struct FanControlGeneralTabView: View {
                 }
             }
         )
+    }
+
+    /// `manager.conflictingControllers` as one list ("FanFi", "FanFi, Other"; product names).
+    private var conflictingNames: String {
+        manager.conflictingControllers.formatted(.list(type: .and))
     }
 
     /// Stored polling interval without trailing zeros (e.g. "3", "0.5").

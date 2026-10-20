@@ -124,6 +124,8 @@ struct FanControlGeneralSettings: Defaults.Serializable, Codable, Equatable, Has
     var highTemperatureAlertEnabled: Bool = true
     /// Show the fan-stopped Live Activity.
     var fanAnomalyAlertEnabled: Bool = true
+    /// Poll every 10 s (or the longer polling interval) on battery (design doc §5.4 (a)).
+    var slowPollingOnBattery: Bool = true
 
     init(isEnabled: Bool = false,
          pollingInterval: TimeInterval = 2.0,
@@ -143,7 +145,8 @@ struct FanControlGeneralSettings: Defaults.Serializable, Codable, Equatable, Has
 
     enum CodingKeys: String, CodingKey {
         case isEnabled, pollingInterval, autoStartMonitoring, pauseWhenNookHidden,
-             reapplyProfileAfterWake, highTemperatureAlertEnabled, fanAnomalyAlertEnabled
+             reapplyProfileAfterWake, highTemperatureAlertEnabled, fanAnomalyAlertEnabled,
+             slowPollingOnBattery
     }
 
     init(from decoder: Decoder) throws {
@@ -156,6 +159,7 @@ struct FanControlGeneralSettings: Defaults.Serializable, Codable, Equatable, Has
         reapplyProfileAfterWake = try container.decodeIfPresent(Bool.self, forKey: .reapplyProfileAfterWake) ?? d.reapplyProfileAfterWake
         highTemperatureAlertEnabled = try container.decodeIfPresent(Bool.self, forKey: .highTemperatureAlertEnabled) ?? d.highTemperatureAlertEnabled
         fanAnomalyAlertEnabled = try container.decodeIfPresent(Bool.self, forKey: .fanAnomalyAlertEnabled) ?? d.fanAnomalyAlertEnabled
+        slowPollingOnBattery = try container.decodeIfPresent(Bool.self, forKey: .slowPollingOnBattery) ?? d.slowPollingOnBattery
     }
 }
 

@@ -2,7 +2,8 @@
 // Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
 //
 // Fan Control Live Activity (design doc §4.2): a compact alert shown around the
-// notch while the high-temperature or fan-stopped alert is active, plus the
+// notch while the high-temperature or fan-stopped alert is active (and for a few
+// seconds when another fan control app such as FanFi is detected), plus the
 // coordinator that turns `FanControlManager` notifications into Live Activity
 // state and a transient "flash", mirroring PowerMonitor's low-battery
 // transient (`DynamicNotchBatteryLowTransient`).
@@ -47,6 +48,10 @@ enum FanControlAlertKind: Equatable, Hashable {
     case highTemperature
     /// At least one fan reports 0 RPM while a non-zero target is set.
     case fanStopped
+    /// Another fan control app (FanFi) started running (`conflictingControllers`,
+    /// design doc §5.2). Shown once per detection for `conflictAlertDuration`, not
+    /// again until the conflict has cleared.
+    case conflictingController
 }
 
 // MARK: - Coordinator
@@ -56,8 +61,8 @@ enum FanControlAlertKind: Equatable, Hashable {
 ///
 /// It is also the single place that mirrors the Defaults-backed
 /// `FanControlGeneralSettings` into the manager (FanControlKit does not depend
-/// on Defaults): `pollingInterval`, `reapplyProfileAfterWake` and
-/// `keepAlertsWhilePaused` (= any alert toggle on) are copied at creation and
+/// on Defaults): `pollingInterval`, `slowPollingOnBattery`, `reapplyProfileAfterWake`
+/// and `keepAlertsWhilePaused` (= any alert toggle on) are copied at creation and
 /// on every settings change. The wake re-apply itself is done by
 /// `FanControlManager` (5 s after wake, only while a write session is open).
 @MainActor
@@ -69,7 +74,11 @@ final class FanControlAlertCoordinator {
     /// Posted (main queue, `object: nil`) when an alert starts.
     nonisolated static let transientNotificationName = Notification.Name("DynamicNotchFanAlertTransient")
 
-    /// The alert currently shown, or `nil`. A stopped fan wins over high temperature.
+    /// How long the conflicting-controller alert stays (seconds).
+    nonisolated static let conflictAlertDuration: TimeInterval = 8
+
+    /// The alert currently shown, or `nil`. A stopped fan wins over high
+    /// temperature, which wins over a conflicting controller.
     private(set) var currentAlert: FanControlAlertKind? = nil
 
     /// Called on the main thread whenever `currentAlert` changes. Used to insert or
@@ -78,6 +87,11 @@ final class FanControlAlertCoordinator {
 
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var settingsTask: Task<Void, Never>?
+    /// The conflict alert is being shown (`conflictAlertDuration`).
+    @ObservationIgnored private var conflictAlertVisible = false
+    /// The current detection was announced already (reset when it clears).
+    @ObservationIgnored private var conflictAnnounced = false
+    @ObservationIgnored private var conflictHideTask: Task<Void, Never>?
 
     private init() {
         let center = NotificationCenter.default
@@ -87,6 +101,11 @@ final class FanControlAlertCoordinator {
             }
             observers.append(token)
         }
+        let conflictToken = center.addObserver(forName: .fanControlConflictingControllersChanged, object: nil,
+                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.conflictingControllersChanged() }
+        }
+        observers.append(conflictToken)
 
         // Alert toggles, master switch, polling interval or wake option changed in Settings.
         settingsTask = Task { [weak self] in
@@ -108,6 +127,9 @@ final class FanControlAlertCoordinator {
         let manager = FanControlManager.shared
         if manager.pollingInterval != general.pollingInterval {
             manager.pollingInterval = general.pollingInterval
+        }
+        if manager.slowPollingOnBattery != general.slowPollingOnBattery {
+            manager.slowPollingOnBattery = general.slowPollingOnBattery
         }
         manager.reapplyProfileAfterWake = general.reapplyProfileAfterWake
         // Keep a slow poll while the Nook is hidden only if some alert can fire.
@@ -132,6 +154,8 @@ final class FanControlAlertCoordinator {
             alert = .fanStopped
         } else if general.isEnabled, general.highTemperatureAlertEnabled, manager.highTempAlertActive {
             alert = .highTemperature
+        } else if general.isEnabled, conflictAlertVisible, !manager.conflictingControllers.isEmpty {
+            alert = .conflictingController
         } else {
             alert = nil
         }
@@ -146,6 +170,31 @@ final class FanControlAlertCoordinator {
                 NotificationCenter.default.post(name: Self.transientNotificationName, object: nil)
             }
         }
+    }
+}
+
+extension FanControlAlertCoordinator {
+    /// Shows the conflict alert once per detection (`conflictAlertDuration`); a
+    /// cleared conflict re-arms it.
+    fileprivate func conflictingControllersChanged() {
+        let manager = FanControlManager.shared
+        if manager.conflictingControllers.isEmpty {
+            conflictAnnounced = false
+            conflictAlertVisible = false
+            conflictHideTask?.cancel()
+            conflictHideTask = nil
+        } else if !conflictAnnounced, Defaults[.fanControlGeneralSettings].isEnabled {
+            conflictAnnounced = true
+            conflictAlertVisible = true
+            conflictHideTask?.cancel()
+            conflictHideTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(Self.conflictAlertDuration))
+                guard !Task.isCancelled, let self else { return }
+                self.conflictAlertVisible = false
+                self.reevaluate()
+            }
+        }
+        reevaluate()
     }
 }
 
@@ -166,12 +215,12 @@ struct FanControlAlertView: View {
     var body: some View {
         HStack(spacing: 6) {
             if part != .trailing {
-                Image(systemName: coordinator.currentAlert == .fanStopped ? "exclamationmark.triangle.fill" : "fan.fill")
-                    .foregroundStyle(.red)
+                Image(systemName: coordinator.currentAlert == .highTemperature ? "fan.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(coordinator.currentAlert == .conflictingController ? .orange : .red)
                     .symbolEffect(.pulse, isActive: coordinator.currentAlert != nil)
             }
             if part != .leading {
-                if let hottest = manager.hottestSensor {
+                if coordinator.currentAlert != .conflictingController, let hottest = manager.hottestSensor {
                     Text(verbatim: FanControlFormatting.temperature(hottest, unit: settings.temperatureUnit))
                         .monospacedDigit()
                         .foregroundStyle(.red)
@@ -188,6 +237,8 @@ struct FanControlAlertView: View {
         switch coordinator.currentAlert {
         case .fanStopped: Text("Fan stopped")
         case .highTemperature: Text("High temperature")
+        case .conflictingController:
+            Text("\(manager.conflictingControllers.formatted(.list(type: .and))) is running")
         case nil: EmptyView()
         }
     }
