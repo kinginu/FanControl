@@ -118,6 +118,9 @@ public final class ChargeLimitController {
 
     @ObservationIgnored private weak var helper: (any ChargeLimitHelperAccess)?
     @ObservationIgnored private let read: Reader
+    /// Bumped by every `setEnabled` so a `refresh()` whose read started before a change
+    /// (even one that already finished) does not overwrite the helper's newer read-back.
+    @ObservationIgnored private var changeGeneration = 0
 
     init(helper: any ChargeLimitHelperAccess, read: @escaping Reader = ChargeLimitController.readFromSMC) {
         self.helper = helper
@@ -135,9 +138,11 @@ public final class ChargeLimitController {
            reading != .unknown {
             return
         }
+        let generation = changeGeneration
         let value = await read()
-        // A change that finished meanwhile already published the helper's read-back.
-        guard !isBusy else { return }
+        // A change that started (or even finished) meanwhile already published, or will
+        // publish, the helper's newer read-back.
+        guard !isBusy, generation == changeGeneration else { return }
         reading = value
         lastRefresh = Date()
     }
@@ -154,6 +159,7 @@ public final class ChargeLimitController {
         }
         guard let helper else { return }
         isBusy = true
+        changeGeneration &+= 1
         defer {
             isBusy = false
             helper.refreshHelperStatus()

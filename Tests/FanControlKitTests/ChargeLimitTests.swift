@@ -1,5 +1,6 @@
 #if os(macOS)
 import Foundation
+import Synchronization
 import Testing
 import FanControlCore
 import FanControlXPC
@@ -61,6 +62,24 @@ private final class FakeChargeLimitHelper: ChargeLimitHelperAccess {
         calls.append("set(\(enabled))")
         if let setError { throw setError }
         return readBack
+    }
+}
+
+/// Holds a fake CHWA read until `release()` (one waiter).
+private final class StaleReadGate: Sendable {
+    private let continuation = Mutex<CheckedContinuation<Void, Never>?>(nil)
+
+    var isWaiting: Bool { continuation.withLock { $0 != nil } }
+
+    func waitForRelease() async {
+        await withCheckedContinuation { cont in continuation.withLock { $0 = cont } }
+    }
+
+    func release() {
+        continuation.withLock { cont in
+            cont?.resume()
+            cont = nil
+        }
     }
 }
 
@@ -189,6 +208,25 @@ struct ChargeLimitControllerTests {
         helper.readBack = 0
         try await controller.setEnabled(false)
         #expect(controller.reading == .off)
+    }
+
+    @Test func staleRefreshDoesNotOverwriteAFinishedChange() async throws {
+        let helper = FakeChargeLimitHelper()
+        helper.readBack = 1
+        let gate = StaleReadGate()
+        let controller = ChargeLimitController(helper: helper, read: {
+            await gate.waitForRelease()
+            return .off   // read before the change landed
+        })
+        let refresh = Task { @MainActor in await controller.refresh() }
+        #expect(await eventually { gate.isWaiting })
+        // The change runs from start to finish while the read is in flight.
+        try await controller.setEnabled(true)
+        #expect(controller.reading == .on)
+        #expect(!controller.isBusy)
+        gate.release()
+        await refresh.value
+        #expect(controller.reading == .on)   // not the older .off
     }
 
     @Test func missingKeyFromHelperMarksUnsupported() async {

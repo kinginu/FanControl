@@ -476,6 +476,8 @@ user acts.
 - `refresh(ifOlderThan:)` reads `CHWA` **unprivileged** on a background task with a short-lived
   `SMCClient` (`classify`: absent or unexpected layout → `.unsupported`, 0/1 → `.off` / `.on`,
   other values → `.unreadable`) and re-reads the helper install status. Nothing is written.
+- A `refresh` whose read started before a `setEnabled` (even one that finished while the read
+  was in flight) does not publish its older value: every change bumps a generation counter.
 - `setEnabled(_:)` is an explicit user action only. It takes the same "requires helper" path as a
   fan write — `HelperCoordinator.prepareHelper()` (install if needed, protocol version check;
   `openSession()` now calls it) — and then `HelperClient.setChargeLimitEnabled(_:)`. It does
