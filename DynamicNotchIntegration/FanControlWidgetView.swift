@@ -18,14 +18,13 @@
 // `FanCurveView` and `FanControlKeyTemperaturesView` are also used by the settings pane.
 
 import SwiftUI
-import Defaults
 import FanControlCore
 import FanControlKit
 
 struct FanControlWidgetView: View {
 
-    @Default(.fanControlWidgetSettings) private var settings
-    @Default(.fanControlGeneralSettings) private var general
+    @StoredSetting(.fanControlWidgetSettings) private var settings
+    @StoredSetting(.fanControlGeneralSettings) private var general
 
     /// Preview / debug rendering only (e.g. the app's DEBUG `preview:` hook):
     /// select this profile in the list and show its details instead of the

@@ -14,13 +14,12 @@
 // after the real sensors when sorting by temperature.
 
 import SwiftUI
-import Defaults
 import FanControlCore
 import FanControlKit
 
 struct FanControlSensorsTabView: View {
 
-    @Default(.fanControlWidgetSettings) private var widgetSettings
+    @StoredSetting(.fanControlWidgetSettings) private var widgetSettings
 
     @State private var sortOrder = [KeyPathComparator(\SensorReading.temperature, order: .reverse)]
 

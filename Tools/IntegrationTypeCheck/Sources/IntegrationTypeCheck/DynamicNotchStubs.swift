@@ -7,11 +7,10 @@
 //
 // Part 2 transcribes the code from DynamicNotchIntegration/PATCHES.md (a)(c)(d)(e)(f)
 // against those stubs, so the snippets are type-checked against the real
-// Defaults / SwiftUI APIs. Keep it in sync with PATCHES.md by hand.
+// SettingsStore (FanControlSettingsStorage.swift) / SwiftUI APIs. Keep it in sync with PATCHES.md by hand.
 
 import SwiftUI
 import AppKit
-import Defaults
 import FanControlCore
 import FanControlKit
 
@@ -20,7 +19,7 @@ import FanControlKit
 /// host app *Settings.swift: every settings struct conforms to `DynamicNotch.Preferences`.
 /// Requirements are unknown (not visible from the host sources); modelled as the conformances all
 /// settings structs share.
-protocol Preferences: Defaults.Serializable, Codable, Equatable, Hashable {}
+protocol Preferences: CodableStoredValue, Equatable, Hashable {}
 
 /// host app *WidgetSettings.swift: `DynamicNotch.WidgetPrefs`. NookSettings.swift reads
 /// `widget.prefs.gridSizeType` (existential dispatch), which is the only requirement modelled here.
@@ -89,14 +88,14 @@ extension NookWidget {
         switch self {
         case .timer: return .small
         case .fanControl:
-            return Defaults[.fanControlWidgetSettings].gridSize == .doubleWide ? .doubleWide : .medium
+            return SettingsStore[.fanControlWidgetSettings].gridSize == .doubleWide ? .doubleWide : .medium
         }
     }
 
     var prefs: WidgetPrefs {
         switch self {
-        case .timer: return Defaults[.fanControlWidgetSettings] // placeholder for TimerWidgetSettingsKey()
-        case .fanControl: return Defaults[.fanControlWidgetSettings]
+        case .timer: return SettingsStore[.fanControlWidgetSettings] // placeholder for TimerWidgetSettingsKey()
+        case .fanControl: return SettingsStore[.fanControlWidgetSettings]
         }
     }
 }
@@ -184,7 +183,7 @@ final class _PatchE_AppDelegate: NSObject, NSApplicationDelegate {
                 activeLiveActivitiesManager.removeSync(.fanAlert)
             }
         }
-        let fanSettings = Defaults[.fanControlGeneralSettings]
+        let fanSettings = SettingsStore[.fanControlGeneralSettings]
         if fanSettings.isEnabled && fanSettings.autoStartMonitoring {
             FanControlManager.shared.startMonitoring()
         }

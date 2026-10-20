@@ -5,13 +5,12 @@
 // (wired in `WidgetsSettingsTabView`, see PATCHES.md (c)). Design doc §4.3.
 
 import SwiftUI
-import Defaults
 import FanControlCore
 import FanControlKit
 
 struct FanControlWidgetSettingsView: View {
 
-    @Default(.fanControlWidgetSettings) private var settings
+    @StoredSetting(.fanControlWidgetSettings) private var settings
 
     /// `@Observable`, so SwiftUI tracks the properties read in `body`.
     private var manager: FanControlManager { FanControlManager.shared }

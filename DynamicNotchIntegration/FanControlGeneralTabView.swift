@@ -3,12 +3,11 @@
 //
 // "General" tab of the Fan Control settings pane: feature switch, polling,
 // lifecycle options, alerts, temperature thresholds (FanControlThresholdSettings,
-// own Defaults key), privileged helper and maintenance actions.
+// own stored-setting key), privileged helper and maintenance actions.
 
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
-import Defaults
 import FanControlCore
 import FanControlKit
 
@@ -16,8 +15,8 @@ struct FanControlGeneralTabView: View {
 
     @Binding var actionError: String?
 
-    @Default(.fanControlGeneralSettings) private var general
-    @Default(.fanControlThresholdSettings) private var thresholdSettings
+    @StoredSetting(.fanControlGeneralSettings) private var general
+    @StoredSetting(.fanControlThresholdSettings) private var thresholdSettings
     /// True while the SMC dump is being produced (button disabled).
     @State private var isExportingDump = false
 
@@ -107,7 +106,7 @@ struct FanControlGeneralTabView: View {
         }
         .formStyle(.grouped)
         // `pollingInterval` / `slowPollingOnBattery` / `reapplyProfileAfterWake` reach the
-        // manager through `FanControlAlertCoordinator.syncManagerSettings()` (Defaults.updates).
+        // manager through `FanControlAlertCoordinator.syncManagerSettings()` (SettingsStore.updates).
         .onAppear { manager.refreshConflictingControllers() }
     }
 
@@ -129,7 +128,7 @@ struct FanControlGeneralTabView: View {
                     // `startMonitoring()` on the on-path, which must not be undone.
                     fanControlPerform($actionError) {
                         defer {
-                            if !Defaults[.fanControlGeneralSettings].isEnabled {
+                            if !SettingsStore[.fanControlGeneralSettings].isEnabled {
                                 manager.stopMonitoring()
                             }
                         }
@@ -207,12 +206,12 @@ struct FanControlGeneralTabView: View {
 // MARK: - Temperature thresholds (design doc §5.6)
 
 /// User-set alert / emergency / hysteresis thresholds, persisted under their own
-/// Defaults key (`fanControlThresholdSettings`, separate from
+/// stored-setting key (`fanControlThresholdSettings`, separate from
 /// `FanControlGeneralSettings`). Values are whole °C in practice; they are
 /// clamped by `ThresholdBounds` when edited and again when mirrored into
 /// `FanControlManager.safetyPolicy` (`applySafetyThresholds`). Missing keys
 /// decode to the defaults (90 / 95 / 5 °C = `SafetyThresholds.default`).
-struct FanControlThresholdSettings: Codable, Defaults.Serializable, Equatable, Hashable {
+struct FanControlThresholdSettings: CodableStoredValue, Equatable, Hashable {
     var highTemperatureAlert: Double = SafetyThresholds.default.highTemperatureAlert
     var emergencyTemperature: Double = SafetyThresholds.default.emergencyTemperature
     var alertHysteresis: Double = SafetyThresholds.default.alertHysteresis
@@ -248,8 +247,8 @@ struct FanControlThresholdSettings: Codable, Defaults.Serializable, Equatable, H
     }
 }
 
-extension Defaults.Keys {
-    static let fanControlThresholdSettings = Key<FanControlThresholdSettings>("fanControlThresholdSettings",
+extension StoredKeys {
+    static let fanControlThresholdSettings = Key<FanControlThresholdSettings>(SettingKey.fanControlThresholdSettings,
                                                                               default: .init())
 }
 

@@ -2,19 +2,19 @@
 // Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
 //
 // Settings models for the Fan Control Nook widget and the Fan Control
-// settings pane, persisted with sindresorhus/Defaults (design doc §4.1, §4.3).
+// settings pane, persisted with SettingsStore (FanControlSettingsStorage.swift; formerly
+// sindresorhus/Defaults, same stored format) (design doc §4.1, §4.3).
 //
 // Decoding is tolerant (`decodeIfPresent` with defaults) so that adding a
 // field in a later version never resets the user's stored settings.
 
 import Foundation
-import Defaults
 import FanControlCore
 import FanControlKit
 
 // MARK: - Widget settings
 
-struct FanControlWidgetSettings: Defaults.Serializable, Codable, Equatable, Hashable {
+struct FanControlWidgetSettings: CodableStoredValue, Equatable, Hashable {
 
     /// Size of the widget in the Nook grid.
     /// Raw values match `NookWidget.NookGridSizeType` (medium = 2, doubleWide = 5),
@@ -106,7 +106,7 @@ struct FanControlWidgetSettings: Defaults.Serializable, Codable, Equatable, Hash
 
 // MARK: - General settings
 
-struct FanControlGeneralSettings: Defaults.Serializable, Codable, Equatable, Hashable {
+struct FanControlGeneralSettings: CodableStoredValue, Equatable, Hashable {
 
     /// Polling intervals offered in the settings pane (seconds, design doc §4.3).
     static let pollingIntervalChoices: [TimeInterval] = [1, 2, 5, 10]
@@ -164,11 +164,11 @@ struct FanControlGeneralSettings: Defaults.Serializable, Codable, Equatable, Has
     }
 }
 
-// MARK: - Defaults keys
+// MARK: - Stored-setting keys
 
-extension Defaults.Keys {
-    static let fanControlWidgetSettings = Key<FanControlWidgetSettings>("fanControlWidgetSettings", default: .init())
-    static let fanControlGeneralSettings = Key<FanControlGeneralSettings>("fanControlGeneralSettings", default: .init())
+extension StoredKeys {
+    static let fanControlWidgetSettings = Key<FanControlWidgetSettings>(SettingKey.fanControlWidgetSettings, default: .init())
+    static let fanControlGeneralSettings = Key<FanControlGeneralSettings>(SettingKey.fanControlGeneralSettings, default: .init())
 }
 
 // MARK: - Formatting helpers shared by the Fan Control views

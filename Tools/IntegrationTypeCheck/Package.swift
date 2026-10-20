@@ -1,6 +1,7 @@
 // swift-tools-version: 5.9
 // Scratch package that type-checks FanControl/DynamicNotchIntegration/*.swift against the
-// real macOS SDK + sindresorhus/Defaults. Not part of FanControl/Package.swift.
+// real macOS SDK (settings storage: FanControlSettingsStorage.swift, first-party since
+// 2026-10-20 — sindresorhus/Defaults was removed). Not part of FanControl/Package.swift.
 import PackageDescription
 import Foundation
 
@@ -15,7 +16,6 @@ let package = Package(
     platforms: [.macOS("26.0")],   // follows FanControl/Package.swift
     dependencies: [
         .package(name: "FanControl", path: "../.."),
-        .package(url: "https://github.com/sindresorhus/Defaults", from: "8.2.0"),
     ],
     targets: [
         .target(
@@ -23,8 +23,14 @@ let package = Package(
             dependencies: [
                 .product(name: "FanControlCore", package: "FanControl"),
                 .product(name: "FanControlKit", package: "FanControl"),
-                .product(name: "Defaults", package: "Defaults"),
             ],
+            swiftSettings: swift6
+        ),
+        // Stored-format compatibility of the Fan Control settings keys (SettingsStore vs the JSON
+        // strings sindresorhus/Defaults wrote). Fixture shared with DynamicNotchApp/Tests.
+        .testTarget(
+            name: "FanControlSettingsCompatTests",
+            dependencies: ["IntegrationTypeCheck"],
             swiftSettings: swift6
         ),
     ]

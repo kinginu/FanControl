@@ -11,7 +11,6 @@
 // where profiles are edited (the notch widget only selects one).
 
 import SwiftUI
-import Defaults
 import FanControlCore
 import FanControlKit
 
@@ -22,10 +21,10 @@ struct FanControlProfilesTabView: View {
     /// app's DEBUG preview hook); `nil` = the active profile.
     var initialSelection: UUID? = nil
 
-    @Default(.fanControlWidgetSettings) private var widgetSettings
+    @StoredSetting(.fanControlWidgetSettings) private var widgetSettings
     /// Apply is disabled while the feature is off: applying a manual profile
     /// starts monitoring and opens the helper session.
-    @Default(.fanControlGeneralSettings) private var general
+    @StoredSetting(.fanControlGeneralSettings) private var general
 
     @State private var selectedID: UUID?
     /// Working copy of the selected profile with explicit per-fan modes

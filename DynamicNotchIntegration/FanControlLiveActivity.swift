@@ -37,7 +37,6 @@
 
 import SwiftUI
 import AppKit
-import Defaults
 import FanControlCore
 import FanControlKit
 
@@ -59,9 +58,9 @@ enum FanControlAlertKind: Equatable, Hashable {
 /// Observes `FanControlManager` alert notifications, applies the user's alert
 /// toggles and exposes the alert to show.
 ///
-/// It is also the single place that mirrors the Defaults-backed
+/// It is also the single place that mirrors the SettingsStore-backed
 /// `FanControlGeneralSettings` into the manager (FanControlKit does not depend
-/// on Defaults): `pollingInterval`, `slowPollingOnBattery`, `reapplyProfileAfterWake`
+/// on the app settings store): `pollingInterval`, `slowPollingOnBattery`, `reapplyProfileAfterWake`
 /// and `keepAlertsWhilePaused` (= any alert toggle on) are copied at creation and
 /// on every settings change, and so are the temperature thresholds
 /// (`FanControlThresholdSettings` → `manager.applySafetyThresholds`). The wake re-apply itself is done by
@@ -111,14 +110,14 @@ final class FanControlAlertCoordinator {
 
         // Alert toggles, master switch, polling interval or wake option changed in Settings.
         settingsTask = Task { [weak self] in
-            for await _ in Defaults.updates(.fanControlGeneralSettings, initial: false) {
+            for await _ in SettingsStore.updates(.fanControlGeneralSettings, initial: false) {
                 self?.syncManagerSettings()
                 self?.reevaluate()
             }
         }
         // Temperature thresholds changed in Settings (General tab, design doc §5.6).
         thresholdsTask = Task { [weak self] in
-            for await _ in Defaults.updates(.fanControlThresholdSettings, initial: false) {
+            for await _ in SettingsStore.updates(.fanControlThresholdSettings, initial: false) {
                 self?.syncManagerSettings()
             }
         }
@@ -131,7 +130,7 @@ final class FanControlAlertCoordinator {
     /// `pollingInterval` and `keepAlertsWhilePaused` are only assigned when they
     /// changed, because assigning them may reschedule the poll timer.
     func syncManagerSettings() {
-        let general = Defaults[.fanControlGeneralSettings]
+        let general = SettingsStore[.fanControlGeneralSettings]
         let manager = FanControlManager.shared
         if manager.pollingInterval != general.pollingInterval {
             manager.pollingInterval = general.pollingInterval
@@ -154,7 +153,7 @@ final class FanControlAlertCoordinator {
         // ThresholdBounds). `emergencySensorPrefixes` and `enforceHardwareMinimum`
         // are left as they are. A change is evaluated by the next poll; poll now
         // so the alert and the emergency override follow without waiting.
-        let thresholds = Defaults[.fanControlThresholdSettings].thresholds
+        let thresholds = SettingsStore[.fanControlThresholdSettings].thresholds
         if manager.safetyPolicy.thresholds != ThresholdBounds.clamped(thresholds) {
             manager.applySafetyThresholds(thresholds)
             if manager.isMonitoring { manager.refreshNow() }
@@ -163,7 +162,7 @@ final class FanControlAlertCoordinator {
 
     /// Recomputes `currentAlert` from the manager state and the alert settings.
     func reevaluate() {
-        let general = Defaults[.fanControlGeneralSettings]
+        let general = SettingsStore[.fanControlGeneralSettings]
         let manager = FanControlManager.shared
 
         let alert: FanControlAlertKind?
@@ -200,7 +199,7 @@ extension FanControlAlertCoordinator {
             conflictAlertVisible = false
             conflictHideTask?.cancel()
             conflictHideTask = nil
-        } else if !conflictAnnounced, Defaults[.fanControlGeneralSettings].isEnabled {
+        } else if !conflictAnnounced, SettingsStore[.fanControlGeneralSettings].isEnabled {
             conflictAnnounced = true
             conflictAlertVisible = true
             conflictHideTask?.cancel()
@@ -224,7 +223,7 @@ struct FanControlAlertView: View {
 
     var part: Part = .full
 
-    @Default(.fanControlWidgetSettings) private var settings
+    @StoredSetting(.fanControlWidgetSettings) private var settings
 
     private var coordinator: FanControlAlertCoordinator { FanControlAlertCoordinator.shared }
     private var manager: FanControlManager { FanControlManager.shared }

@@ -13,7 +13,6 @@
 // 760×640, `SettingsRootView.contentSize` in Sources/SettingsRootView.swift).
 
 import SwiftUI
-import Defaults
 import FanControlCore
 import FanControlKit
 
@@ -82,7 +81,7 @@ enum FanControlNookVisibility {
     static func nookVisibilityChanged(isVisible: Bool) {
         // The host reports Nook visibility; the widget's own appear/disappear becomes a fallback only.
         FanControlWidgetPresence.hostReportsVisibility = true
-        let general = Defaults[.fanControlGeneralSettings]
+        let general = SettingsStore[.fanControlGeneralSettings]
         FanControlManager.shared.setMonitoringPaused(!isVisible && general.isEnabled && general.pauseWhenNookHidden)
     }
 }
