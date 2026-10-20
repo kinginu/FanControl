@@ -9,7 +9,7 @@ fan keys on an allowlist and values inside the fan's hardware range. It also han
 to macOS when the client goes away, on SIGTERM, and before sleep, and it repairs fan state after
 wake.
 
-> **Status: pre-1.0, tested on one machine.** Everything below was built and run on a
+> **Status: version 1.0.0 ([CHANGELOG](CHANGELOG.md)), tested on one machine.** Everything below was built and run on a
 > MacBook Pro Mac14,9 (M2 Pro) with macOS 26.5. Other Apple Silicon models have not been tested.
 > Controlling fans by hand can make a Mac run hotter than macOS would let it. Read the
 > [safety model](#safety-model) before you use it.
@@ -235,7 +235,7 @@ the next connection.
 
 ```sh
 swift build
-swift test            # 436 tests in 69 suites (Swift Testing); needs Xcode, or see CONTRIBUTING.md for Command Line Tools only
+swift test            # 587 tests in 79 suites (Swift Testing); needs Xcode, or see CONTRIBUTING.md for Command Line Tools only
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
