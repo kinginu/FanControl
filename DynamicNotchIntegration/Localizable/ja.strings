@@ -32,7 +32,7 @@
 "Temperature Unit" = "温度の単位";
 "Celsius (°C)" = "摂氏 (°C)";
 "Fahrenheit (°F)" = "華氏 (°F)";
-"Show Profile Picker" = "プロファイル選択を表示";
+"Show Profile List" = "プロファイル一覧を表示";
 "Show Target RPM" = "目標回転数を表示";
 
 /* MARK: General tab (FanControlGeneralTabView) */
@@ -159,6 +159,12 @@
 "Helper refused this build — see Settings" = "ヘルパーがこのビルドを拒否 — 設定を確認";
 "Preset" = "プリセット";
 "Preset (read-only)" = "プリセット（読み取り専用）";
+
+/* MARK: Widget profile list and details (FanControlWidgetView) */
+"Applies this profile" = "このプロファイルを適用します";
+"Per-fan modes" = "ファンごとに設定";
+"Target" = "目標";
+"Auto" = "自動";
 
 /* MARK: Power-aware polling and conflicting controllers (General tab, Live Activity) */
 "Slow Down Polling on Battery (10 s)" = "バッテリー駆動時はポーリングを 10 秒に";

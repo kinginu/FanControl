@@ -472,7 +472,7 @@ connects lazily on the first call, and the manager calls it only for:
 
 | Trigger | Calls |
 |---|---|
-| user: apply a profile with a manual mode (widget profile menu, Profiles tab), `setFanRPM` / `setFanControlMode` | `openSMCSession()` → `version()`, `openSession()`, then `write` |
+| user: apply a profile with a manual mode (widget profile list, Profiles tab), `setFanRPM` / `setFanControlMode` | `openSMCSession()` → `version()`, `openSession()`, then `write` |
 | user: "Restore Automatic Control" / turning the feature off (`restoreDefaultControl()`) | with a session: writes + `closeSession()`; without one **only if the SMC reports a fan in manual mode** (orphan recovery) → `openSMCSession()` |
 | user: "Check Again" (`retryHelperConnection()`) | `version()` once (read-only probe) |
 | open session only: poll writes, wake re-apply, ⌘Q restore, `closeSMCSession()` | `write`, `closeSession()` |

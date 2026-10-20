@@ -44,7 +44,7 @@ struct FanControlWidgetSettingsView: View {
                 .pickerStyle(.segmented)
                 .fixedSize()
 
-                Toggle("Show Profile Picker", isOn: $settings.showProfilePicker)
+                Toggle("Show Profile List", isOn: $settings.showProfilePicker)
                 Toggle("Show Fan Curve (Double Wide)", isOn: $settings.showFanCurve)
                 Toggle("Show Target RPM", isOn: $settings.showTargetRPM)
             }

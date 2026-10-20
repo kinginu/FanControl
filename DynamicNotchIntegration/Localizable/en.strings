@@ -32,7 +32,7 @@
 "Temperature Unit" = "Temperature Unit";
 "Celsius (°C)" = "Celsius (°C)";
 "Fahrenheit (°F)" = "Fahrenheit (°F)";
-"Show Profile Picker" = "Show Profile Picker";
+"Show Profile List" = "Show Profile List";
 "Show Target RPM" = "Show Target RPM";
 
 /* MARK: General tab (FanControlGeneralTabView) */
@@ -159,6 +159,12 @@
 "Helper refused this build — see Settings" = "Helper refused this build — see Settings";
 "Preset" = "Preset";
 "Preset (read-only)" = "Preset (read-only)";
+
+/* MARK: Widget profile list and details (FanControlWidgetView) */
+"Applies this profile" = "Applies this profile";
+"Per-fan modes" = "Per-fan modes";
+"Target" = "Target";
+"Auto" = "Auto";
 
 /* MARK: Power-aware polling and conflicting controllers (General tab, Live Activity) */
 "Slow Down Polling on Battery (10 s)" = "Slow Down Polling on Battery (10 s)";

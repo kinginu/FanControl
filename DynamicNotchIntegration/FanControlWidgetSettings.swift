@@ -37,7 +37,8 @@ struct FanControlWidgetSettings: Defaults.Serializable, Codable, Equatable, Hash
     var visibleSensorKeys: [String]? = nil
     /// Unit used for temperatures in the widget, the alert and the settings pane.
     var temperatureUnit: TemperatureUnit = .celsius
-    /// Show the profile pull-down menu in the widget.
+    /// Show the profile list (all six profiles, click to apply) in the widget.
+    /// The stored key keeps its old name (it was a pull-down menu before 2026-10-20).
     var showProfilePicker: Bool = true
     /// Show the target RPM next to the measured RPM.
     var showTargetRPM: Bool = false
@@ -203,6 +204,24 @@ enum FanControlFormatting {
     /// emergency prefix (its value is then that of an emergency sensor).
     static func isAlertTemperature(_ sensor: SensorReading, policy: SafetyPolicy) -> Bool {
         guard sensor.temperature.isFinite, sensor.temperature >= policy.highTemperatureAlert else { return false }
+        return isAlertSensor(sensor, policy: policy)
+    }
+
+    /// How far below `policy.highTemperatureAlert` a CPU/GPU value turns orange.
+    static let warmTemperatureMargin: Double = 10
+
+    /// Whether `sensor` is shown in orange: a CPU/GPU sensor (same rule as
+    /// `isAlertTemperature`) within `warmTemperatureMargin` below the alert threshold.
+    static func isWarmTemperature(_ sensor: SensorReading, policy: SafetyPolicy) -> Bool {
+        guard sensor.temperature.isFinite,
+              sensor.temperature < policy.highTemperatureAlert,
+              sensor.temperature >= policy.highTemperatureAlert - warmTemperatureMargin else { return false }
+        return isAlertSensor(sensor, policy: policy)
+    }
+
+    /// CPU/GPU sensors (`policy.emergencySensorPrefixes`; an aggregate counts when one
+    /// of its member prefixes is an emergency prefix).
+    private static func isAlertSensor(_ sensor: SensorReading, policy: SafetyPolicy) -> Bool {
         if sensor.isAggregate {
             let members = FanControlPlatform.sensorAggregateDefinitions
                 .first { $0.id == sensor.id }?.memberPrefixes ?? []

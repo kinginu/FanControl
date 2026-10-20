@@ -4,12 +4,17 @@
 // The Fan Control Nook widget (design doc §4.1). Dispatched from the Nook grid
 // for `NookWidget.fanControl` (PATCHES.md (b)).
 //
-// Layouts (DynamicNotch width = gridSizeType × 50 pt):
-//   - medium (2x1, 100 pt): fans stacked, key temperatures (CPU / GPU), profile selector.
-//   - doubleWide (250 pt): fans + key temperatures (CPU / GPU / SSD) on the left,
-//     the active profile's fan curve + profile selector on the right.
-// The selector lists the six fixed profiles (`ProfileStore`) and applies the
-// chosen one; editing happens only in Settings ▸ Fan Control ▸ Profiles.
+// Layouts (DynamicNotch width = gridSizeType × 50 pt, cell height ≈ 202 pt):
+//   - medium (2x1, 100 pt): header, fans stacked, key temperatures (CPU / GPU), then the
+//     profile list (all six profiles, one compact row each).
+//   - doubleWide (5x1, 250 pt): header across the top; left column = profile list + key
+//     temperatures (CPU / GPU / SSD); right column = fans, then the selected profile's
+//     details (name, type, fan curve with the live operating point, per-fan target RPM).
+//     With the profile list turned off: fans + temperatures left, details right.
+// The list shows the six fixed profiles (`ProfileStore`); the selected one sits on a
+// Liquid Glass pill (macOS 26; material fallback), and clicking a row applies that
+// profile at once (spinner on the row while applying, a short error line on failure).
+// Editing happens only in Settings ▸ Fan Control ▸ Profiles.
 // `FanCurveView` and `FanControlKeyTemperaturesView` are also used by the settings pane.
 
 import SwiftUI
@@ -23,8 +28,8 @@ struct FanControlWidgetView: View {
     @Default(.fanControlGeneralSettings) private var general
 
     /// Preview / debug rendering only (e.g. the app's DEBUG `preview:` hook):
-    /// show this profile's curve and name instead of the active profile's.
-    /// `nil` (the Nook grid) = the active profile. Nothing is applied.
+    /// select this profile in the list and show its details instead of the
+    /// active profile's. `nil` (the Nook grid) = the active profile. Nothing is applied.
     var previewProfile: FanProfile? = nil
     /// Preview / debug rendering only: layout size instead of the setting.
     var previewGridSize: FanControlWidgetSettings.GridSizeChoice? = nil
@@ -33,17 +38,31 @@ struct FanControlWidgetView: View {
     @State private var applyError: String? = nil
     @State private var isApplying = false
     @State private var errorClearTask: Task<Void, Never>? = nil
+    /// The profile being applied (the pill moves to it at once; back on failure).
+    @State private var pendingProfileID: UUID? = nil
+    @Namespace private var selectionNamespace
 
     private var manager: FanControlManager { FanControlManager.shared }
 
     private var gridSize: FanControlWidgetSettings.GridSizeChoice { previewGridSize ?? settings.gridSize }
     private var isCompact: Bool { gridSize == .medium }
-    /// The profile drawn by the curve and named by the selector.
-    private var displayedProfile: FanProfile { previewProfile ?? FanControlProfiles.active }
+
+    /// The highlighted list row: the profile being applied, else the active one.
+    private var selectedProfileID: UUID {
+        pendingProfileID ?? previewProfile?.id ?? FanControlProfiles.activeID
+    }
+
+    /// The profile whose details are shown (the highlighted row).
+    private var displayedProfile: FanProfile {
+        if let pendingProfileID, let pending = FanControlProfiles.all.first(where: { $0.id == pendingProfileID }) {
+            return pending
+        }
+        return previewProfile ?? FanControlProfiles.active
+    }
 
     // Widget restyle (2026-10-20): typography / spacing / colours follow the other Nook widgets
     // (DynamicNotchApp NookWidgetChrome: 8 pt vertical inset, subheadline-semibold secondary
-    // header, quaternary RPM track, hierarchical empty state). Layout is unchanged.
+    // header, quaternary RPM track, hierarchical empty state).
     var body: some View {
         content
             .frame(width: gridSize.widthInPoints)
@@ -91,7 +110,28 @@ struct FanControlWidgetView: View {
                 header
                 fanList
                 if let applyError { errorLine(applyError) } else { sensorList }
-                if settings.showProfilePicker { profileMenu }
+                if settings.showProfilePicker {
+                    profileList
+                        .padding(.top, 2)
+                }
+            }
+        } else if settings.showProfilePicker {
+            VStack(alignment: .leading, spacing: 6) {
+                header
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        profileList
+                        Spacer(minLength: 0)
+                        sensorList
+                    }
+                    .frame(width: 96, alignment: .leading)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    VStack(alignment: .leading, spacing: 6) {
+                        fanList
+                        profileDetails
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
             }
         } else {
             HStack(alignment: .top, spacing: 10) {
@@ -101,22 +141,8 @@ struct FanControlWidgetView: View {
                     sensorList
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                VStack(alignment: .leading, spacing: 4) {
-                    if settings.showFanCurve {
-                        FanCurveView(profile: displayedProfile,
-                                     fans: settings.visibleFans(from: manager.fans),
-                                     sensors: manager.sensorReadings,
-                                     currentRPMs: manager.currentRPMs,
-                                     unit: settings.temperatureUnit,
-                                     emergencyTemperature: manager.safetyPolicy.emergencyTemperature,
-                                     style: .compact)
-                            .frame(height: 64)
-                    }
-                    Spacer(minLength: 0)
-                    if settings.showProfilePicker { profileMenu }
-                    if let applyError { errorLine(applyError) }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                profileDetails
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
     }
@@ -168,54 +194,63 @@ struct FanControlWidgetView: View {
             style: .compact)
     }
 
-    // MARK: Profile menu
+    // MARK: Profile list
 
-    /// Selector among the six fixed profiles; the active one is checked and
-    /// shown as the label. Choosing one applies it (no editing here).
-    private var profileMenu: some View {
-        let activeID = previewProfile?.id ?? FanControlProfiles.activeID
-        let profiles = FanControlProfiles.all
-        return Menu {
-            ForEach(profiles) { profile in
-                if profile.id == FanProfile.BuiltInID.custom1 { Divider() }
-                Button {
-                    applyFromMenu(profile)
-                } label: {
-                    if profile.id == activeID {
-                        Label(FanControlFormatting.profileName(profile), systemImage: "checkmark")
-                    } else {
-                        Text(verbatim: FanControlFormatting.profileName(profile))
-                    }
+    /// All six fixed profiles, one row each; the selected row sits on a glass pill.
+    /// Clicking a row applies that profile (no editing here).
+    private var profileList: some View {
+        VStack(alignment: .leading, spacing: isCompact ? 0 : 1) {
+            ForEach(FanControlProfiles.all) { profile in
+                FanProfileListRow(title: FanControlFormatting.profileName(profile),
+                                  isSelected: profile.id == selectedProfileID,
+                                  isApplying: isApplying && profile.id == pendingProfileID,
+                                  isCompact: isCompact,
+                                  namespace: selectionNamespace) {
+                    select(profile)
                 }
-            }
-        } label: {
-            HStack(spacing: 3) {
-                if !isCompact {
-                    Image(systemName: activeID == FanProfile.BuiltInID.automatic ? "fan" : "fan.fill")
-                }
-                Text(verbatim: FanControlFormatting.profileName(displayedProfile))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                .disabled(isApplying)
             }
         }
-        .menuStyle(.borderlessButton)
-        .controlSize(.small)
-        .disabled(isApplying)
-        .font(isCompact ? .caption2 : .caption)
-        .fixedSize(horizontal: !isCompact, vertical: true)
-        .frame(maxWidth: isCompact ? gridSize.widthInPoints : nil, alignment: .leading)
-        .help(Text("Profile"))
-        .overlay(alignment: .trailing) {
-            if isApplying { ProgressView().controlSize(.mini) }
+        .animation(.snappy(duration: 0.25), value: selectedProfileID)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text("Profiles"))
+    }
+
+    // MARK: Profile details
+
+    @ViewBuilder
+    private var profileDetails: some View {
+        let profile = displayedProfile
+        let fans = settings.visibleFans(from: manager.fans)
+        VStack(alignment: .leading, spacing: 3) {
+            FanProfileSummaryView(profile: profile, fans: fans, sensors: manager.sensorReadings,
+                                  unit: settings.temperatureUnit, showsCurve: settings.showFanCurve)
+            if settings.showFanCurve {
+                FanCurveView(profile: profile,
+                             fans: fans,
+                             sensors: manager.sensorReadings,
+                             currentRPMs: manager.currentRPMs,
+                             unit: settings.temperatureUnit,
+                             emergencyTemperature: manager.safetyPolicy.emergencyTemperature,
+                             style: .compact)
+                    .frame(minHeight: 36, maxHeight: 72)
+            }
+            FanTargetsView(profile: profile, fans: fans, sensors: manager.sensorReadings)
+            if let applyError { errorLine(applyError) }
         }
     }
 
-    /// Applies `profile`; a failure is shown as a short transient line instead of being swallowed.
-    private func applyFromMenu(_ profile: FanProfile) {
-        guard !isApplying else { return }
+    /// Applies `profile` (moves the pill at once; back to the active profile on failure).
+    /// A failure is shown as a short transient line instead of being swallowed.
+    private func select(_ profile: FanProfile) {
+        guard !isApplying, !isPreview, profile.id != FanControlProfiles.activeID else { return }
         isApplying = true
+        pendingProfileID = profile.id
         Task { @MainActor in
-            defer { isApplying = false }
+            defer {
+                isApplying = false
+                pendingProfileID = nil
+            }
             do {
                 try await FanControlProfiles.apply(profile)
                 showApplyError(nil)
@@ -251,6 +286,189 @@ struct FanControlWidgetView: View {
         }
         .font(.caption2)
         .foregroundStyle(.red)
+    }
+}
+
+// MARK: - Profile list row
+
+/// One profile in the widget's list. The selected row gets the glass pill
+/// (shared `matchedGeometryEffect`, so it slides between rows); the others are
+/// plain text with a faint hover fill.
+private struct FanProfileListRow: View {
+    let title: String
+    let isSelected: Bool
+    let isApplying: Bool
+    let isCompact: Bool
+    let namespace: Namespace.ID
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Text(verbatim: title)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Spacer(minLength: 0)
+                if isApplying {
+                    ProgressView().controlSize(.mini)
+                }
+            }
+            .font(isCompact ? .caption2 : .caption)
+            .fontWeight(isSelected ? .semibold : .regular)
+            .foregroundStyle(isSelected ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+            .padding(.horizontal, isCompact ? 6 : 8)
+            .frame(maxWidth: .infinity, minHeight: isCompact ? 15 : 19, alignment: .leading)
+            .contentShape(Capsule())
+            .background {
+                if isSelected {
+                    FanControlSelectionPill()
+                        .matchedGeometryEffect(id: "selection", in: namespace)
+                } else if isHovering {
+                    Capsule().fill(.quinary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .help(Text(verbatim: title))
+        .accessibilityLabel(Text(verbatim: title))
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityHint(isSelected ? Text("Active") : Text("Applies this profile"))
+    }
+}
+
+/// The selection highlight: a Liquid Glass capsule on macOS 26 (Apple's selection style),
+/// else an ultra-thin material capsule. Mirrors the host's `nookGlass` (NookWidgetChrome),
+/// which the drop-in files cannot reference. `DN_DEBUG_NOGLASS=1` (DEBUG) forces the
+/// fallback, because glass is not captured by offscreen `cacheDisplay` snapshots.
+struct FanControlSelectionPill: View {
+    #if DEBUG
+    private static let forceFallback = ProcessInfo.processInfo.environment["DN_DEBUG_NOGLASS"] == "1"
+    #else
+    private static let forceFallback = false
+    #endif
+
+    var body: some View {
+        if #available(macOS 26, *), !Self.forceFallback {
+            Color.clear
+                .glassEffect(.regular, in: Capsule())
+        } else {
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .overlay(Capsule().fill(.quaternary))
+                .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+        }
+    }
+}
+
+// MARK: - Profile details
+
+/// Name and type of a profile: "Controlled by macOS", "Constant · 3,000 RPM",
+/// "Sensor-based · CPU (max) 70–95°C", or "Per-fan modes" when the fans differ.
+/// For Automatic the type line is left out while the curve (which says
+/// "Controlled by macOS" itself) is shown.
+private struct FanProfileSummaryView: View {
+    let profile: FanProfile
+    let fans: [FanDevice]
+    let sensors: [SensorReading]
+    let unit: TemperatureUnit
+    var showsCurve: Bool = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(verbatim: FanControlFormatting.profileName(profile))
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+            if let typeDescription {
+                Text(verbatim: typeDescription)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var typeDescription: String? {
+        let modes = fans.map { profile.mode(for: $0) }
+        let automatic = showsCurve ? nil : String(localized: "Controlled by macOS")
+        guard let first = modes.first ?? profile.defaultMode else { return automatic }
+        guard modes.allSatisfy({ $0 == first }) else {
+            return String(localized: "Per-fan modes")
+        }
+        switch first {
+        case .automatic:
+            return automatic
+        case .constant:
+            return String(localized: "Constant") + " · "
+                + FanControlFormatting.modeSummary(first, sensors: sensors, unit: unit)
+        case .sensor:
+            return String(localized: "Sensor-based") + " · "
+                + FanControlFormatting.modeSummary(first, sensors: sensors, unit: unit)
+        }
+    }
+}
+
+/// Per-fan target RPM of a profile at the current temperatures (`FanControlEngine.targetRPM`,
+/// before the emergency override): "Target ● 3,000 ● 3,000", dots in the curve's fan colours,
+/// "Auto" for a fan left to the SMC.
+private struct FanTargetsView: View {
+    let profile: FanProfile
+    let fans: [FanDevice]
+    let sensors: [SensorReading]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("Target")
+                .foregroundStyle(.secondary)
+            ForEach(Array(fans.enumerated()), id: \.element.id) { index, fan in
+                HStack(spacing: 2) {
+                    Circle()
+                        .fill(FanCurveView.color(forFanAt: index))
+                        .frame(width: 5, height: 5)
+                    Text(verbatim: targetText(for: fan))
+                        .monospacedDigit()
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(verbatim: fan.name))
+                .accessibilityValue(Text(verbatim: accessibilityValue(for: fan)))
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.caption2)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text("Target"))
+    }
+
+    private func target(for fan: FanDevice) -> Int?? {
+        let mode = profile.mode(for: fan)
+        guard mode.isManual else { return .some(nil) }
+        var temperature: Double? = nil
+        if case .sensor(let key, _, _) = mode {
+            guard let reading = sensors.first(where: { $0.id == key && $0.temperature.isFinite }) else { return nil }
+            temperature = reading.temperature
+        }
+        return .some(FanControlEngine.targetRPM(for: mode, fan: fan, sensorTemperature: temperature))
+    }
+
+    private func targetText(for fan: FanDevice) -> String {
+        switch target(for: fan) {
+        case .none: return "--"
+        case .some(.none): return String(localized: "Auto")
+        case .some(.some(let rpm)): return rpm.formatted()
+        }
+    }
+
+    private func accessibilityValue(for fan: FanDevice) -> String {
+        switch target(for: fan) {
+        case .some(.some(let rpm)): return "\(rpm.formatted()) RPM"
+        default: return targetText(for: fan)
+        }
     }
 }
 
@@ -335,7 +553,7 @@ private struct RPMBar: View {
 // MARK: - Key temperatures
 
 /// Rows of "label · temperature" (CPU / GPU / SSD, or the user's sensors).
-/// Values at or above the high-temperature alert (CPU/GPU) are red.
+/// CPU/GPU values at or above the high-temperature alert are red, within 10 °C below it orange.
 struct FanControlKeyTemperaturesView: View {
     enum Style { case compact, regular }
 
@@ -382,7 +600,17 @@ struct FanControlKeyTemperaturesView: View {
     private func value(_ sensor: SensorReading) -> some View {
         Text(verbatim: FanControlFormatting.temperature(sensor, unit: unit))
             .monospacedDigit()
-            .foregroundStyle(FanControlFormatting.isAlertTemperature(sensor, policy: policy) ? Color.red : Color.primary)
+            .foregroundStyle(FanControlFormatting.temperatureColor(sensor, policy: policy))
+    }
+}
+
+extension FanControlFormatting {
+    /// Red at/above the high-temperature alert, orange within `warmTemperatureMargin`
+    /// below it (CPU/GPU sensors only), else primary.
+    static func temperatureColor(_ sensor: SensorReading, policy: SafetyPolicy) -> Color {
+        if isAlertTemperature(sensor, policy: policy) { return .red }
+        if isWarmTemperature(sensor, policy: policy) { return .orange }
+        return .primary
     }
 }
 
