@@ -514,6 +514,42 @@ provisional.
   as Custom 1 and drops the other user profiles. Schema 2 → 3 adds Max and upgrades an unchanged
   old Custom 1 to the Boost curve. Nothing is re-applied by a migration.
 
+## Workload automation
+
+`WorkloadProfileEngine` (pure value type; time is passed in) switches the active profile by
+workload; the host drives it (DynamicNotch: `WorkloadProfileCoordinator`, a 2 s tick plus
+`NSWorkspace` launch / terminate / activate notifications) and applies the profile that each
+`WorkloadDecision` names when it is not already active. Settings are
+`WorkloadAutomationSettings` (Codable, unknown / missing keys fall back to defaults; the host
+stores them as JSON under `fanControl.workloadAutomation`).
+
+**Precedence** (`WorkloadProfilePrecedence`), highest first:
+
+| Layer | Behaviour |
+|---|---|
+| Manual | A profile the user picks by hand is never replaced. Automation disengages *without* returning and pauses for `manualOverrideMinutes` (15 / 30 / 60 / 120, or 0 = until resumed / disabled and re-enabled). The host detects manual picks as `activeProfileID` changes it did not make. |
+| Emergency | While `emergencyOverrideActive`, decisions are held (no switch either way). The override itself forces max under any profile, the manual one included (see "Emergency override"). |
+| Workload | Enabled app rules in list order (`running` or `frontmost`), then the sustained-load rule. |
+| Power (F2) | Proposes only: while a workload rule is engaged, `noteLowerLayerSelection` makes its choice the profile to return to (host: `requestLowerLayerProfile`). |
+| Default | The baseline: the profile active when automation engaged. |
+
+**Rules and hysteresis.**
+
+- App rules stay matched `appReleaseDelay` s (default 10) after the app quits or loses focus.
+- Load rule (`cpu`, `gpu`, or `either` = the higher): engage after `highDuration` s
+  continuously above `highThreshold` (default 20 s above 70 %); release after `lowDuration` s
+  continuously below `lowThreshold` (default 60 s below 40 %); in between the state holds. A
+  missing sample (`nil`) leaves the phase and its timers unchanged.
+- While engaged, a different winning rule switches directly and keeps the baseline. When no rule
+  is active any more, the decision names the baseline once (`nil` baseline = Automatic).
+- Turning automation off while engaged returns to the baseline once and clears the manual lock.
+  `reset()` forgets everything without returning (used when fan control itself is off).
+- Rules whose profile is not in `WorkloadSnapshot.availableProfileIDs` are skipped.
+
+**Load sampling.** `SystemLoadSampler`: CPU busy share from `host_statistics(HOST_CPU_LOAD_INFO)`
+tick deltas between calls (`CPULoadTicks.usage`, 32-bit wrap-safe; `nil` on the first call), GPU
+from the highest IOAccelerator `PerformanceStatistics` "Device Utilization %".
+
 ## Settings owned by the app
 
 The kit does not depend on the app's settings store. The app copies its settings into these
