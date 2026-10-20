@@ -203,7 +203,8 @@ struct HelperWireContractTests {
     @Test func selectorsArePinned() {
         let proto: Protocol = FanControlHelperProtocol.self
         let selectors = ["versionWithReply:", "openSessionWithReply:", "writeKey:bytes:reply:",
-                         "closeSessionWithReply:", "readKeyInfo:reply:"]
+                         "closeSessionWithReply:", "readKeyInfo:reply:",
+                         "setChargeLimitEnabled:reply:"]  // F1: protocol v2
         for name in selectors {
             let method = protocol_getMethodDescription(proto, NSSelectorFromString(name), true, true)
             #expect(method.name != nil, Comment(rawValue: name))

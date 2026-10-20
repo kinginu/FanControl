@@ -9,7 +9,7 @@ import FanControlXPC
 ///
 /// `Sendable` (immutable): XPC may deliver one connection's messages on any of its queues.
 final class HelperService: NSObject, FanControlHelperProtocol, Sendable {
-    private let owner: SessionOwner
+    let owner: SessionOwner  // F1: internal (read by the charge-limit extension, ChargeLimitService.swift)
 
     /// Payload sizes accepted by `writeKey` (the SMC's own limit; the exact size is
     /// checked against the key's `dataSize` by `HelperWritePolicy.validate`).

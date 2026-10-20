@@ -64,6 +64,7 @@ public enum FanControlHelperErrorCode: Int, CaseIterable, Sendable, CustomString
 /// | Version | Change |
 /// |---|---|
 /// | 1 | Initial contract: `version`, `openSession`, `writeKey`, `closeSession`, `readKeyInfo`; allowlist `F<n>Tg`, `F<n>Md` |
+/// | 2 | F1: `setChargeLimitEnabled(_:reply:)` (`CHWA` only, values 0/1, no session, never restored; `ChargeLimitPolicy`) |
 ///
 /// The ObjC selectors (`versionWithReply:`, `openSessionWithReply:`,
 /// `writeKey:bytes:reply:`, `closeSessionWithReply:`, `readKeyInfo:reply:`) are
@@ -87,6 +88,11 @@ public enum FanControlHelperErrorCode: Int, CaseIterable, Sendable, CustomString
     /// Replies with (return code, data size, data type FourCC, attribute byte, message)
     /// of any key (read-only; needs no session).
     func readKeyInfo(_ key: String, reply: @escaping (Int, Int, UInt32, UInt8, String) -> Void)
+    // F1: charge limit (protocol v2). Not part of the fan write session: needs no open
+    // session and is never reverted by the helper (docs/helper.md "Charge limit (CHWA)").
+    /// Writes `CHWA` = 1 (`enabled`, hold at 80 %) or 0 (`ChargeLimitPolicy.apply`) and
+    /// replies with (rc, read-back value 0/1 or -1, message).
+    func setChargeLimitEnabled(_ enabled: Bool, reply: @escaping (Int, Int, String) -> Void)
 }
 
 /// Builds the `NSXPCInterface` used on both sides of the connection.
