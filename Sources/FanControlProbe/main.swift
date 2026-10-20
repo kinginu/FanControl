@@ -6,10 +6,13 @@
 // `SMCWriter`, profile application or helper registration from here, and do
 // not add any write option. It runs unprivileged (no sudo needed).
 //
-// Usage: fanfi-probe [--dump] [--watch N]
-//   (default)   machine model, SMC key count, fans, temperature sensors
-//   --dump      every SMC key with type/size/attributes and raw bytes
-//   --watch N   repeat the fan/temperature readout every N seconds (Ctrl-C to stop)
+// Usage: fanfi-probe [--dump] [--watch N] [--fan-stats N]
+//   (default)      machine model, SMC key count, fans, temperature sensors
+//   --dump         every SMC key with type/size/attributes and raw bytes
+//   --watch N      repeat the fan/temperature readout every N seconds (Ctrl-C to stop)
+//   --fan-stats N  hunting test: sample every fan's actual/target RPM (every --watch
+//                  seconds, default 1) for N seconds, print per-fan statistics and a
+//                  PASS/FAIL verdict (FanStatistics, FanStabilityCriteria), then exit
 
 #if os(macOS)
 import Foundation
@@ -17,12 +20,13 @@ import FanControlCore
 import FanControlSMC
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: fanfi-probe [--dump] [--watch N]\n".utf8))
+    FileHandle.standardError.write(Data("usage: fanfi-probe [--dump] [--watch N] [--fan-stats N]\n".utf8))
     exit(2)
 }
 
 var wantDump = false
 var watchInterval: Double?
+var fanStatsSeconds: Double?
 var args = CommandLine.arguments.dropFirst()
 while let arg = args.popFirst() {
     switch arg {
@@ -30,6 +34,9 @@ while let arg = args.popFirst() {
     case "--watch":
         guard let value = args.popFirst(), let seconds = Double(value), seconds > 0 else { usage() }
         watchInterval = seconds
+    case "--fan-stats":
+        guard let value = args.popFirst(), let seconds = Double(value), seconds > 0 else { usage() }
+        fanStatsSeconds = seconds
     case "-h", "--help": usage()
     default: usage()
     }
@@ -153,6 +160,53 @@ func readout() {
     for reading in aggregates {
         print("  \(pad(reading.id, 9))  \(lpad(String(format: "%.2f", reading.temperature), 7)) °C  \(reading.name)")
     }
+}
+
+/// Hunting test (`--fan-stats N`): compact per-sample fan lines instead of the full
+/// readout, then `FanStatistics.analyze` per fan. Read-only like everything else here.
+@MainActor
+func runFanStats(seconds: Double, interval: Double) -> Never {
+    let criteria = FanStabilityCriteria.default
+    print("== Fan stats: \(FanStatistics.formatted(seconds)) s window, sample every \(FanStatistics.formatted(interval)) s ==")
+    print("criteria: target reversals ≤ \(FanStatistics.formatted(criteria.maxReversalsPerMinute))/60 s "
+          + "(dead band \(criteria.reversalDeadBandRPM) RPM); |actual − target| ≤ \(criteria.trackingToleranceRPM) RPM "
+          + "for ≥ \(FanStatistics.formatted(criteria.requiredTrackingFraction * 100))% of samples after "
+          + "\(FanStatistics.formatted(criteria.settleSeconds)) s")
+    var samples: [Int: [FanSample]] = [:]
+    let start = Date()
+    while true {
+        let elapsed = Date().timeIntervalSince(start)
+        let current = FanDiscovery.readCurrentRPMs(fans: fans, using: client)
+        let target = FanDiscovery.readTargetRPMs(fans: fans, using: client)
+        var line = "  t=\(lpad(String(format: "%.1f", elapsed), 6))s"
+        for fan in fans {
+            samples[fan.id, default: []].append(FanSample(time: elapsed, actualRPM: current[fan.id], targetRPM: target[fan.id]))
+            line += "  \(fan.name): \(lpad(current[fan.id].map(String.init) ?? "-", 5)) / \(lpad(target[fan.id].map(String.init) ?? "-", 5))"
+        }
+        print(line + "  (actual / target)")
+        if elapsed + interval > seconds + 0.001 { break }
+        Thread.sleep(forTimeInterval: interval)
+    }
+    print("")
+    var allPassed = !fans.isEmpty
+    for fan in fans {
+        let r = FanStatistics.analyze(samples[fan.id] ?? [], criteria: criteria)
+        func rpm(_ v: Int?) -> String { v.map(String.init) ?? "-" }
+        print("== \(fan.name) (fan \(fan.id)): \(r.passed ? "PASS" : "FAIL") ==")
+        print("  samples \(r.sampleCount) over \(FanStatistics.formatted(r.duration)) s")
+        print("  actual  min \(rpm(r.actualMin))  max \(rpm(r.actualMax))  mean \(r.actualMean.map { String(format: "%.0f", $0) } ?? "-")")
+        print("  target  min \(rpm(r.targetMin))  max \(rpm(r.targetMax))  reversals \(r.targetReversals) (allowed \(FanStatistics.formatted(r.allowedReversals)))")
+        print("  after settle: \(r.postSettleCount) samples, max |actual − target| \(rpm(r.maxDeviationAfterSettle)), "
+              + "within ±\(criteria.trackingToleranceRPM): \(r.trackingFraction.map { FanStatistics.formatted($0 * 100) + "%" } ?? "-")")
+        for reason in r.failureReasons { print("  reason: \(reason)") }
+        allPassed = allPassed && r.passed
+    }
+    if fans.isEmpty { print("no fans: FAIL") }
+    exit(allPassed ? 0 : 1)
+}
+
+if let seconds = fanStatsSeconds {
+    runFanStats(seconds: seconds, interval: watchInterval ?? 1)
 }
 
 readout()
