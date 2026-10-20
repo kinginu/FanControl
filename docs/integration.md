@@ -363,6 +363,15 @@ Manual-install mode:
 - [ ] Threshold settings: lowering the alert or emergency threshold takes effect on the next
       poll, and "Reset to Defaults" restores 90 / 95 / 5 °C.
 - [ ] Turning the feature off and on quickly does not leave monitoring stopped.
+- [ ] **First CHWA write: user-confirmed** (charge limit, [helper.md](helper.md) "Charge limit
+      (CHWA)"). Only on a Mac whose read-only dump lists `CHWA` as `ui8`, 1 byte, attributes with
+      `0x40` (Mac14,9 / macOS 26.5.2 has **no** `CHWA`: the settings show "Not supported on this
+      Mac" and nothing is written). With the user's explicit confirmation of each step:
+      reinstall the helper (protocol v2), check `fanfi-probe --dump | grep CHWA` reads `00`,
+      turn "Limit charging to 80 %" on in Settings ▸ Widgets ▸ Batteries, confirm the read-back
+      `01` in the dump and the helper log (`Charge limit: … CHWA=1`), then turn it off and confirm
+      `00`. Escape hatch: the toggle (writes 0); otherwise an SMC reset. Record whether the value
+      survives a restart.
 
 ## 7. Open questions
 

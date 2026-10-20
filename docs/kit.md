@@ -468,6 +468,25 @@ listed in `FanWriteStrategy.fansMissingModeKey`, and writes to it throw `fanMode
 The persisted active profile is **not** re-applied at launch; the session stays closed until the
 user acts.
 
+## Charge limit
+
+`FanControlManager.chargeLimit` (`ChargeLimitController`, `@MainActor @Observable`) backs
+"Limit charging to 80 %" (`CHWA`, [helper.md](helper.md) "Charge limit (CHWA)").
+
+- `refresh(ifOlderThan:)` reads `CHWA` **unprivileged** on a background task with a short-lived
+  `SMCClient` (`classify`: absent or unexpected layout → `.unsupported`, 0/1 → `.off` / `.on`,
+  other values → `.unreadable`) and re-reads the helper install status. Nothing is written.
+- `setEnabled(_:)` is an explicit user action only. It takes the same "requires helper" path as a
+  fan write — `HelperCoordinator.prepareHelper()` (install if needed, protocol version check;
+  `openSession()` now calls it) — and then `HelperClient.setChargeLimitEnabled(_:)`. It does
+  **not** open the fan write session. The helper's read-back becomes `reading`.
+- `status` combines `reading` with whether the helper is usable: `.on`, `.off`, `.unsupported`,
+  `.unreadable`, `.needsHelper(isOn:)`, `.unknown`.
+- Errors are kept in the controller's own `lastError` (not the fan `lastError`) and mapped to
+  text by `message(for:)`; a helper `invalidKey` turns `reading` into `.unsupported`.
+- The kit never writes `CHWA` on its own (no re-apply at launch, wake or session open) and never
+  reverts it.
+
 ## Persistence
 
 `ProfileStore` holds the fixed profiles, any additional programmatic profiles and

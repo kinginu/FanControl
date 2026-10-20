@@ -227,6 +227,7 @@ collide at the launchd level.
 | `writeKey(key, bytes)` | Writes raw bytes to an allowed key. Requires the session. |
 | `closeSession` | Closes the session |
 | `readKeyInfo(key)` | `(rc, dataSize, typeFourCC, attributes, message)`. No session needed. |
+| `setChargeLimitEnabled(enabled)` | `(rc, read-back 0/1 or -1, message)`. Writes `CHWA` only. No session needed, never restored ([Charge limit (CHWA)](#charge-limit-chwa)). Protocol v2. |
 
 Error codes: `0 ok`, `1 notSessionOwner`, `2 sessionNotOpen`, `3 invalidKey`,
 `4 keyNotAllowed`, `5 smcUnavailable`, `6 smcError`, `7 badRequest`.
@@ -347,6 +348,76 @@ target changed by ≤ 25 RPM ([kit.md](kit.md)).
   and `F<n>Mn` = `0x84`, without `0x40`. Other models are untested.
 - Encoding (`flt `, little-endian Float32) is done by the client (`FanControlCore.SMCCodec`). The
   helper writes the validated bytes as they are.
+
+### Charge limit (CHWA)
+
+"Limit charging to 80 %" uses the Apple Silicon battery-management key `CHWA` (`ui8`, 1 byte;
+community-documented, not documented by Apple): `1` makes the firmware stop charging at 80 % and
+hold there, `0` is normal charging (the firmware default). Added in protocol **v2**
+(`FanControlHelperConstants.protocolVersion`); a v1 helper must be reinstalled
+(`install.sh`, which a rebuilt app needs anyway).
+
+**Request.** `setChargeLimitEnabled(_ enabled: Bool, reply: (rc, value, message))`, served by
+`ChargeLimitService` (helper) with the decisions in `ChargeLimitPolicy.apply` (FanControlXPC,
+unit-tested):
+
+1. Key info of `CHWA`. Missing → `3 invalidKey` (the app shows "Not supported on this Mac").
+2. `ChargeLimitPolicy.validate`: the key must be `CHWA`, the payload exactly one byte in `{0, 1}`,
+   and the SMC must report `ui8`, 1 byte, readable (`0x80`) and writable (`0x40`). Anything else →
+   `7 badRequest`, nothing written. A different layout means the firmware's `CHWA` is not the key
+   this code knows, so it is not written.
+3. Read the current value. Unreadable → `6 smcError`, nothing written. Already in the requested
+   state → `0 ok` without a write. A current value other than 0/1 refuses **enabling**
+   (`7 badRequest`) but still allows **disabling** (writing the firmware default is the escape
+   direction).
+4. Write, then read back. A read-back that differs from the request → `6 smcError` with the
+   read-back value.
+
+**Allow-list.** `ChargeLimitPolicy.allowedKeys` is exactly `["CHWA"]` and `allowedValues` exactly
+`{0, 1}`. The client sends only a `Bool`, never key names or bytes. `CHWA` is **not** in
+`allowedWriteKeyPatterns`, so the generic `writeKey` path refuses it (`4 keyNotAllowed`); the fan
+allow-list is unchanged. The client requirement checks are unchanged: only a connection that
+passed the listener's code-signing requirement reaches the request.
+
+**Not part of the fan session.** No session is needed or opened, nothing is snapshotted, and the
+value is **not reverted** on `closeSession`, connection loss, session reclaim, sleep/wake or
+SIGTERM: `HelperWritePolicy.restore` and `PowerTransitionPolicy` only touch `F<n>Md` / `F<n>Tg`
+(a test feeds `CHWA` into `restore` and checks that nothing is written). Each request opens its
+own short-lived AppleSMC connection and requests are serialized with each other. The setting is a
+persistent preference that lives in the SMC, like macOS's own battery settings, not a temporary
+control state like a fan override.
+
+**Why this is safe to leave set.** Both values are states the battery firmware itself offers;
+with `CHWA` = 1 the charger, the battery management unit and macOS keep all their own
+protections, and the Mac keeps running from the adapter at 80 %. The worst outcome of a stuck
+`1` is a battery that stops at 80 % (less runtime) — not overheating, not a stopped fan, not a
+damaged cell. Hence no automatic revert, and also no automatic re-apply: the app never writes
+`CHWA` on its own (only an explicit toggle does), and it shows the value it reads back.
+
+**SMC reset / persistence.** The value is stored by the SMC firmware, not by the app or the
+helper. An SMC reset (on Apple Silicon: shut down, wait, power on; some firmware updates do the
+same) is expected to clear it back to `0`, normal charging — the fail-safe direction. Whether it
+survives an ordinary restart, a firmware update or a macOS update is **not verified** on this
+hardware; the UI reads `CHWA` back each time it appears, so a reset shows up as "Off".
+
+**Escape hatch.** Turn the toggle off (writes `0`). Without the app or helper: an SMC reset as
+above. Writing `0` is allowed even if the key holds an unexpected value.
+
+**Interplay with macOS.** macOS's own charge management (Optimized Battery Charging and
+similar) appears to work through other keys (on Mac14,9 `CHTE` was `1` while macOS held the
+battery at 50 % on AC), so the battery may also pause below 80 % because macOS decided so. The
+helper never writes those keys, so the two do not overwrite each other's values (unverified on a
+Mac that has `CHWA`).
+
+**Hardware status (2026-10-20).** On Mac14,9 / macOS 26.5.2 (firmware of that build) **`CHWA`
+does not exist**: the read-only dump (`swift run fanfi-probe --dump`, 2299 keys) has no `CHW*`
+key, so the feature reports "Not supported on this Mac" there and the helper would answer
+`3 invalidKey` without writing. The writable charging keys on that machine are `CHTE` (`ui32`,
+`0xd4`; held at `1` by macOS at 50 % while "not charging" on AC) and `CHIE` (`hex_`, `0xd4`).
+Newer firmware is reported to have dropped `CHWA` in favour of software-driven inhibit via
+`CHTE`; supporting that would need a monitoring loop that toggles charging around the limit and
+fights macOS's own use of `CHTE`, so it is **not** implemented (needs a user decision). No
+`CHWA` write has ever been performed ([integration.md](integration.md) §6, "first CHWA write").
 
 ## 5. Manual testing on a Mac
 
