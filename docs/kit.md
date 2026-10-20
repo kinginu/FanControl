@@ -533,7 +533,12 @@ provisional.
   as Custom 1 and drops the other user profiles. Schema 2 → 3 adds Max and upgrades an unchanged
   old Custom 1 to the Boost curve. Nothing is re-applied by a migration.
 
-## Power profiles and profile precedence
+## Profile precedence and automation
+
+Two automatic features choose the active fan profile: power profiles (F2) and workload
+automation (F3). Both go through one arbiter; neither calls `applyProfile` itself.
+
+### Precedence and power profiles
 
 <!-- F2 (DynamicNotchApp/docs/power-profiles.md). -->
 
@@ -554,7 +559,7 @@ provisional.
   only when it differs from the active profile; a failed decision is not retried until it
   changes or `retry()`; `isApplyAllowed` gates applying (the app: Fan Control enabled). It
   observes `activeFanProfileID` (`withObservationTracking`) to detect manual picks.
-- **Other observers of `activeFanProfileID`** (F3's `WorkloadProfileCoordinator`): the arbiter is
+- **Other observers of `activeFanProfileID`** (e.g. `WorkloadProfileCoordinator`): the arbiter is
   the single classifier of automatic vs manual changes. Either subscribe to
   `FanProfileArbiter.manualSelectionNotification` (posted when a change the arbiter did not make is
   classified as the user's pick; `userInfo["profileID"]`), or ignore a change while
@@ -582,6 +587,61 @@ provisional.
   (Kit, injected context + fake Low Power Mode + fake fan host), `LowPowerModeCommandTests`
   (XPC, fake pmset), `LowPowerModeEndToEndTests` (real XPC, `FakeHelper`).
 
+### Workload automation
+
+`WorkloadProfileEngine` (pure value type; time is passed in) switches the active profile by
+workload; the host drives it (DynamicNotch: `WorkloadProfileCoordinator`, a 2 s tick plus
+`NSWorkspace` launch / terminate / activate notifications) and turns each `WorkloadDecision`
+into a claim on the arbiter's `.workload` layer (below). Settings are
+`WorkloadAutomationSettings` (Codable, unknown / missing keys fall back to defaults), stored by
+FanControlUI under `fanControlWorkloadAutomation` (`FanControlSettingKey.automation`). The UI
+(`FanControlAutomationTabView`, `FanControlAutomationIndicator`) shows
+`FanControlAutomationState.shared`, which the host's driver writes (`status`, loads, last apply
+error) and whose `onResume` it sets.
+
+**Precedence** is the arbiter's (above); the engine's own view (`WorkloadProfilePrecedence`):
+
+| Layer | Behaviour |
+|---|---|
+| Manual | A profile the user picks by hand (classified by the arbiter, `manualSelectionNotification`) is never replaced. The engine disengages *without* returning and pauses for `manualOverrideMinutes` (15 / 30 / 60 / 120, or 0 = until resumed / disabled and re-enabled); its `.workload` claim is kept meanwhile, so withdrawing it does not end the user's override. |
+| Emergency | While `emergencyOverrideActive`, decisions are held (no switch either way). The override itself forces max under any profile, the manual one included (see "Emergency override"). |
+| Workload | Enabled app rules in list order (`running` or `frontmost`), then the sustained-load rule. |
+| Power (F2) | Its own `.power` claim; it wins whenever no workload claim is set. |
+| Default | The arbiter's baseline (the profile active at the first claim, or the last manual pick). |
+
+**Rules and hysteresis.**
+
+- App rules stay matched `appReleaseDelay` s (default 10) after the app quits or loses focus.
+- Load rule (`cpu`, `gpu`, or `either` = the higher): engage after `highDuration` s
+  continuously above `highThreshold` (default 20 s above 70 %); release after `lowDuration` s
+  continuously below `lowThreshold` (default 60 s below 40 %); in between the state holds. A
+  missing sample (`nil`) leaves the phase and its timers unchanged.
+- While engaged, a different winning rule switches directly and keeps the baseline. When no rule
+  is active any more, the decision names the baseline once (`nil` baseline = Automatic).
+- Turning automation off while engaged returns to the baseline once and clears the manual lock.
+  `reset()` forgets everything without returning (used when fan control itself is off).
+- Rules whose profile is not in `WorkloadSnapshot.availableProfileIDs` are skipped.
+
+**Load sampling.** `SystemLoadSampler`: CPU busy share from `host_statistics(HOST_CPU_LOAD_INFO)`
+tick deltas between calls (`CPULoadTicks.usage`, 32-bit wrap-safe; `nil` on the first call), GPU
+from the highest IOAccelerator `PerformanceStatistics` "Device Utilization %".
+
+**Arbiter wiring** (`WorkloadProfileCoordinator`, the adapter closure `applyWorkloadProfile`):
+
+- `engaged(profile, reason)` → `FanProfileArbiter.shared.setClaim(ProfileClaim(profile, reason), for: .workload)`.
+  When the engine re-engages after a manual pause, the coordinator also calls
+  `resumeAutomation()` so the arbiter's manual layer ends at the same time as the engine's pause.
+- `idle` / `disabled` (the engine names the baseline once) → `setClaim(nil, for: .workload)`; the
+  arbiter then picks the next layer (power, else the baseline). The engine's own baseline id is
+  not applied.
+- `pausedByManualSelection` / `heldForEmergency` → the claim is left as it is.
+- Fan control off → `reset()` and the claim is withdrawn.
+- A failed apply is the arbiter's (`lastError`, not retried until the decision changes); the
+  coordinator mirrors it into `FanControlAutomationState.lastApplyError`.
+- `noteLowerLayerSelection` and the old `requestLowerLayerProfile` entry point are not used: power
+  profiles claim `.power` directly.
+
+
 ## Settings owned by the app
 
 The kit does not depend on the app's settings store. The app copies its settings into these
@@ -608,13 +668,14 @@ manager, for hosts that want the stock settings and editors:
 
 | Area | Public API |
 |---|---|
-| Settings pane | `FanControlSettingsView` (fixed `contentSize` 740×600; General / Profiles / Sensors as a segmented control), and each tab on its own: `FanControlGeneralTabView(actionError:)`, `FanControlProfilesTabView(actionError:initialSelection:)`, `FanControlSensorsTabView()` |
+| Settings pane | `FanControlSettingsView` (fixed `contentSize` 740×600; General / Profiles / Sensors / Automation as a segmented control), and each tab on its own: `FanControlGeneralTabView(actionError:)`, `FanControlProfilesTabView(actionError:initialSelection:)`, `FanControlSensorsTabView()`, `FanControlAutomationTabView()` |
+| Workload automation | `FanControlAutomationState.shared` (host-written state, `indicatorText`, `statusText`), `FanControlAutomationIndicator` (one line for a widget header), `FanControlAutomationProfiles` ("Workload automation") |
 | Curves and charts | `FanCurveView` (read-only curve of a profile, live operating point), `FanCurveEditorView` (multi-point editor, `hasErrors` / `messages` validation), `FanCurveLegend`, `FanControlTemperatureChart` + `FanControlTemperatureSeries` (history chart), `FanControlKeyTemperaturesView`, `FanControlSelectionPill` |
 | Alerts | `FanControlAlertCoordinator.shared` (`currentAlert`, `onAlertChange`, `transientNotificationName`); it also mirrors the stored general settings and thresholds into the manager ("Settings owned by the app") |
 | Power profiles (F2) | `FanControlPowerProfilesSettingsView` (rules editor pane), `FanControlPowerProfileStatusLine(isCompact:)`, `FanControlPowerProfiles.start()` ("Power profiles and profile precedence") |
 | Errors | `FanControlErrorFooter`, `fanControlPerform`, `fanControlErrorMessage`, `fanControlRejectionHelp` |
 | Formatting | `FanControlFormatting`, `FanControlSensorNames`, `FanControlProfiles` (the seven fixed profiles, `apply`) |
-| Stored settings | `FanControlWidgetSettings`, `FanControlGeneralSettings`, `FanControlThresholdSettings`, `FanControlTemperatureWidgetSettings`; keys `FanControlSettingKey` (`.widget`, `.general`, `.thresholds`, `.temperatureWidget`: `value`, `updates()`, `name`) and the property wrapper `@FanControlSetting(.widget)` |
+| Stored settings | `FanControlWidgetSettings`, `FanControlGeneralSettings`, `FanControlThresholdSettings`, `FanControlTemperatureWidgetSettings`; keys `FanControlSettingKey` (`.widget`, `.general`, `.thresholds`, `.temperatureWidget`, `.automation`: `value`, `updates()`, `name`) and the property wrapper `@FanControlSetting(.widget)` |
 
 Settings live in `UserDefaults.standard` under the former sindresorhus/Defaults key names, as
 sorted-key JSON strings (byte-compatible with Defaults 8.2; `Tests/FanControlUITests`). The store

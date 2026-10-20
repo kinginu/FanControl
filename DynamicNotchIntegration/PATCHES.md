@@ -363,3 +363,23 @@ FanControlPowerProfiles.start()
 
 文字列: ペインの文字列は `Localizable/en.strings` の「F2: Power Profiles」節、タブ名 "Power Profiles" は
 `DynamicNotchApp/Support/strings/power-profiles.json`。
+
+## (i) 負荷連動プロファイル（F3、2026-10-20）— 起動 1 行とホスト側コーディネータ
+
+「Automation」サブタブ（`FanControlAutomationTabView`、`FanControlSettingsView` の tag 3）とウィジェット見出しの 1 行表示
+（`FanControlAutomationIndicator`、「Auto: Boost (Xcode)」）は FanControlUI にある。設定は `FanControlSettingKey.automation`、
+表示する実行時の状態は `FanControlAutomationState.shared`。これを書き込むのはホストのコーディネータで、DynamicNotchApp では
+`DynamicNotchApp/Sources/Support/WorkloadProfileCoordinator.swift`（FanControlKit の `WorkloadProfileEngine` を `NSWorkspace` の通知と
+2 秒周期の CPU/GPU 負荷サンプリング `SystemLoadSampler` で駆動する）。ドロップインの `FanControlWidgetView` は見出しに
+`FanControlAutomationIndicator()` を 1 行置くだけ（`// F3:`）。
+
+(e) の `FanControlStartup.applicationDidFinishLaunching()` の末尾に次を追加する。
+
+```swift
+WorkloadProfileCoordinator.shared.start()
+```
+
+優先順位（手動 > 緊急 > 負荷連動 > 電源連動 > 既定）は F2 の `FanProfileArbiter` が一元管理する（docs/kit.md
+「Profile precedence and automation」）。コーディネータは `.workload` 層を claim / release するだけで、自分では
+`applyProfile` しない。手動選択はアービタの `manualSelectionNotification` で受け取る。(h) の `FanControlPowerProfiles.start()`
+の後に呼ぶ。
