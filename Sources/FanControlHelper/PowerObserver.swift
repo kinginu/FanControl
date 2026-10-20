@@ -31,7 +31,7 @@ actor PowerObserver {
     static let systemHasPoweredOn: UInt32 = 0xE000_0300
     static let systemWillPowerOn: UInt32 = 0xE000_0320
 
-    private nonisolated let queue = DispatchSerialQueue(label: "com.example.dynamicnotch.DynamicNotch.fanfi.power")
+    private nonisolated let queue = DispatchSerialQueue(label: FanControlHelperConstants.machServiceName + ".power")
 
     nonisolated var unownedExecutor: UnownedSerialExecutor {
         queue.asUnownedSerialExecutor()

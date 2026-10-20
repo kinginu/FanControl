@@ -1,42 +1,58 @@
 import Foundation
 
-/// Constants shared by DynamicNotch (client) and FanControlHelper (privileged daemon).
+/// Constants shared by the host app (client) and FanControlHelper (privileged daemon).
+///
+/// The identifiers (Mach service, helper / client identifiers, Team ID) are **not**
+/// hard-coded: they are read once from `Bundle.main.infoDictionary` through
+/// `FanControlIdentifiers` (app: its Info.plist; helper: its embedded
+/// `__TEXT,__info_plist`), falling back to the DynamicNotch defaults. The accessors
+/// below keep the old names so call sites do not change. docs/helper.md
+/// "Configuring identifiers".
 ///
 /// This file is intentionally platform-neutral so that the allowlist logic can be
 /// unit-tested on any platform.
 public enum FanControlHelperConstants {
-    /// Mach service name vended by the helper (launchd `MachServices` key).
-    public static let machServiceName = "com.example.dynamicnotch.DynamicNotch.fanfi"
+    /// Identifiers resolved from this process's Info.plist (read once, on first use).
+    public static let identifiers = FanControlIdentifiers(bundle: .main)
+
+    /// Mach service name vended by the helper (launchd `MachServices` key,
+    /// Info.plist `FanControlMachServiceName`).
+    public static var machServiceName: String { identifiers.machServiceName }
     /// launchd label. Must match `Label` in the LaunchDaemon plist.
-    public static let launchdLabel = machServiceName
-    /// File name of the LaunchDaemon plist inside `DynamicNotch.app/Contents/Library/LaunchDaemons/`.
-    /// Pass this to `SMAppService.daemon(plistName:)`.
-    public static let plistName = "com.example.dynamicnotch.DynamicNotch.fanfi.plist"
-    /// Executable name inside `DynamicNotch.app/Contents/MacOS/`.
+    public static var launchdLabel: String { machServiceName }
+    /// File name of the LaunchDaemon plist inside `<App>.app/Contents/Library/LaunchDaemons/`
+    /// (`<launchdLabel>.plist`). Pass this to `SMAppService.daemon(plistName:)`.
+    public static var plistName: String { "\(launchdLabel).plist" }
+    /// Executable name inside `<App>.app/Contents/MacOS/`.
     public static let helperExecutableName = "FanControlHelper"
     /// Bump whenever `FanControlHelperProtocol` changes incompatibly. The app compares
     /// this with the value returned by `version(reply:)` and re-registers the helper on mismatch.
     public static let protocolVersion = 1
-    /// Bundle identifier of the only client allowed to connect.
-    public static let appBundleIdentifier = "com.example.dynamicnotch.DynamicNotch"
-    /// Replace with DynamicNotch's real Team ID before shipping (design doc §5.1).
-    /// The helper reads the real value from `FanControlClientTeamID` in its embedded Info.plist.
+    /// Bundle identifier of the only client allowed to connect
+    /// (Info.plist `FanControlClientBundleIdentifier`).
+    public static var appBundleIdentifier: String { identifiers.clientBundleIdentifier }
+    /// Team ID from Info.plist `FanControlClientTeamID`, `nil` if not configured.
+    public static var clientTeamID: String? { identifiers.clientTeamID }
+    /// Stand-in used when no Team ID is configured; no real signature carries it, so
+    /// Team-ID requirements built from it reject everything.
     public static let teamIdentifierPlaceholder = "TEAMID0000"
 
     /// Code-signing identifier of the helper executable (`PRODUCT_BUNDLE_IDENTIFIER`
-    /// of the Xcode helper target). Equal to the Mach service name.
-    public static let helperIdentifier = machServiceName
+    /// of the Xcode helper target, Info.plist `FanControlHelperIdentifier`).
+    public static var helperIdentifier: String { identifiers.helperIdentifier }
 
     /// Code-signing requirement the **helper** must satisfy; the app sets it on its
     /// client connection (`NSXPCConnection.setCodeSigningRequirement`) so it only
     /// talks to our own helper. `teamID` is `FanControlManager.clientTeamID`.
-    public static func helperCodeSigningRequirement(teamID: String) -> String {
+    public static func helperCodeSigningRequirement(teamID: String,
+                                                    helperIdentifier: String = FanControlHelperConstants.helperIdentifier) -> String {
         "anchor apple generic and identifier \"\(helperIdentifier)\" and certificate leaf[subject.OU] = \"\(teamID)\""
     }
 
     /// Code-signing requirement a client must satisfy to talk to the helper.
-    public static func clientCodeSigningRequirement(teamID: String) -> String {
-        "anchor apple generic and identifier \"\(appBundleIdentifier)\" and certificate leaf[subject.OU] = \"\(teamID)\""
+    public static func clientCodeSigningRequirement(teamID: String,
+                                                    clientBundleIdentifier: String = FanControlHelperConstants.appBundleIdentifier) -> String {
+        "anchor apple generic and identifier \"\(clientBundleIdentifier)\" and certificate leaf[subject.OU] = \"\(teamID)\""
     }
 
     /// Regular expressions (anchored) for SMC keys the helper is willing to write.

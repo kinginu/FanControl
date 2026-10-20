@@ -1,12 +1,18 @@
 #!/bin/bash
 # Read-only status of the manual (personal use) FanControlHelper installation. No root needed.
 #   ./status.sh [/path/to/App.app]    # with an app: also checks that its cdhash is the pinned one
+# Without an app, the label comes from the defaults / FANCONTROL_* overrides (../identifiers.sh);
+# with an app, from its embedded helper's Info.plist.
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR source=common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 APP="${1:-}"
 rc=0
+if [[ -n "$APP" ]]; then
+    load_identifiers_from_app "$APP"
+fi
+printf 'label: %s   app: %s\n' "$LABEL" "$APP_BUNDLE_ID"
 
 for f in "$PLIST_DEST" "$HELPER_DEST"; do
     if [[ -e "$f" ]]; then

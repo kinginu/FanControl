@@ -8,6 +8,13 @@ import FanControlXPC
 // as a plain LaunchDaemon (manual / personal mode). launchd starts it on demand when DynamicNotch
 // connects to the Mach service; it then serves `FanControlHelperProtocol`.
 
+// `FanControlHelper --print-configuration`: print the identifiers read from the embedded
+// Info.plist and exit (no SMC access, no listener). Used to check a build.
+if CommandLine.arguments.dropFirst().contains("--print-configuration") {
+    print(HelperConfiguration.configurationJSON())
+    exit(0)
+}
+
 // Apple Silicon only (Intel dropped 2026-10-20): refuse to serve on other hardware
 // rather than write an untested scheme. Exit like an invalid configuration
 // (launchd retries on the next connect, throttled; the client sees an invalidated connection).
@@ -15,6 +22,8 @@ guard FanControlHost.isAppleSilicon else {
     helperLog.fault("Refusing to start: \(FanControlHost.unsupportedDetail, privacy: .public)")
     exit(78)  // EX_CONFIG
 }
+
+HelperConfiguration.logIdentifiers()
 
 // Client requirement: Team ID (SMAppService) or the cdhash-pinned override from the
 // manual-install LaunchDaemon plist. An invalid override must never fall back to

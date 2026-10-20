@@ -142,8 +142,12 @@ struct ManualInstallScriptConsistencyTests {
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Support/manual-install")
 
+    static let supportDir = dir.deletingLastPathComponent()
+
     @Test func testTemplatePlistMatchesConstants() throws {
-        let url = Self.dir.appendingPathComponent("\(C.launchdLabel).manual.plist")
+        // install.sh rewrites Label, Program and MachServices for the actual identifiers;
+        // the template carries the defaults.
+        let url = Self.dir.appendingPathComponent("FanControlHelper.manual.plist")
         let plist = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any])
         #expect(plist["Label"] as? String == C.launchdLabel)
         #expect(plist["Program"] as? String == C.manualHelperPath)
@@ -162,8 +166,8 @@ struct ManualInstallScriptConsistencyTests {
 
     @Test func testCommonShMatchesConstants() throws {
         let sh = try String(contentsOf: Self.dir.appendingPathComponent("common.sh"), encoding: .utf8)
-        #expect(sh.contains("LABEL=\"\(C.launchdLabel)\""))
-        #expect(sh.contains("APP_BUNDLE_ID=\"\(C.appBundleIdentifier)\""))
+        #expect(sh.contains("source \"${SCRIPT_DIR}/../identifiers.sh\""))
+        #expect(sh.contains("TEMPLATE=\"${SCRIPT_DIR}/FanControlHelper.manual.plist\""))
         #expect(sh.contains("HELPER_IN_APP=\"Contents/MacOS/\(C.helperExecutableName)\""))
         #expect(sh.contains("HELPER_DEST=\"/Library/PrivilegedHelperTools/${LABEL}\""))
         #expect(sh.contains("PLIST_DEST=\"/Library/LaunchDaemons/${LABEL}.plist\""))
@@ -176,5 +180,56 @@ struct ManualInstallScriptConsistencyTests {
         for script in [C.manualInstallScriptName, C.manualUninstallScriptName, "status.sh"] {
             #expect(FileManager.default.isExecutableFile(atPath: Self.dir.appendingPathComponent(script).path), Comment(rawValue: script))
         }
+    }
+}
+
+/// `Support/identifiers.sh`, `Helper-Info.plist` and the checked-in LaunchDaemon plist must agree
+/// with `FanControlIdentifiers` (keys, defaults, fallback order).
+struct IdentifierConfigurationConsistencyTests {
+    static let support = ManualInstallScriptConsistencyTests.supportDir
+    private typealias I = FanControlIdentifiers
+    private typealias K = FanControlIdentifiers.InfoKey
+
+    @Test func testIdentifiersShMatchesSwift() throws {
+        let sh = try String(contentsOf: Self.support.appendingPathComponent("identifiers.sh"), encoding: .utf8)
+        #expect(sh.contains("DEFAULT_HELPER_ID=\"\(I.defaultHelperIdentifier)\""))
+        #expect(sh.contains("DEFAULT_APP_BUNDLE_ID=\"\(I.defaultClientBundleIdentifier)\""))
+        for key in K.all {
+            #expect(sh.contains("plist_string \"$f\" \(key)"), Comment(rawValue: key))
+        }
+        // Fallbacks: helper <- Mach service <- default; Mach service <- helper; client <- default.
+        #expect(sh.contains("[[ -n \"$helper\" ]] || helper=\"${mach:-$DEFAULT_HELPER_ID}\""))
+        #expect(sh.contains("[[ -n \"$mach\" ]] || mach=\"$helper\""))
+        #expect(sh.contains("[[ -n \"$client\" ]] || client=\"$DEFAULT_APP_BUNDLE_ID\""))
+        let embed = Self.support.appendingPathComponent("embed-helper-config.sh")
+        #expect(FileManager.default.isExecutableFile(atPath: embed.path))
+    }
+
+    /// Helper-Info.plist carries every key, and resolving it gives the defaults (DynamicNotch).
+    @Test func testHelperInfoPlist() throws {
+        let url = Self.support.appendingPathComponent("Helper-Info.plist")
+        let plist = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any])
+        for key in K.all {
+            #expect(plist[key] is String, Comment(rawValue: key))
+        }
+        let ids = I(infoDictionary: plist)
+        #expect(ids.issues.isEmpty)
+        #expect(ids.helperIdentifier == I.defaultHelperIdentifier)
+        #expect(ids.machServiceName == I.defaultHelperIdentifier)
+        #expect(ids.clientBundleIdentifier == I.defaultClientBundleIdentifier)
+        #expect(ids.clientTeamID == FanControlHelperConstants.teamIdentifierPlaceholder)
+        #expect(plist["CFBundleIdentifier"] as? String == ids.helperIdentifier)
+    }
+
+    /// The checked-in SMAppService plist (copied as-is by DynamicNotchApp) is what
+    /// `embed-helper-config.sh` generates from Helper-Info.plist.
+    @Test func testCheckedInLaunchDaemonPlist() throws {
+        let ids = I.defaults
+        let url = Self.support.appendingPathComponent("LaunchDaemons/\(ids.machServiceName).plist")
+        let plist = try #require(PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any])
+        #expect(plist["Label"] as? String == ids.machServiceName)
+        #expect((plist["MachServices"] as? [String: Bool]) == [ids.machServiceName: true])
+        #expect(plist["AssociatedBundleIdentifiers"] as? [String] == [ids.clientBundleIdentifier])
+        #expect(plist["BundleProgram"] as? String == "Contents/MacOS/\(FanControlHelperConstants.helperExecutableName)")
     }
 }

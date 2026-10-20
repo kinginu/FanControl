@@ -2,14 +2,17 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   Template for the MANUAL-INSTALL (personal use) LaunchDaemon of FanControlHelper.
-  Do not install this file directly: install.sh copies it to
-  /Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist (root:wheel 0644) and fills in
-    Program                                              absolute path of the installed helper
-    EnvironmentVariables.FANCONTROL_CLIENT_REQUIREMENT   identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<app cdhash>"
-  The helper refuses to start if FANCONTROL_CLIENT_REQUIREMENT is present but does not pin a cdhash
+  Do not install this file directly: install.sh reads the identifiers from the helper's embedded
+  Info.plist (FanControlMachServiceName = <label>, ../identifiers.sh) and installs a copy at
+  /Library/LaunchDaemons/<label>.plist (root:wheel 0644) with
+    Label, MachServices                                  <label>
+    Program                                              /Library/PrivilegedHelperTools/<label>
+    EnvironmentVariables.FANCONTROL_CLIENT_REQUIREMENT   identifier "<FanControlClientBundleIdentifier>" and cdhash H"<app cdhash>"
+  The values below are the DynamicNotch defaults. The helper refuses to start if
+  FANCONTROL_CLIENT_REQUIREMENT is present but does not pin a cdhash
   (FanControlHelperConstants.validateManualClientRequirement). The SMAppService path uses
-  ../LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist instead (BundleProgram, no env var).
-  See docs/helper.md 「手動インストール（個人利用モード）」.
+  ../LaunchDaemons/<label>.plist instead (BundleProgram, no env var; ../embed-helper-config.sh).
+  See docs/helper.md §6 and "Configuring identifiers".
 -->
 <plist version="1.0">
 <dict>

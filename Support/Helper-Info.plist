@@ -7,7 +7,15 @@
   with GENERATE_INFOPLIST_FILE = NO, CREATE_INFOPLIST_SECTION_IN_BINARY = NO and INFOPLIST_FILE empty
   (docs/integration.md §2). Bundle.main.infoDictionary then returns these values at runtime.
   Check with: launchctl plist __TEXT,__info_plist <path>/FanControlHelper
-  Replace FanControlClientTeamID with DynamicNotch's real Team ID before shipping (design doc §5.1).
+  Identifiers (docs/helper.md "Configuring identifiers"): this file is the single source of truth for a
+  host. FanControlHelperConstants reads the FanControl* keys at runtime (FanControlIdentifiers); a host
+  app copies them into its own Info.plist (Support/embed-helper-config.sh does that and generates the
+  LaunchDaemon plist). Missing keys fall back to the DynamicNotch defaults below.
+    CFBundleIdentifier / FanControlHelperIdentifier   helper code-signing identifier (= PRODUCT_BUNDLE_IDENTIFIER of the helper target)
+    FanControlMachServiceName                         Mach service = launchd Label (defaults to FanControlHelperIdentifier)
+    FanControlClientBundleIdentifier                  the only app the helper accepts (= the app's PRODUCT_BUNDLE_IDENTIFIER)
+    FanControlClientTeamID                            Team ID of both binaries (SMAppService path; TEAMID0000 = not configured)
+  Replace FanControlClientTeamID with the real Team ID before shipping (design doc §5.1).
 -->
 <plist version="1.0">
 <dict>
@@ -21,6 +29,12 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>FanControlHelperIdentifier</key>
+	<string>com.example.dynamicnotch.DynamicNotch.fanfi</string>
+	<key>FanControlMachServiceName</key>
+	<string>com.example.dynamicnotch.DynamicNotch.fanfi</string>
+	<key>FanControlClientBundleIdentifier</key>
+	<string>com.example.dynamicnotch.DynamicNotch</string>
 	<key>FanControlClientTeamID</key>
 	<string>TEAMID0000</string>
 </dict>

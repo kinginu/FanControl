@@ -6,6 +6,8 @@
 #   sudo ./install.sh [--dry-run] /path/to/DynamicNotch.app
 #
 # - verifies the app and its embedded helper (Contents/MacOS/FanControlHelper),
+# - reads the identifiers (label = Mach service, helper and app identifiers) from the helper's
+#   embedded Info.plist (docs/helper.md "Configuring identifiers"); no edits needed per host,
 # - pins the app's cdhash into the LaunchDaemon's FANCONTROL_CLIENT_REQUIREMENT,
 # - installs the helper to /Library/PrivilegedHelperTools/<label> (root:wheel 0755) and the
 #   plist to /Library/LaunchDaemons/<label>.plist (root:wheel 0644), then bootstraps it.
@@ -47,6 +49,9 @@ fi
 APP="$(cd "$APP" && pwd -P)"
 HELPER_SRC="$APP/$HELPER_IN_APP"
 [[ -f "$HELPER_SRC" ]] || die "helper not found inside the app: $HELPER_SRC"
+load_identifiers_from_app "$APP"
+[[ "$LABEL" != com.apple.* ]] || die "refusing to install a job labelled $LABEL"
+info "Identifiers (from the helper's embedded Info.plist): label/Mach service $LABEL, helper $HELPER_ID, app $APP_BUNDLE_ID"
 
 bundle_id="$(plutil -extract CFBundleIdentifier raw -o - "$APP/Contents/Info.plist" 2>/dev/null)" \
     || die "cannot read CFBundleIdentifier of $APP"
@@ -59,7 +64,7 @@ codesign --verify --strict --verbose=1 "$HELPER_SRC" || die "helper signature is
 app_ident="$(signing_identifier "$APP")"
 [[ "$app_ident" == "$APP_BUNDLE_ID" ]] || die "app signing identifier is '$app_ident', expected '$APP_BUNDLE_ID'"
 helper_ident="$(signing_identifier "$HELPER_SRC")"
-[[ "$helper_ident" == "$LABEL" ]] || die "helper signing identifier is '$helper_ident', expected '$LABEL'"
+[[ "$helper_ident" == "$HELPER_ID" ]] || die "helper signing identifier is '$helper_ident', expected '$HELPER_ID' (FanControlHelperIdentifier)"
 
 if codesign -d --entitlements - --xml "$HELPER_SRC" 2>/dev/null | grep -q 'com.apple.application-identifier'; then
     warn "the helper carries com.apple.application-identifier (injected by Xcode). If launchd/AMFI refuses to"
@@ -96,6 +101,10 @@ existing_path="$(loaded_service_path)"
 if [[ -n "$existing_path" && "$existing_path" != "$PLIST_DEST" ]]; then
     die "system/$LABEL is already loaded from '$existing_path' (SMAppService?). Unregister it first (app / System Settings ▸ Login Items), then re-run."
 fi
+# Never overwrite a LaunchDaemon plist that this script did not write.
+if [[ -e "$PLIST_DEST" && -z "$(pinned_requirement "$PLIST_DEST")" ]]; then
+    die "$PLIST_DEST exists but has no ${ENV_KEY}; it was not installed by this script. Remove it yourself if it is stale."
+fi
 
 # --- 3. Generate the LaunchDaemon plist ---------------------------------------------
 TMP_PLIST="$(mktemp -t fanfi-manual-plist)"
@@ -103,10 +112,14 @@ trap 'rm -f "$TMP_PLIST"' EXIT
 cp "$TEMPLATE" "$TMP_PLIST"
 plutil -replace Label -string "$LABEL" "$TMP_PLIST"
 plutil -replace Program -string "$HELPER_DEST" "$TMP_PLIST"
+plutil -replace MachServices -json "{\"${LABEL}\":true}" "$TMP_PLIST"   # LABEL is a validated reverse-DNS name
 plutil -replace "EnvironmentVariables.${ENV_KEY}" -string "$REQUIREMENT" "$TMP_PLIST"
 plutil -convert xml1 "$TMP_PLIST"
 plutil -lint -s "$TMP_PLIST" || die "generated plist is invalid"
 [[ "$(pinned_requirement "$TMP_PLIST")" == "$REQUIREMENT" ]] || die "generated plist does not contain the requirement"
+[[ "$(plutil -extract Label raw -o - "$TMP_PLIST")" == "$LABEL" ]] || die "generated plist has the wrong Label"
+[[ "$(plutil -extract MachServices json -o - "$TMP_PLIST" | tr -d '[:space:]')" == "{\"${LABEL}\":true}" ]] \
+    || die "generated plist has the wrong MachServices"
 if (( DRY_RUN )); then
     info "Generated $PLIST_DEST (preview):"
     cat "$TMP_PLIST"

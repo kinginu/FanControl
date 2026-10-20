@@ -71,7 +71,7 @@ actor FanControlPoller {
     static let sleepSuspendTimeout: TimeInterval = 30
 
     init(helperClient: HelperClient,
-         label: String = "com.example.dynamicnotch.DynamicNotch.fanfi.poll") {
+         label: String = FanControlHelperConstants.machServiceName + ".poll") {
         self.queue = DispatchSerialQueue(label: label, qos: .utility)
         self.helperClient = helperClient
     }

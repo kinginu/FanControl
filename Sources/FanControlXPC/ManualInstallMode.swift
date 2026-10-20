@@ -24,9 +24,9 @@ extension FanControlHelperConstants {
     /// client code-signing requirement.
     public static let clientRequirementEnvironmentKey = "FANCONTROL_CLIENT_REQUIREMENT"
     /// Helper binary installed by `install.sh` (root:wheel 0755).
-    public static let manualHelperPath = "/Library/PrivilegedHelperTools/\(launchdLabel)"
+    public static var manualHelperPath: String { "/Library/PrivilegedHelperTools/\(launchdLabel)" }
     /// LaunchDaemon plist installed by `install.sh` (root:wheel 0644).
-    public static let manualLaunchDaemonPlistPath = "/Library/LaunchDaemons/\(launchdLabel).plist"
+    public static var manualLaunchDaemonPlistPath: String { "/Library/LaunchDaemons/\(launchdLabel).plist" }
     /// Script names shown to the user (directory `FanControl/Support/manual-install/`).
     public static let manualInstallScriptName = "install.sh"
     public static let manualUninstallScriptName = "uninstall.sh"
@@ -44,15 +44,17 @@ extension FanControlHelperConstants {
     }
 
     /// Client requirement for manual mode:
-    /// `identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<40 hex>"`.
+    /// `identifier "<appBundleIdentifier>" and cdhash H"<40 hex>"`.
     /// Returns `nil` for an invalid cdhash. `install.sh` writes exactly this format.
-    public static func manualModeClientRequirement(cdhash: String) -> String? {
+    public static func manualModeClientRequirement(cdhash: String,
+                                                   clientBundleIdentifier: String = FanControlHelperConstants.appBundleIdentifier) -> String? {
         guard let hash = normalizedCDHash(cdhash) else { return nil }
-        return "identifier \"\(appBundleIdentifier)\" and cdhash H\"\(hash)\""
+        return "identifier \"\(clientBundleIdentifier)\" and cdhash H\"\(hash)\""
     }
 
     /// Requirement the app sets on its helper connection in manual mode.
-    public static func manualModeHelperRequirement(cdhash: String) -> String? {
+    public static func manualModeHelperRequirement(cdhash: String,
+                                                   helperIdentifier: String = FanControlHelperConstants.helperIdentifier) -> String? {
         guard let hash = normalizedCDHash(cdhash) else { return nil }
         return "identifier \"\(helperIdentifier)\" and cdhash H\"\(hash)\""
     }
@@ -64,14 +66,15 @@ extension FanControlHelperConstants {
     /// substring check ("contains `identifier …` and `cdhash H"`") would also accept
     /// e.g. `… and cdhash H"…" or anchor apple`, which matches far more clients.
     /// Returns the pinned cdhash (lower case) on success.
-    public static func validateManualClientRequirement(_ requirement: String) -> Result<String, ManualRequirementError> {
+    public static func validateManualClientRequirement(_ requirement: String,
+                                                       clientBundleIdentifier: String = FanControlHelperConstants.appBundleIdentifier) -> Result<String, ManualRequirementError> {
         let trimmed = requirement.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .failure(.empty) }
-        guard trimmed.hasPrefix("identifier \"\(appBundleIdentifier)\" ") else {
+        guard trimmed.hasPrefix("identifier \"\(clientBundleIdentifier)\" ") else {
             return .failure(.wrongIdentifier(trimmed))
         }
         guard trimmed.contains("cdhash H\"") else { return .failure(.missingCDHash(trimmed)) }
-        let prefix = "identifier \"\(appBundleIdentifier)\" and cdhash H\""
+        let prefix = "identifier \"\(clientBundleIdentifier)\" and cdhash H\""
         guard trimmed.hasPrefix(prefix) else { return .failure(.malformed(trimmed)) }
         let rest = trimmed.dropFirst(prefix.count)
         guard rest.hasSuffix("\""), rest.count == 41 else { return .failure(.malformed(trimmed)) }
@@ -89,11 +92,14 @@ extension FanControlHelperConstants {
     /// `teamID` is only evaluated without an override (the helper's Team ID lookup
     /// logs a placeholder warning that is irrelevant in manual mode).
     public static func resolveClientRequirement(environment: [String: String],
-                                                teamID: @autoclosure () -> String) -> Result<ClientRequirement, ManualRequirementError> {
+                                                teamID: @autoclosure () -> String,
+                                                clientBundleIdentifier: String = FanControlHelperConstants.appBundleIdentifier) -> Result<ClientRequirement, ManualRequirementError> {
         guard let override = environment[clientRequirementEnvironmentKey] else {
-            return .success(ClientRequirement(mode: .teamID, requirement: clientCodeSigningRequirement(teamID: teamID())))
+            return .success(ClientRequirement(mode: .teamID,
+                                              requirement: clientCodeSigningRequirement(teamID: teamID(),
+                                                                                        clientBundleIdentifier: clientBundleIdentifier)))
         }
-        switch validateManualClientRequirement(override) {
+        switch validateManualClientRequirement(override, clientBundleIdentifier: clientBundleIdentifier) {
         case .success(let hash):
             return .success(ClientRequirement(mode: .manualCDHash(hash),
                                               requirement: override.trimmingCharacters(in: .whitespacesAndNewlines)))

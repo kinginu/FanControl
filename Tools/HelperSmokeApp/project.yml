@@ -1,6 +1,14 @@
 # XcodeGen spec for a minimal app that validates the FanControlHelper embedding recipe
 # (docs/integration.md §1–§4, docs/helper.md §1–§2). See README.md.
 #
+# Identifiers (docs/helper.md "Configuring identifiers"): the three FANCONTROL_* settings below are
+# the only place to change them. Helper-Info.plist (embedded into the helper) is the runtime source;
+# the app's Run Script copies its FanControl* keys into the app's Info.plist and generates the
+# LaunchDaemon plist (Support/embed-helper-config.sh). A host with other identifiers, e.g.
+#   xcodebuild ... FANCONTROL_APP_ID=com.acme.Notch FANCONTROL_HELPER_ID=com.acme.Notch.helper \
+#                  FANCONTROL_HELPER_INFO_PLIST=/path/to/acme-Helper-Info.plist
+# needs no Swift changes (the Helper-Info.plist must name the same identifiers; the build fails otherwise).
+#
 # Signing: ad-hoc by default. Once a Team ID exists, build with
 #   xcodebuild ... DEVELOPMENT_TEAM=<TeamID> CODE_SIGN_IDENTITY="Apple Development"   (or "Developer ID Application")
 # or set DEVELOPMENT_TEAM under settings.base below.
@@ -15,6 +23,9 @@ packages:
     path: ../..
 settings:
   base:
+    FANCONTROL_APP_ID: com.example.dynamicnotch.DynamicNotch
+    FANCONTROL_HELPER_ID: com.example.dynamicnotch.DynamicNotch.fanfi
+    FANCONTROL_HELPER_INFO_PLIST: "$(SRCROOT)/../../Support/Helper-Info.plist"
     SWIFT_VERSION: "6.0"
     MACOSX_DEPLOYMENT_TARGET: "26.0"
     CODE_SIGN_STYLE: Manual
@@ -47,12 +58,12 @@ targets:
     settings:
       base:
         PRODUCT_NAME: FanControlHelper
-        # Code-signing identifier; must equal FanControlHelperConstants.helperIdentifier.
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.dynamicnotch.DynamicNotch.fanfi
+        # Code-signing identifier; must equal FanControlHelperIdentifier in the embedded Info.plist.
+        PRODUCT_BUNDLE_IDENTIFIER: $(FANCONTROL_HELPER_ID)
         GENERATE_INFOPLIST_FILE: NO
         CREATE_INFOPLIST_SECTION_IN_BINARY: NO
         INFOPLIST_FILE: ""
-        OTHER_LDFLAGS: "$(inherited) -sectcreate __TEXT __info_plist $(SRCROOT)/../../Support/Helper-Info.plist"
+        OTHER_LDFLAGS: "$(inherited) -sectcreate __TEXT __info_plist $(FANCONTROL_HELPER_INFO_PLIST)"
         ENABLE_HARDENED_RUNTIME: YES
         SKIP_INSTALL: YES
   FanControlSmoke:
@@ -60,11 +71,20 @@ targets:
     platform: macOS
     sources:
       - path: Sources
-      - path: ../../Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist
-        buildPhase:
-          copyFiles:
-            destination: wrapper
-            subpath: Contents/Library/LaunchDaemons
+    postBuildScripts:
+      # Copies the FanControl* identifiers from Helper-Info.plist into the app's Info.plist and
+      # writes Contents/Library/LaunchDaemons/<FanControlMachServiceName>.plist (SMAppService).
+      # Runs before code signing. Needs ENABLE_USER_SCRIPT_SANDBOXING = NO (the output name
+      # depends on the plist's contents).
+      - name: Embed FanControl identifiers
+        script: |
+          "${SRCROOT}/../../Support/embed-helper-config.sh" "${FANCONTROL_HELPER_INFO_PLIST}"
+        # The processed Info.plist is listed so the script runs after ProcessInfoPlistFile;
+        # otherwise the two can race and the generated plist overwrites the keys.
+        inputFiles:
+          - $(FANCONTROL_HELPER_INFO_PLIST)
+          - $(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)
+        basedOnDependencyAnalysis: false
     dependencies:
       - target: FanControlHelper
         embed: true
@@ -78,9 +98,10 @@ targets:
     settings:
       base:
         PRODUCT_NAME: FanControlSmoke
-        # Must equal FanControlHelperConstants.appBundleIdentifier and the launchd plist's
-        # AssociatedBundleIdentifiers, otherwise the helper rejects the client.
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.dynamicnotch.DynamicNotch
+        # Must equal FanControlClientBundleIdentifier in Helper-Info.plist, otherwise the helper
+        # rejects the client (embed-helper-config.sh fails the build on a mismatch).
+        PRODUCT_BUNDLE_IDENTIFIER: $(FANCONTROL_APP_ID)
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_LSUIElement: YES
         INFOPLIST_KEY_CFBundleDisplayName: FanControlSmoke

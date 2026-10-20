@@ -1,18 +1,28 @@
 #!/bin/bash
 # Removes the manual (personal use) installation of FanControlHelper made by install.sh.
-#   sudo ./uninstall.sh [--dry-run]
+#   sudo ./uninstall.sh [--dry-run] [/path/to/App.app]
+# The label comes from the app's embedded helper Info.plist when an app is given, otherwise from
+# the defaults / FANCONTROL_* overrides (../identifiers.sh), e.g.
+#   sudo FANCONTROL_MACH_SERVICE_NAME=com.acme.Notch.helper ./uninstall.sh
 # launchd sends SIGTERM on bootout; the helper restores automatic fan control before exiting.
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR source=common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
+usage() { printf 'usage: sudo %s [--dry-run] [/path/to/App.app]\n' "$(basename "$0")" >&2; exit 64; }
 DRY_RUN=0
+APP=""
 for arg in "$@"; do
     case "$arg" in
         --dry-run|-n) DRY_RUN=1 ;;
-        *) printf 'usage: sudo %s [--dry-run]\n' "$(basename "$0")" >&2; exit 64 ;;
+        -*) usage ;;
+        *) [[ -z "$APP" ]] || usage; APP="$arg" ;;
     esac
 done
+if [[ -n "$APP" ]]; then
+    load_identifiers_from_app "$APP"
+fi
+info "Label: $LABEL"
 run() {
     if (( DRY_RUN )); then printf '[dry-run]'; printf ' %q' "$@"; printf '\n'; else "$@"; fi
 }

@@ -15,29 +15,101 @@ itself (`FanControlSMC.SMCClient`, without privileges); only writes go to the he
   mutex, and the SMC I/O happens inside it. `PowerObserver` is an actor whose executor is the
   power-notification queue. The helper uses no `@unchecked Sendable`.
 
-<!-- TODO: verify after refactor — identifiers below are the current placeholder constants; they are moving to Info.plist keys. -->
-Identifiers used below (current placeholders):
+Identifiers used below are configurable per host ("Configuring identifiers" below). The
+examples use the defaults, which are DynamicNotch's:
 
-| Role | Value |
-|---|---|
-| App bundle id / signing identifier | `com.example.dynamicnotch.DynamicNotch` |
-| Helper label = Mach service = helper signing identifier | `com.example.dynamicnotch.DynamicNotch.fanfi` |
-| Log subsystem / category | `com.example.dynamicnotch.DynamicNotch` / `fancontrol-helper` |
+| Role | Info.plist key | Default |
+|---|---|---|
+| App bundle id / signing identifier | `FanControlClientBundleIdentifier` | `com.example.dynamicnotch.DynamicNotch` |
+| Helper signing identifier | `FanControlHelperIdentifier` | `com.example.dynamicnotch.DynamicNotch.fanfi` |
+| Mach service = launchd label (`<label>`) | `FanControlMachServiceName` | = helper identifier |
+| Log subsystem / category | (client bundle id) | `com.example.dynamicnotch.DynamicNotch` / `fancontrol-helper` |
 
 Source map:
 
 | Path | Contents |
 |---|---|
-| `Sources/FanControlXPC/FanControlHelperConstants.swift` | Mach service name, plist name, Team ID placeholder, write allowlist, requirement builders |
+| `Sources/FanControlXPC/FanControlIdentifiers.swift` | Parses the identifier keys from `Bundle.main.infoDictionary` (fallbacks, validation) |
+| `Sources/FanControlXPC/FanControlHelperConstants.swift` | Accessors for the identifiers (Mach service name, plist name, …), Team ID placeholder, write allowlist, requirement builders |
 | `Sources/FanControlXPC/FanControlHelperProtocol.swift` | `@objc` XPC protocol, error codes, `makeHelperInterface()` |
 | `Sources/FanControlXPC/HelperWritePolicy.swift` | Pure validation and restore planning (unit-tested) |
 | `Sources/FanControlXPC/PowerTransitionPolicy.swift` | Pure sleep/wake decisions (unit-tested) |
 | `Sources/FanControlXPC/ManualInstallMode.swift` | Constants, requirement builders and validation for manual-install mode (§6) |
 | `Sources/FanControlSMC/` | IOKit AppleSMC access (`SMCConnection`, `SMCClient`) |
 | `Sources/FanControlHelper/` | The daemon: `main.swift`, `HelperListenerDelegate`, `HelperService`, `SessionRegistry`, `PowerObserver`, `HelperConfiguration`, `HelperLog` |
-| `Support/LaunchDaemons/<label>.plist` | launchd plist for SMAppService (the only copy) |
-| `Support/Helper-Info.plist` | Info.plist template embedded in the helper Mach-O |
+| `Support/LaunchDaemons/<label>.plist` | launchd plist for SMAppService with the default identifiers (DynamicNotch copies it as-is) |
+| `Support/Helper-Info.plist` | Info.plist template embedded in the helper Mach-O; the single source of the identifiers |
+| `Support/embed-helper-config.sh` | Run Script for the app target: copies the identifiers into the app's Info.plist and generates `Contents/Library/LaunchDaemons/<label>.plist` |
+| `Support/identifiers.sh` | Shell version of `FanControlIdentifiers` (sourced by the scripts) |
 | `Support/manual-install/` | `install.sh` / `uninstall.sh` / `status.sh` and the LaunchDaemon plist template (§6) |
+
+## Configuring identifiers
+
+The app, the helper, launchd and the install scripts must agree on three names. None of them is
+hard-coded in Swift: `FanControlIdentifiers` reads them **once at runtime** from
+`Bundle.main.infoDictionary`. In the app that is the app's own `Info.plist`. In the helper it is
+the Info.plist embedded with `-sectcreate __TEXT __info_plist` (`Support/Helper-Info.plist`).
+Both sides read the same keys. `FanControlHelperConstants.machServiceName`, `.helperIdentifier`,
+`.appBundleIdentifier`, `.plistName`, `.manualHelperPath`, … are computed from them, so call
+sites do not change.
+
+| Key | Used for | If missing |
+|---|---|---|
+| `FanControlHelperIdentifier` | Helper code-signing identifier (the helper target's `PRODUCT_BUNDLE_IDENTIFIER`); the app pins it on its connection | `FanControlMachServiceName`, else `com.example.dynamicnotch.DynamicNotch.fanfi` |
+| `FanControlMachServiceName` | Mach service and launchd `Label`; LaunchDaemon plist name `<label>.plist` (`SMAppService.daemon(plistName:)`); manual-install paths `/Library/PrivilegedHelperTools/<label>`, `/Library/LaunchDaemons/<label>.plist` | `FanControlHelperIdentifier` |
+| `FanControlClientBundleIdentifier` | The only app the helper accepts (`identifier "…"` in its client requirement, `AssociatedBundleIdentifiers`); the helper's log subsystem | `com.example.dynamicnotch.DynamicNotch` |
+| `FanControlClientTeamID` (optional) | Team ID of both binaries in SMAppService mode (helper: client requirement; app: default of `HelperClient.clientTeamID`) | not set: placeholder `TEAMID0000`, which rejects everyone; irrelevant in manual mode |
+
+Values must be reverse-DNS identifiers (`[A-Za-z0-9-]` components separated by single dots, at
+most 255 bytes) and Team IDs exactly 10 upper-case letters or digits. An invalid value is
+**ignored** (the fallback applies) and reported: the helper logs each problem at startup
+(`Embedded Info.plist: …`, plus the resolved `Identifiers: helper …, Mach service …, client …`),
+and `FanControlHelperConstants.identifiers.issues` lists them in the app. The shell scripts are
+stricter: they abort on an invalid value. When no key is set (DynamicNotchApp today, the test
+runner), everything resolves to the defaults above, so existing hosts keep working unchanged.
+
+**What a host sets** (example: app `com.acme.Notch`):
+
+1. Helper target: `PRODUCT_BUNDLE_IDENTIFIER = com.acme.Notch.helper`.
+2. A copy of `Support/Helper-Info.plist` in the host project, embedded by the helper target's
+   `-sectcreate`, with `CFBundleIdentifier` and `FanControlHelperIdentifier` =
+   `com.acme.Notch.helper`, `FanControlMachServiceName` = `com.acme.Notch.helper` (or another
+   name), `FanControlClientBundleIdentifier` = `com.acme.Notch`, and `FanControlClientTeamID`.
+3. App target: `PRODUCT_BUNDLE_IDENTIFIER = com.acme.Notch`, and a Run Script phase (after the
+   helper is embedded; it runs before code signing) with `ENABLE_USER_SCRIPT_SANDBOXING = NO`
+   and `$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)` as an **input file** (without it the phase can run
+   before Xcode writes the Info.plist, which then loses the keys):
+   ```sh
+   "${SRCROOT}/FanControl/Support/embed-helper-config.sh" "${SRCROOT}/Config/Helper-Info.plist"
+   ```
+   It fails the build if the app's `CFBundleIdentifier` differs from
+   `FanControlClientBundleIdentifier`, writes the four keys into the built app's Info.plist and
+   generates `Contents/Library/LaunchDaemons/<label>.plist` (instead of copying
+   `Support/LaunchDaemons/…`). Without the script, put the keys in the app's Info.plist yourself
+   and ship a LaunchDaemon plist whose `Label`, `MachServices` and `AssociatedBundleIdentifiers`
+   match (`embed-helper-config.sh --launchd-plist-only <Helper-Info.plist> <dir>` writes one).
+4. Manual install needs nothing extra: `install.sh`, `status.sh <app>` and
+   `uninstall.sh <app>` read the identifiers from the helper's embedded Info.plist
+   (`launchctl plist __TEXT,__info_plist <helper>`). Without an app argument they use the
+   defaults, overridable with `FANCONTROL_HELPER_IDENTIFIER`, `FANCONTROL_MACH_SERVICE_NAME` and
+   `FANCONTROL_CLIENT_BUNDLE_IDENTIFIER` (`Support/identifiers.sh`; pass them through `sudo`
+   explicitly, e.g. `sudo FANCONTROL_MACH_SERVICE_NAME=com.acme.Notch.helper ./uninstall.sh`).
+
+Check a build without installing anything:
+
+```sh
+launchctl plist __TEXT,__info_plist YourApp.app/Contents/MacOS/FanControlHelper   # embedded keys
+YourApp.app/Contents/MacOS/FanControlHelper --print-configuration                 # what the helper resolves (JSON, then exits; no SMC access)
+plutil -p YourApp.app/Contents/Info.plist | grep FanControl                        # what the app resolves
+```
+
+`HelperSmokeApp` (`Tools/HelperSmokeApp/project.yml`) is the reference setup: its
+`FANCONTROL_APP_ID`, `FANCONTROL_HELPER_ID` and `FANCONTROL_HELPER_INFO_PLIST` build settings are
+the only place the identifiers appear.
+
+Not configurable through the plist: the helper executable name (`FanControlHelper`), the
+protocol version, and the `fancontrol-kit` log subsystem in `FanControlManager.swift`
+(still `com.example.dynamicnotch.DynamicNotch`).
 
 ## 1. Bundle layout
 
@@ -63,11 +135,13 @@ Xcode setup (full recipe in [integration.md](integration.md) §2–§4):
    Also set `GENERATE_INFOPLIST_FILE = NO`, `CREATE_INFOPLIST_SECTION_IN_BINARY = NO`, and leave
    `INFOPLIST_FILE` empty. If Xcode also creates the section, it passes a second
    `-sectcreate __TEXT __info_plist`. Xcode 26.6 does not report an error for this, but nothing
-   guarantees which copy wins. Set `PRODUCT_BUNDLE_IDENTIFIER` to the helper label, because the
-   app requires this signing identifier from the helper.
-3. In the app target, add two **Copy Files** phases. Destination `Executables` gets
-   `FanControlHelper`. Destination `Wrapper` with subpath `Contents/Library/LaunchDaemons` gets
-   the launchd plist.
+   guarantees which copy wins. Set `PRODUCT_BUNDLE_IDENTIFIER` to `FanControlHelperIdentifier`,
+   because the app requires this signing identifier from the helper.
+3. In the app target, add a **Copy Files** phase, destination `Executables`, with
+   `FanControlHelper`. For the launchd plist, either run `Support/embed-helper-config.sh`
+   ("Configuring identifiers"; generates it from Helper-Info.plist), or, with the default
+   identifiers, add a second Copy Files phase (destination `Wrapper`, subpath
+   `Contents/Library/LaunchDaemons`) with `Support/LaunchDaemons/<label>.plist`.
 4. Add `FanControlHelper` to the app's Target Dependencies.
 
 ## 2. Signing (SMAppService mode)
@@ -86,10 +160,10 @@ Xcode setup (full recipe in [integration.md](integration.md) §2–§4):
   ```
   anchor apple generic and identifier "<helper label>" and certificate leaf[subject.OU] = "<TeamID>"
   ```
-  This is `FanControlHelperConstants.helperCodeSigningRequirement(teamID:)`, and `<TeamID>`
-  defaults to the placeholder constant. Either replace the constant, or set
+  This is `FanControlHelperConstants.helperCodeSigningRequirement(teamID:)`. `<TeamID>` defaults
+  to `FanControlClientTeamID` from the **app's** Info.plist (`FanControlHelperConstants.clientTeamID`,
+  copied there by `embed-helper-config.sh`), else the placeholder. You can also set
   `FanControlManager.shared.clientTeamID` at launch, before the first helper call.
-  <!-- TODO: verify after refactor -->
 - **App Sandbox:** the helper must **not** be sandboxed, because it needs AppleSMC writes and an
   XPC listener. The host app is expected to be unsandboxed as well. If you do sandbox the app,
   it needs two temporary exceptions: `com.apple.security.temporary-exception.iokit-user-client-class`
@@ -349,7 +423,8 @@ Both modes use the same label and Mach service name. **Never install both at onc
 `install.sh` aborts if a job from SMAppService is loaded (its `launchctl print` path is not the
 manual plist). The app never calls `SMAppService` while the manual files exist.
 
-The template `Support/manual-install/<label>.manual.plist` is filled in by `install.sh`:
+The template `Support/manual-install/FanControlHelper.manual.plist` is filled in by `install.sh`
+(`Label`, `MachServices`, `Program` and the requirement, from the helper's embedded identifiers):
 
 ```xml
 <key>Label</key>        <string><label></string>

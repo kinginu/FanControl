@@ -11,8 +11,8 @@ your own Mac. For apps you give to other people, use the `SMAppService` path ins
 | `install.sh` | Verifies the app and its embedded helper, pins the app's cdhash, installs the helper and the plist, and bootstraps the job. Idempotent. |
 | `uninstall.sh` | Boots the job out (the helper restores automatic fan control on SIGTERM) and removes both files |
 | `status.sh` | Read-only (no root needed): shows both files, the pinned requirement, the helper cdhash and launchd state. Given an app, it also checks whether the app's cdhash is the pinned one. |
-| `common.sh` | Shared constants and helpers (sourced). Tests check that these values match the Swift constants. |
-| `<label>.manual.plist` | The LaunchDaemon template. Its placeholder values make the helper refuse to start if the template is installed unfilled. |
+| `common.sh` | Shared constants and helpers (sourced; identifiers come from `../identifiers.sh`). Tests check that these values match the Swift code. |
+| `FanControlHelper.manual.plist` | The LaunchDaemon template. Its placeholder values make the helper refuse to start if the template is installed unfilled. |
 
 ## Usage
 
@@ -23,7 +23,7 @@ your own Mac. For apps you give to other people, use the `SMAppService` path ins
 ./install.sh --dry-run /path/to/YourApp.app   # preview: verifies, prints plist and commands, changes nothing
 sudo ./install.sh /path/to/YourApp.app        # install (re-run after EVERY rebuild of the app)
 ./status.sh /path/to/YourApp.app              # "the app's cdhash matches the pinned requirement"
-sudo ./uninstall.sh                           # remove
+sudo ./uninstall.sh /path/to/YourApp.app      # remove (the app argument supplies the label)
 ```
 
 What gets installed:
@@ -33,7 +33,14 @@ What gets installed:
   Mach service. Its `EnvironmentVariables.FANCONTROL_CLIENT_REQUIREMENT` is
   `identifier "<app bundle id>" and cdhash H"<app cdhash>"`.
 
-<!-- TODO: verify after refactor — <label> and <app bundle id> are currently the constants in common.sh (com.example.dynamicnotch.DynamicNotch[.fanfi]); they are becoming configurable. -->
+`<label>` (`FanControlMachServiceName`) and `<app bundle id>` (`FanControlClientBundleIdentifier`)
+are read from the helper's embedded Info.plist, so a host with its own identifiers needs no edits
+here (docs/helper.md, "Configuring identifiers"). `install.sh` refuses an app whose Info.plist
+resolves to different identifiers than its helper, and never overwrites a LaunchDaemon plist it
+did not write. Without an app argument, `status.sh` and `uninstall.sh` use the defaults
+(`com.example.dynamicnotch.DynamicNotch[.fanfi]`); pass the app (`sudo ./uninstall.sh
+/path/to/YourApp.app`) or override them:
+`sudo FANCONTROL_MACH_SERVICE_NAME=com.acme.Notch.helper ./uninstall.sh`.
 
 ## Security caveats (read before installing)
 

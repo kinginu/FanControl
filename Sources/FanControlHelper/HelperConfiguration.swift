@@ -4,13 +4,15 @@ import Security
 import FanControlXPC
 
 /// Values read from the helper's embedded Info.plist (`-sectcreate __TEXT __info_plist`).
+/// The identifiers (`FanControlHelperIdentifier`, `FanControlMachServiceName`,
+/// `FanControlClientBundleIdentifier`, `FanControlClientTeamID`) are parsed by
+/// `FanControlIdentifiers` and exposed through `FanControlHelperConstants`.
 enum HelperConfiguration {
     /// Team ID that clients must be signed with (`FanControlClientTeamID`).
     /// Falls back to `FanControlHelperConstants.teamIdentifierPlaceholder` with a warning,
     /// which in practice rejects every client until the real Team ID is configured.
     static let teamID: String = {
-        if let value = Bundle.main.infoDictionary?["FanControlClientTeamID"] as? String,
-           !value.isEmpty {
+        if let value = FanControlHelperConstants.clientTeamID {
             if value == FanControlHelperConstants.teamIdentifierPlaceholder {
                 helperLog.warning("FanControlClientTeamID is still the placeholder; no real client will pass the code-signing check")
             }
@@ -19,6 +21,32 @@ enum HelperConfiguration {
         helperLog.warning("FanControlClientTeamID missing from embedded Info.plist; using placeholder Team ID")
         return FanControlHelperConstants.teamIdentifierPlaceholder
     }()
+
+    /// Logs the resolved identifiers and every configuration problem once at startup.
+    static func logIdentifiers() {
+        let ids = FanControlHelperConstants.identifiers
+        helperLog.notice("Identifiers: helper \(ids.helperIdentifier, privacy: .public), Mach service \(ids.machServiceName, privacy: .public), client \(ids.clientBundleIdentifier, privacy: .public)")
+        for issue in ids.issues {
+            helperLog.warning("Embedded Info.plist: \(issue, privacy: .public)")
+        }
+        if let own = Bundle.main.bundleIdentifier, own != ids.helperIdentifier {
+            helperLog.warning("Embedded CFBundleIdentifier \(own, privacy: .public) differs from FanControlHelperIdentifier \(ids.helperIdentifier, privacy: .public); the app pins the latter as the helper's code-signing identifier")
+        }
+    }
+
+    /// `--print-configuration`: the resolved identifiers as JSON (stdout), for checking a
+    /// build without installing it (docs/helper.md "Configuring identifiers"). No SMC access.
+    static func configurationJSON() -> String {
+        let ids = FanControlHelperConstants.identifiers
+        var object: [String: Any] = ids.infoDictionaryRepresentation
+        object["CFBundleIdentifier"] = Bundle.main.bundleIdentifier ?? NSNull()
+        object["issues"] = ids.issues
+        object["launchdPlistName"] = FanControlHelperConstants.plistName
+        object["manualHelperPath"] = FanControlHelperConstants.manualHelperPath
+        object["manualLaunchDaemonPlistPath"] = FanControlHelperConstants.manualLaunchDaemonPlistPath
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
 
     /// Requirement every client connection must satisfy, chosen once at startup by
     /// `FanControlHelperConstants.resolveClientRequirement(environment:teamID:)`:
