@@ -330,7 +330,7 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       90°C（95 − `alertHysteresis`）以下に下がるまで解除されない（`FanControlManager.emergencyOverrideActive`）。
 - [ ] ファン停止（目標 > 0 で実測 0 が 3 回連続）→ 該当ファン行に警告アイコン、Live Activity「ファン停止」（テストは固定モードで物理的に止める等、注意して行う）。
 - [ ] 警告トグルを OFF にすると Live Activity が出ない。
-- [ ] 手動プロファイル適用中にスリープ → 復帰後約 5 秒で再適用される（「スリープ解除後にプロファイルを再適用」ON 時。
+- [x] 手動プロファイル適用中にスリープ → 復帰後約 5 秒で再適用される（2026-10-20 HelperSmokeApp で確認。**ただし復帰直後は SMC が `Tg` を 0 にリセットし `Md`=1 のままなので数秒間ファンが停止する**。`verification/first-write-2026-10-20.md` テスト 4、要対応）（「スリープ解除後にプロファイルを再適用」ON 時。
       OFF にすると再適用せず、復帰約 5 秒後に書込セッションを閉じる（ヘルパーがセッション前の値に戻す）。
       設定は `FanControlAlertCoordinator` が `FanControlManager.reapplyProfileAfterWake` に同期）。
 - [ ] 書込セッション無しで Nook を閉じても、警告が 1 つでも ON なら低頻度ポーリング（`max(5×間隔, 10 秒)`）が続き警告が出る。両方 OFF なら停止する。
