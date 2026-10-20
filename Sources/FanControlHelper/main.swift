@@ -42,6 +42,10 @@ sigtermSource.setEventHandler {
 }
 sigtermSource.resume()
 
+// Sleep/wake: hand forced fans back to the SMC before sleep and re-apply the
+// session's targets after wake (the SMC resets F<n>Tg to 0 but keeps F<n>Md = 1).
+PowerObserver.shared.start()
+
 helperLog.info("FanControlHelper started (protocol v\(FanControlHelperConstants.protocolVersion, privacy: .public), build \(HelperConfiguration.buildString, privacy: .public)), listening on \(FanControlHelperConstants.machServiceName, privacy: .public)")
 dispatchMain()
 #else

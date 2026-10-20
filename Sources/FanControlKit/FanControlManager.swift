@@ -14,6 +14,7 @@ public extension Notification.Name {
 #if os(macOS)
 import AppKit
 import Observation
+import os
 import FanControlCore
 import FanControlSMC
 import FanControlXPC
@@ -59,6 +60,9 @@ public final class FanControlManager: @unchecked Sendable {
     public static let customProfileID = UUID(uuidString: "6F1A0000-0000-4000-8000-0000000000C0")!
     /// Poll-driven target changes at or below this many RPM are not written.
     public static let writeThresholdRPM = 25
+    /// Seconds after `NSWorkspace.didWakeNotification` at which the active profile
+    /// is re-applied while a session is open (`reapplyProfileAfterWake`).
+    public static let wakeReapplyDelays: [TimeInterval] = [0, 2, 5]
     /// Shown when `helperStatus == .requiresApproval` (`installHelper` throws
     /// `.helperNotInstalled` in that case, which carries no message of its own).
     /// English only; an app with its own localized text may show that instead.
@@ -124,16 +128,21 @@ public final class FanControlManager: @unchecked Sendable {
     /// see `SafetyPolicy.defaultEmergencySensorPrefixes(appleSilicon:)`).
     /// Not persisted by the kit.
     public var safetyPolicy: SafetyPolicy = FanControlPlatform.defaultSafetyPolicy
-    /// When `true` (default), the active profile is re-applied 5 s after the Mac
-    /// wakes, if a write session is still open. The app mirrors its own setting
-    /// (e.g. `FanControlGeneralSettings.reapplyProfileAfterWake`) into this.
+    /// When `true` (default) and a write session is still open when the Mac
+    /// wakes, the active profile is re-applied **immediately** on
+    /// `NSWorkspace.didWakeNotification` and again `wakeReapplyDelays` later
+    /// (0 s, 2 s, 5 s; idempotent, bypassing the throttle). The app mirrors its
+    /// own setting (e.g. `FanControlGeneralSettings.reapplyProfileAfterWake`) into this.
     ///
-    /// When `false` and a session is open at wake, the session is **closed**
-    /// 5 s after wake instead: the SMC may have silently reset the fans to
-    /// automatic during sleep, which would leave the throttle baseline (and
-    /// `fanControlModes`) claiming manual control that is no longer in effect.
-    /// The helper restores the pre-session values on close; the user re-applies
-    /// a profile to take control again.
+    /// When `false` and a session is open at wake, the session is **closed
+    /// immediately** instead: the SMC resets `F<n>Tg` to 0 across sleep while
+    /// keeping `F<n>Md` = 1 (first-write test 4), so manual control as it was
+    /// before sleep is not in effect any more. The helper hands the fans back to
+    /// the SMC on close; the user re-applies a profile to take control again.
+    ///
+    /// Either way the helper itself also hands forced fans back before sleep and
+    /// re-applies the session's last targets after wake (`docs/helper.md` §5),
+    /// so the fans are not left stopped if this notification is late.
     public var reapplyProfileAfterWake: Bool = true
     /// When `true` (default), `setMonitoringPaused(true)` without a write session
     /// keeps a slow poll (`max(5 × pollingInterval, 10 s)`, the same rate as with
@@ -193,7 +202,8 @@ public final class FanControlManager: @unchecked Sendable {
 
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var systemObservers: [(NotificationCenter, NSObjectProtocol)] = []
-    @ObservationIgnored private var wakeWorkItem: DispatchWorkItem?
+    /// Pending wake re-apply attempts (`wakeReapplyDelays`).
+    @ObservationIgnored private var wakeWorkItems: [DispatchWorkItem] = []
 
     // MARK: - Private (thread-safe)
 
@@ -229,6 +239,15 @@ public final class FanControlManager: @unchecked Sendable {
     /// pollQueue's view of `isMonitoring` (set in order with the queued work),
     /// so queued polls do not reopen the reader after `stopMonitoring()`.
     @ObservationIgnored private var monitoringActive = false
+    /// Between `NSWorkspace.willSleepNotification` and `didWakeNotification`:
+    /// polls write nothing and do not flag unsettled fans (the helper has handed
+    /// the forced fans back to the SMC for the sleep; a poll must not re-force them).
+    /// Cleared on wake, or by a poll more than `sleepSuspendTimeout` after it was
+    /// set (a missed wake notification must not disable poll writes, and with them
+    /// the emergency override, for good).
+    @ObservationIgnored private var systemSleeping = false
+    @ObservationIgnored private var systemSleepStartedAt: Date?
+    private static let sleepSuspendTimeout: TimeInterval = 30
 
     // MARK: - Init
 
@@ -283,8 +302,7 @@ public final class FanControlManager: @unchecked Sendable {
         isMonitoring = false
         timer?.invalidate()
         timer = nil
-        wakeWorkItem?.cancel()
-        wakeWorkItem = nil
+        cancelWakeWork()
         isSMCConnected = false
         pollQueue.async { [self] in
             monitoringActive = false
@@ -856,13 +874,19 @@ public final class FanControlManager: @unchecked Sendable {
         let emergency = alertEvaluator.evaluateEmergency(sensors: sensors, policy: context.policy)
         let anomalies = alertEvaluator.evaluateFanAnomaly(fans: fans, currentRPMs: current, targetRPMs: targets)
 
+        if systemSleeping, let started = systemSleepStartedAt,
+           Date().timeIntervalSince(started) > Self.sleepSuspendTimeout {
+            systemSleeping = false
+            systemSleepStartedAt = nil
+        }
         let modes: [Int: FanControlMode]
         if context.sessionOpen {
             modes = Dictionary(uniqueKeysWithValues: fans.map { ($0.id, context.profile.mode(for: $0)) })
             let plan = FanControlEngine.plan(profile: context.profile, fans: fans, sensors: sensors,
                                              policy: context.policy, isEmergency: emergency)
             let desired = Self.targets(from: plan)
-            if !pollWriteInFlight, !changedTargetsOnQueue(desired, force: false).isEmpty {
+            if !systemSleeping { flagUnsettledFansOnQueue(fans: fans, targets: targets, using: reader) }
+            if !systemSleeping, !pollWriteInFlight, !changedTargetsOnQueue(desired, force: false).isEmpty {
                 pollWriteInFlight = true
                 let generation = applyGate.current
                 Task {
@@ -893,6 +917,28 @@ public final class FanControlManager: @unchecked Sendable {
             manager.lastUpdate = now
             NotificationCenter.default.post(name: .fanControlDidUpdate, object: manager)
         }
+    }
+
+    /// pollQueue only, session open. Compares the SMC state with `appliedTargets`
+    /// (`UnsettledFanDetector`: manual at a target below `F<n>Mn`, manual control
+    /// dropped, target reset, or forced although applied automatic) and adds such
+    /// fans to `unsettledFans`, so this poll rewrites them regardless of the throttle.
+    private func flagUnsettledFansOnQueue(fans: [FanDevice], targets: [Int: Int], using reader: SMCReader) {
+        guard let strategy, !fans.isEmpty else { return }
+        let modes = FanDiscovery.fanControlModes(fans: fans, using: reader)
+        var observed: [Int: UnsettledFanDetector.Observation] = [:]
+        for fan in fans {
+            observed[fan.id] = .init(isManual: modes[fan.id]?.isManual, targetRPM: targets[fan.id])
+        }
+        let found = UnsettledFanDetector.unsettledFans(fans: fans, styles: strategy.fans.mapValues(\.style),
+                                                       applied: appliedTargets, observed: observed)
+        let newly = found.subtracting(unsettledFans)
+        guard !newly.isEmpty else { return }
+        unsettledFans.formUnion(newly)
+        let detail = newly.sorted().map { fan in
+            "F\(fan) manual=\(observed[fan]?.isManual.map(String.init) ?? "?") Tg=\(observed[fan]?.targetRPM.map(String.init) ?? "?") applied=\(appliedTargets[fan].map { "\($0)" } ?? "none")"
+        }.joined(separator: ", ")
+        kitLog.notice("Unsettled fan(s) detected, rewriting: \(detail, privacy: .public)")
     }
 
     // MARK: - Timer (main thread)
@@ -944,38 +990,87 @@ public final class FanControlManager: @unchecked Sendable {
                                                    queue: .main) { [weak self] _ in
                 self?.handleWake()
             }
+            let sleep = workspaceCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil,
+                                                    queue: .main) { [weak self] _ in
+                self?.handleWillSleep()
+            }
             let terminate = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
                                                                    object: nil, queue: .main) { [weak self] _ in
                 self?.restoreOnTermination()
             }
-            self.systemObservers = [(workspaceCenter, wake), (NotificationCenter.default, terminate)]
+            self.systemObservers = [(workspaceCenter, wake), (workspaceCenter, sleep),
+                                    (NotificationCenter.default, terminate)]
         }
     }
 
-    /// The SMC may reset fans to automatic across sleep. 5 s after wake (design
-    /// doc §6 Phase 5), if a session is open: re-apply the active profile when
-    /// `reapplyProfileAfterWake` is `true`, otherwise close the session so the
-    /// kit's state does not claim manual control the SMC may have dropped. The
-    /// flag is read when the delay elapses. Never opens a session.
+    /// Main thread. Nothing destructive: the helper hands the forced fans back to
+    /// the SMC itself (`docs/helper.md` §5). Cancels pending wake attempts and stops
+    /// poll-driven writes until wake.
+    private func handleWillSleep() {
+        cancelWakeWork()
+        pollQueue.async { [self] in
+            systemSleeping = true
+            systemSleepStartedAt = Date()
+        }
+        if helperClient.isSessionOpen {
+            kitLog.notice("System will sleep; poll writes suspended (the helper hands the fans back to the SMC)")
+        }
+    }
+
+    /// Main thread. Across sleep the SMC resets `F<n>Tg` to 0 but keeps `F<n>Md` = 1
+    /// (first-write test 4), so with a session open:
+    /// - `reapplyProfileAfterWake == true`: the active profile is re-applied right
+    ///   away and again at `wakeReapplyDelays` (bypassing the throttle, never opening
+    ///   a session; errors are recorded only for the last attempt, since the SMC may
+    ///   reject writes right at wake);
+    /// - `false`: the session is closed immediately (the helper restores).
+    /// The flag is read when each attempt runs. Polls resume (and flag unsettled
+    /// fans) at once.
     private func handleWake() {
-        wakeWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.pollIfMonitoring()
-            guard self.helperClient.isSessionOpen else { return }
-            guard self.reapplyProfileAfterWake else {
-                Task { await self.closeSMCSession() }
-                return
-            }
-            let profile = self.resolvedActiveProfile
-            Task {
-                try? await self.recordingErrors {
-                    try await self.apply(profile, force: true, allowOpeningSession: false, makeActive: false)
+        cancelWakeWork()
+        pollQueue.async { [self] in
+            systemSleeping = false
+            systemSleepStartedAt = nil
+        }
+        pollIfMonitoring()
+        guard helperClient.isSessionOpen else { return }
+        guard reapplyProfileAfterWake else {
+            kitLog.notice("Woke with a session open and reapplyProfileAfterWake off: closing the session")
+            Task { await self.closeSMCSession() }
+            return
+        }
+        kitLog.notice("Woke with a session open: re-applying the active profile at \(Self.wakeReapplyDelays.map { "\($0)s" }.joined(separator: ", "), privacy: .public)")
+        let delays = Self.wakeReapplyDelays
+        for (index, delay) in delays.enumerated() {
+            let isLast = index == delays.count - 1
+            let item = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                if delay > 0 { self.pollIfMonitoring() }
+                guard self.helperClient.isSessionOpen else { return }
+                guard self.reapplyProfileAfterWake else {
+                    Task { await self.closeSMCSession() }
+                    return
+                }
+                let profile = self.resolvedActiveProfile
+                Task {
+                    if isLast {
+                        try? await self.recordingErrors {
+                            try await self.apply(profile, force: true, allowOpeningSession: false, makeActive: false)
+                        }
+                    } else {
+                        try? await self.apply(profile, force: true, allowOpeningSession: false, makeActive: false)
+                    }
                 }
             }
+            wakeWorkItems.append(item)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
         }
-        wakeWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: item)
+    }
+
+    /// Main thread.
+    private func cancelWakeWork() {
+        wakeWorkItems.forEach { $0.cancel() }
+        wakeWorkItems = []
     }
 
     /// Returns every fan to automatic and closes the session, waiting at most
@@ -1059,6 +1154,10 @@ public final class FanControlManager: @unchecked Sendable {
         (error as? FanControlError) ?? .helperConnectionFailed(error.localizedDescription)
     }
 }
+
+/// Unified logging for the app-side kit.
+/// `log stream --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-kit"'`
+let kitLog = Logger(subsystem: "com.example.dynamicnotch.DynamicNotch", category: "fancontrol-kit")
 
 /// Settings snapshot taken on the main thread for one poll.
 private struct PollContext: Sendable {

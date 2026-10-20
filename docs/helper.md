@@ -124,6 +124,7 @@ case .notFound: /* plist がバンドルに無い・配置ミス */ break
   モードの復元に失敗したファンの `F<n>Tg` も書き戻さず、最後に検証済みの目標値（`Mn`〜`Mx` 内）のまま残す（ログに記録）。
   復元の書込は値の検証（下表）を通さない。成否にかかわらずセッションは解放する。これによりクライアントがクラッシュしてもファンが手動固定のまま残らない。
 - AppleSMC 接続はセッション中のみ保持。セッション開始時に `FNum` と各ファンのハードウェア `F<n>Mn` / `F<n>Mx` を読み、書込値の検証に使う。
+- クライアントの成功した書込はキーごとに最後の値（`lastWritten` = クライアントの意図）として保持し、スリープ／復帰時の再適用に使う（§5「スリープ／復帰」）。ヘルパー自身の電源処理の書込はここに記録しない。
 
 **書込許可リスト**（`FanControlHelperConstants.allowedWriteKeyPatterns`）:
 
@@ -180,12 +181,52 @@ codesign -d -r- DynamicNotch.app
 2. `openSession` → `writeKey("F0Md", [1])` → `writeKey("F0Tg", <fpe2/flt エンコード値>)` で回転数が変わる（`F0Ac` を読んで確認）。
 3. 許可外キー（例 `TC0P`）は `4 keyNotAllowed`、サイズ不一致は `7 badRequest`。
 4. 別プロセス（署名済み 2 つ目のビルド）から `openSession` → `1 notSessionOwner`。
-5. 手動制御中にアプリを `kill -9` → ログに "went away; releasing session"、ファンが自動制御に戻る。
+5. （スリープ／復帰）手動制御中にスリープ → 復帰。ログに `Power: system will sleep; … handed back to the SMC: F0Md=0 …` と `Power: wake recovery 1/3 … wrote …` が出て、`fanfi-probe --watch 1` で復帰後に `manual(0)` のサンプルが出ないこと（下の「スリープ／復帰」）。
+6. 手動制御中にアプリを `kill -9` → ログに "went away; releasing session"、ファンが自動制御に戻る。
    ヘルパーを `sudo launchctl kill SIGTERM system/com.example.dynamicnotch.DynamicNotch.fanfi` で止めても同様に自動制御に戻る（ログに "SIGTERM received"）。
    範囲外の目標値（`F0Mn` 未満など）や `F0Md` = 2、`F0Mn` への書込（Apple Silicon は `0x40` なし、かつ許可リスト外）は `7 badRequest` / `4 keyNotAllowed`。
    復元後、`fanfi-probe` で `F0Md` = 0 であること、および `F0Tg` が記録値（アイドル時 0）に**書き戻されていない**（SMC が自分で決めた値になる）ことをログ（"Failed to restore" が出ていないこと）と合わせて確認する。
-6. 未署名・別 Team ID のクライアントは接続が即座に無効化される。
-7. `SMAppService.daemon(plistName:).unregister()` 後、`launchctl print` でサービスが消える。
+7. 未署名・別 Team ID のクライアントは接続が即座に無効化される。
+8. `SMAppService.daemon(plistName:).unregister()` 後、`launchctl print` でサービスが消える。
+
+### スリープ／復帰（2026-10-20 実装、実機再テスト待ち）
+
+背景（`docs/verification/first-write-2026-10-20.md` テスト 4）: スリープをまたぐと SMC は `F<n>Tg` を 0 にリセットし `F<n>Md` = 1 を保持する（スリープ前に automatic だったファンも）。
+復帰直後はファンが「手動・目標 0」= 停止状態になり、アプリの復帰通知が遅れればそのまま残る。ヘルパーは安全性の最終責任者なので、アプリに頼らず自分で処理する。
+
+実装: `PowerObserver`（`Sources/FanControlHelper/PowerObserver.swift`、IOKit の薄い糊）が `IORegisterForSystemPower` を登録する。
+ヘルパーは `dispatchMain()` で動き main の CFRunLoop を回さないため、通知ポートは run loop source ではなく `IONotificationPortSetDispatchQueue` で専用キューに載せる。
+判断はすべて `FanControlXPC.PowerTransitionPolicy`（純粋関数、`PowerTransitionPolicyTests`）にあり、`SessionRegistry` がロック下で実行する。書込は通常のクライアント書込と同じ検証経路（許可リスト、`HelperWritePolicy.validate`、初回書込前の記録）を通る。
+
+| 通知 | 動作 |
+|---|---|
+| `kIOMessageCanSystemSleep` | 常に許可（`IOAllowPowerChange`）。スリープを拒否しない |
+| `kIOMessageSystemWillSleep` | セッションが開いていれば、セッションが強制中のファン（最後の `F<n>Md` 書込が非 0、またはこのセッションが立てた `FS! ` ビット）を SMC に返す: `F<n>Md` = 0、`FS! ` は該当ビットを落とす。`F<n>Tg` は書かない。セッションとクライアントの意図は保持。書込の成否にかかわらず直後に `IOAllowPowerChange`（30 秒制限に対し数回の SMC 呼出のみ） |
+| `kIOMessageSystemHasPoweredOn` | 0 s / 1 s / 3 s（`PowerTransitionPolicy.wakeRetryDelays`。復帰直後は SMC が書込を拒否しうる）に復旧を試みる。各回でファンを読み直すので冪等（揃っていれば何も書かない）。新たなスリープで残りの試行は破棄 |
+
+復帰時の各試行（セッションあり、`PowerTransitionPolicy.wakeRecovery`）:
+
+- 記憶したファン（強制中で目標値の記録あり）: 手動でなければモードキー（`F<n>Md` = 最後に書かれた値 / `FS! ` ビット）→ `F<n>Tg` = 最後の目標値の順で書く。手動だが `F<n>Tg` が記憶値から 5 RPM を超えてずれていれば `F<n>Tg` だけ書く。
+- それ以外で手動モードのファン（目標の記録が無い `F<n>Md` = 1。テスト 4 の Fan 2 のように SMC が手動で起こしたもの、`Md`=1 だけ成功して `Tg` が失敗したもの）: `F<n>Md` = 0（`FS! ` はビットを落とす）で SMC に返す。
+- 書込順は `F<n>Md`（ファン番号順）→ `FS! ` 1 回 → `F<n>Tg`。記憶はクライアントの最新の書込なので、復帰後にアプリが目標を変えれば以降の試行はそれに従う。
+
+セッションなしで復帰した場合は 1 回目の試行でファンを読み、手動モードのファンがあれば警告ログだけ出す（別のツールの可能性があるので書かない）。
+
+ログ（すべて notice 以上なので永続化される。`log show --last 10m --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'` で後から確認可能）:
+
+```
+Power: registered for system sleep/wake notifications                       (info、起動時)
+Power: system will sleep; session of pid 1234 open, handed back to the SMC: F0Md=0; remembered targets: F0 3000
+Power: system will sleep; no session open, nothing to hand back
+Power: system has powered on; wake recovery at 0.0s, 1.0s, 3.0s
+Power: wake recovery 1/3 (session of pid 1234): observed F0 Md=0 Tg=2468, F1 Md=1 Tg=0; wrote F0Md=1, F1Md=0, F0Tg=3000
+Power: wake recovery 2/3 (session of pid 1234): fans already match (F0 Md=1 Tg=3000, F1 Md=0 Tg=…)
+Power: system has powered on; no session open but fan(s) 0,1 are in manual mode - not writing (another tool may own them)
+Power: IORegisterForSystemPower failed; sleep/wake fan handling is disabled   (error。この場合は従来どおりアプリ側の処理だけ)
+```
+
+失敗した書込は `F0Tg=3000 FAILED (<理由>)` のように同じ行に出る。アプリ側（`FanControlManager`）も復帰時に即座・2 s・5 s で再適用し、ポーリングで「手動かつ `Tg` < `Mn`」などを検出して書き直す（kit.md「Sleep/wake」「State drift」）。
+既知の制約: DarkWake でも `HasPoweredOn` が届くため、セッション中は DarkWake の間も記憶した目標で回る（次の `WillSleep` で再び返す）。ヘルパーの SIGKILL / クラッシュ中のスリープは対象外。
 
 ## 6. 手動インストール（個人利用モード）
 
