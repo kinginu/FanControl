@@ -54,6 +54,12 @@
 "Not installed" = "未インストール";
 "Installed" = "インストール済み";
 "Installed manually (personal mode)" = "手動インストール済み（個人利用モード）";
+"Installed manually, pinned to another build" = "手動インストール済み（別のビルドに固定）";
+"Refused (pinned to a different build)" = "拒否（別のビルドに固定）";
+"Refused by the helper" = "ヘルパーが拒否";
+"Refused (helper signature mismatch)" = "拒否（ヘルパーの署名が不一致）";
+"The installed helper is pinned to a different build of DynamicNotch and refuses this app. Re-run sudo install.sh with this app (FanControl/Support/manual-install/), then click Check Again." = "インストール済みのヘルパーは別のビルドの DynamicNotch に固定されているため、このアプリからの接続を拒否します。このアプリを指定して sudo install.sh を再実行し（FanControl/Support/manual-install/）、「再確認」をクリックしてください。";
+"The installed helper’s code signature does not match what DynamicNotch expects. Re-run sudo install.sh with this app (FanControl/Support/manual-install/), then click Check Again." = "インストール済みのヘルパーのコード署名が DynamicNotch の想定と一致しません。このアプリを指定して sudo install.sh を再実行し（FanControl/Support/manual-install/）、「再確認」をクリックしてください。";
 "Waiting for approval" = "承認待ち";
 "Missing from app bundle" = "アプリバンドル内に見つかりません";
 "Unknown (%@)" = "不明 (%@)";

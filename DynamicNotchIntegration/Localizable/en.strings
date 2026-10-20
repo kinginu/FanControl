@@ -54,6 +54,12 @@
 "Not installed" = "Not installed";
 "Installed" = "Installed";
 "Installed manually (personal mode)" = "Installed manually (personal mode)";
+"Installed manually, pinned to another build" = "Installed manually, pinned to another build";
+"Refused (pinned to a different build)" = "Refused (pinned to a different build)";
+"Refused by the helper" = "Refused by the helper";
+"Refused (helper signature mismatch)" = "Refused (helper signature mismatch)";
+"The installed helper is pinned to a different build of DynamicNotch and refuses this app. Re-run sudo install.sh with this app (FanControl/Support/manual-install/), then click Check Again." = "The installed helper is pinned to a different build of DynamicNotch and refuses this app. Re-run sudo install.sh with this app (FanControl/Support/manual-install/), then click Check Again.";
+"The installed helper’s code signature does not match what DynamicNotch expects. Re-run sudo install.sh with this app (FanControl/Support/manual-install/), then click Check Again." = "The installed helper’s code signature does not match what DynamicNotch expects. Re-run sudo install.sh with this app (FanControl/Support/manual-install/), then click Check Again.";
 "Waiting for approval" = "Waiting for approval";
 "Missing from app bundle" = "Missing from app bundle";
 "Unknown (%@)" = "Unknown (%@)";

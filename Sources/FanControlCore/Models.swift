@@ -312,6 +312,10 @@ public enum FanControlError: Error, Equatable, Sendable, LocalizedError {
     case helperNotInstalled
     case helperConnectionFailed(String)
     case helperRejected(code: Int, message: String)
+    /// The helper refuses this app's connections (code-signing requirement mismatch,
+    /// e.g. a manual install pinned to another build of the app). Sticky until the
+    /// user retries (`FanControlManager.retryHelperConnection()`) or reinstalls.
+    case helperConnectionRejected(String)
     case sessionNotOpen
     case rpmOutOfRange(fan: Int, rpm: Int, allowed: ClosedRange<Int>)
     case unsupportedDataType(String)
@@ -334,6 +338,8 @@ public enum FanControlError: Error, Equatable, Sendable, LocalizedError {
             return "Could not connect to the fan control helper: \(reason)"
         case .helperRejected(let code, let message):
             return "The fan control helper rejected the request (code \(code)): \(message)"
+        case .helperConnectionRejected(let reason):
+            return "The fan control helper refuses this app: \(reason)"
         case .sessionNotOpen:
             return "No fan control session is open."
         case .rpmOutOfRange(let fan, let rpm, let allowed):

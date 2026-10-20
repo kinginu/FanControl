@@ -35,6 +35,26 @@ struct ManualInstallModeTests {
         #expect(C.validateManualClientRequirement(upper) == .success(Self.hash))
     }
 
+    @Test func testClientPinCheck() throws {
+        let app = String(repeating: "ab", count: 20)
+        let other = String(repeating: "cd", count: 20)
+        let pinnedApp = try #require(C.manualModeClientRequirement(cdhash: app))
+        let pinnedOther = try #require(C.manualModeClientRequirement(cdhash: other))
+        #expect(C.manualClientPinCheck(pinnedRequirement: pinnedApp, appCDHash: app) == .matches)
+        // Case-insensitive on the app side.
+        #expect(C.manualClientPinCheck(pinnedRequirement: pinnedApp, appCDHash: app.uppercased()) == .matches)
+        #expect(C.manualClientPinCheck(pinnedRequirement: pinnedOther, appCDHash: app)
+                == .mismatch(pinnedCDHash: other, appCDHash: app))
+        // Undecidable inputs never claim a mismatch.
+        for (requirement, hash) in [(nil, app), (pinnedOther, nil), (pinnedOther, "xyz"),
+                                    ("identifier \"evil\" and cdhash H\"\(other)\"", app)] as [(String?, String?)] {
+            guard case .unknown = C.manualClientPinCheck(pinnedRequirement: requirement, appCDHash: hash) else {
+                Issue.record("expected .unknown for \(String(describing: requirement)) / \(String(describing: hash))")
+                continue
+            }
+        }
+    }
+
     @Test func testValidatorRejectsWeakOrMalformed() {
         let id = "identifier \"\(C.appBundleIdentifier)\""
         #expect(C.validateManualClientRequirement("") == .failure(.empty))

@@ -298,7 +298,15 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       `Client requirement mode: MANUAL INSTALL (personal use), client cdhash pinned to <cdhash>` と `Accepted connection …`。
 - [ ] `sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi` で `path = /Library/LaunchDaemons/…plist`、`program = /Library/PrivilegedHelperTools/…`、
       environment に `FANCONTROL_CLIENT_REQUIREMENT`。AMFI がヘルパーを拒否していないこと（`com.apple.application-identifier` の件、helper.md §6「注意」）。
-- [ ] 否定系: アプリを再ビルドして `install.sh` を再実行しないまま接続 → 接続が無効化されエラー（案内文に `install.sh` の再実行）。再実行後は接続できる。
+- [ ] 否定系: アプリを再ビルドして `install.sh` を再実行しないまま（または別アプリを指定して入れたまま）操作 → 一般タブの状態が「手動インストール済み（別のビルドに固定）」、
+      接続が「拒否（別のビルドに固定）」になり、`install.sh` 再実行の案内と「再確認」が出る。ヘルパーの `log stream` に**この pid からの `Accepted connection` が出ない**こと
+      （接続前の固定 cdhash 比較で止まる）。アイドル中やプロファイルを何度選んでも接続が増えないこと（自動再試行なし）。`sudo install.sh <このアプリ>` 再実行後、「再確認」
+      （または次の操作）で接続できる。plist を読めない場合の実行時検出は、拒否が 2 回続いた時点で「ヘルパーが拒否」になり以後接続しない。
+- [x] 読み取りのみの監視（プロファイル未適用）でアプリを放置 → ヘルパーのログにこのアプリからの接続が 1 件も無い。
+      記録（2026-10-20、DynamicNotchApp を `.derivedData-fix` にビルド、ヘルパーはスモークアプリの cdhash に固定）: 修正前のビルドでも放置中の接続は 0 で、
+      11:20〜11:23 と 11:37 に見えた `Accepted connection N` → `invalidated` はすべて DynamicNotch 内のクリック（AppKit `sendAction:`）の 1〜2 秒後（ウィジェットのプロファイル選択など、
+      kit.md "Helper connection lifecycle"）。修正後のビルドは起動直後から状態「手動インストール済み（別のビルドに固定）」/ 接続「拒否（別のビルドに固定）」と案内・「再確認」を表示し、
+      「再確認」（DEBUG フック `fanhelpercheck`）を 2 回実行しても kit ログ `Helper connection rejected, not retrying automatically: …` だけでヘルパーへの接続は 0 件。
 - [ ] 否定系: 別 identifier・別 cdhash のアドホック署名プロセスからの接続は拒否される（`codesign -s - -i com.example.dynamicnotch.DynamicNotch` で署名した別バイナリでも拒否されること）。
 - [ ] 後片付け: `sudo ./uninstall.sh` → `launchctl print` でサービスが消え、状態表示が「未インストール」に戻る。
 

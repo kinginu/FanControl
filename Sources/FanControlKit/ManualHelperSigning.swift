@@ -21,6 +21,51 @@ enum ManualHelperSigning {
         return team
     }()
 
+    /// cdhash (40 lower-case hex digits) of the running app's own signature, or `nil`
+    /// if it cannot be read (unsigned). Compared with the cdhash the manual install
+    /// pinned (`pinnedClientRequirement()`). Computed once.
+    static let ownCDHash: String? = {
+        var dynamicCode: SecCode?
+        guard SecCodeCopySelf([], &dynamicCode) == errSecSuccess, let dynamicCode else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(dynamicCode, [], &staticCode) == errSecSuccess, let staticCode else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, [], &info) == errSecSuccess,
+              let dict = info as? [String: Any],
+              let unique = dict[kSecCodeInfoUnique as String] as? Data else { return nil }
+        return FanControlHelperConstants.normalizedCDHash(unique.map { String(format: "%02x", $0) }.joined())
+    }()
+
+    /// `FANCONTROL_CLIENT_REQUIREMENT` from the installed LaunchDaemon plist (root:wheel
+    /// 0644, so readable without root), or `nil` if the file or the key is missing.
+    static func pinnedClientRequirement(plistPath: String = FanControlHelperConstants.manualLaunchDaemonPlistPath) -> String? {
+        guard let data = FileManager.default.contents(atPath: plistPath),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let environment = plist["EnvironmentVariables"] as? [String: Any] else { return nil }
+        return environment[FanControlHelperConstants.clientRequirementEnvironmentKey] as? String
+    }
+
+    /// Pin check of the manual installation against this app (no connection).
+    static func clientPinCheck() -> ManualClientPinCheck {
+        FanControlHelperConstants.manualClientPinCheck(pinnedRequirement: pinnedClientRequirement(),
+                                                       appCDHash: ownCDHash)
+    }
+
+    /// Cheap identity of the installed files (size + modification time of the plist
+    /// and the helper). `install.sh` rewrites both, so a changed fingerprint lets
+    /// `HelperConnectionGate` drop a sticky rejection by itself.
+    static func installFingerprint() -> String {
+        let fm = FileManager.default
+        return [FanControlHelperConstants.manualLaunchDaemonPlistPath, FanControlHelperConstants.manualHelperPath]
+            .map { path -> String in
+                guard let attrs = try? fm.attributesOfItem(atPath: path) else { return "-" }
+                let size = (attrs[.size] as? NSNumber)?.int64Value ?? -1
+                let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+                return "\(size)@\(mtime)"
+            }
+            .joined(separator: "|")
+    }
+
     /// cdhash (40 lower-case hex digits) of the helper installed at `path`.
     ///
     /// Trust anchor: the file must be owned by root and not group/other-writable, and so

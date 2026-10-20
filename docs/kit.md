@@ -353,6 +353,7 @@ does not accept. `clientTeamID` is ignored in manual mode. `HelperClient.current
 | `/Library/LaunchDaemons/<label>.plist` | `/Library/PrivilegedHelperTools/<label>` | `status()` | `register()` | `unregister()` |
 |---|---|---|---|---|
 | present | present | `.installedManually` | no-op, returns `.installedManually` | throws `.helperConnectionFailed` ("use sudo uninstall.sh") |
+| present, but its `FANCONTROL_CLIENT_REQUIREMENT` pins another cdhash than the running app's | present | `.installedManuallyMismatch(pinnedCDHash:appCDHash:)` | no-op, returns the same | throws (as above) |
 | exactly one present | | `.unknown("manual installation incomplete (… is missing); re-run …")` | throws | throws |
 | absent | absent | `SMAppService` status (as before) | `SMAppService.register()` | `SMAppService.unregister()` |
 
@@ -360,6 +361,55 @@ does not accept. `clientTeamID` is ignored in manual mode. `HelperClient.current
 `installHelper()` returns. A protocol-version mismatch with a manually installed helper throws
 `.helperRejected(code: -1, …"Re-run sudo install.sh…")` instead of unregistering/re-registering. UIs must handle the new case
 (`FanControlGeneralTabView`: 「手動インストール済み（個人利用モード）」 plus a hint naming `install.sh` / `uninstall.sh`).
+
+## Helper connection lifecycle (when the app talks to the helper, rejection, backoff)
+
+**Read-only monitoring never touches the helper.** Polling, discovery, alerts, `refreshNow()`, `refreshHelperStatus()`
+and `HelperInstaller.status()` use only the in-process SMC reader and file / `SMAppService` reads. `HelperClient`
+connects lazily on the first call, and the manager calls it only for:
+
+| Trigger | Calls |
+|---|---|
+| user: apply a profile with a manual mode (widget profile menu, Profiles tab), `setFanRPM` / `setFanControlMode` | `openSMCSession()` → `version()`, `openSession()`, then `write` |
+| user: "Restore Automatic Control" / turning the feature off (`restoreDefaultControl()`) | with a session: writes + `closeSession()`; without one **only if the SMC reports a fan in manual mode** (orphan recovery) → `openSMCSession()` |
+| user: "Check Again" (`retryHelperConnection()`) | `version()` once (read-only probe) |
+| open session only: poll writes, wake re-apply, ⌘Q restore, `closeSMCSession()` | `write`, `closeSession()` |
+
+Note the orphan recovery also fires while **another** client (FanFi, the smoke app) holds the helper session and has a fan
+in manual mode; with this app refused by the helper it now fails fast with the rejection instead of connecting.
+
+The 2026-10-20 11:20–11:23 log (DynamicNotch pid 35111, helper pinned to the smoke app) matches this: each of the five
+`Accepted connection N` / `Connection N … invalidated` pairs followed an AppKit `sendAction:` (a click) in DynamicNotch by
+1–2 s (the requirement build includes `SecStaticCodeCheckValidity` of the helper), and nothing connected between clicks.
+The repeated clicks were most likely profile selections in the notch widget, whose `try?` hides the error, so nothing
+seemed to happen and the user clicked again. Each click opened a fresh peer connection because the client only sees
+`NSXPCConnectionInterrupted` (the helper accepts, evaluates its client requirement on the first message and invalidates
+the peer), and an interrupted `NSXPCConnection` silently reconnects on the next message.
+
+**Retry policy** (`HelperConnectionGate`, pure, `HelperConnectionGateTests`; one gate per `HelperClient`):
+
+1. *Pin pre-check (manual mode, no connection).* Before creating a connection the client reads the root-owned plist
+   (0644, `ManualHelperSigning.pinnedClientRequirement()`) and compares the pinned client cdhash with its own
+   (`SecCodeCopySelf` → `kSecCodeInfoUnique`), `FanControlHelperConstants.manualClientPinCheck`. A mismatch is a rejection
+   `.clientNotPinned(pinnedCDHash:appCDHash:)`; an undecidable check (plist unreadable, unsigned app) falls through to (2).
+   `HelperInstaller.status()` runs the same check and reports `.installedManuallyMismatch`.
+2. *Runtime classification* of the proxy error (`HelperConnectionGate.classify`):
+   `NSXPCConnectionCodeSigningRequirementFailure` (4102, the helper fails **our** requirement) → rejection
+   `.helperSignatureMismatch` at once; `NSXPCConnectionInterrupted` (4097) on a peer connection that has not replied yet →
+   `.droppedWithoutReply`, and **two in a row** → rejection `.droppedByHelper` (one alone could be a helper crash on the first
+   message); everything else (timeout, 4099 invalid = helper not running / not registered, interruption after replies) → transient.
+3. *Rejection is sticky*: `connectionState = .rejected(reason:)`, the connection is invalidated, and every later call throws
+   `FanControlError.helperConnectionRejected(…)` **without connecting** until (a) `HelperClient.resetRejection()` —
+   `FanControlManager.retryHelperConnection()`, the "Check Again" button —, (b) an app relaunch, or (c) a change of the
+   install fingerprint (size + mtime of the plist and the helper binary; `install.sh` rewrites both, so re-running it clears the
+   rejection by itself). The interruption / invalidation handlers keep `.rejected` instead of overwriting it.
+4. *Transient failures back off*: after the n-th consecutive failure calls fail fast for `min(2 s × 2^(n−1), 300 s)` with
+   `.helperConnectionFailed("not retrying for another N s …")`; any reply resets the counters (and the drop streak).
+
+`HelperConnectionState` is `.disconnected` / `.connecting` / `.connected` / `.error(String)` (transient) /
+`.rejected(reason: HelperRejectionReason)`. `HelperRejectionReason.description` is English and names the remedy
+("the installed helper is pinned to a different build of the app; re-run sudo install.sh <this app>"); the UI shows its own
+localized text (`fanControlRejectionHelp(_:)` in `FanControlSettingsView.swift`, en/ja strings).
 
 ## Errors
 
@@ -371,6 +421,8 @@ The manager never clears `lastError` itself; call `clearLastError()` when the us
 `installHelper()` throws `.helperNotInstalled` while the daemon awaits approval (after opening
 Login Items); `helperStatus` is already `.requiresApproval` at that point, so UIs can show
 approval guidance (`helperApprovalInstructions`, English) instead of the generic message.
+`.helperConnectionRejected(String)` means the helper refuses this app (see "Helper connection lifecycle"); it is not
+retried automatically, and UIs show the remedy (re-run `sudo install.sh <this app>`, then "Check Again").
 
 ## Notifications (object: the manager, posted on main)
 

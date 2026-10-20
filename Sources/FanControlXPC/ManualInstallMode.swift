@@ -121,6 +121,27 @@ extension FanControlHelperConstants {
         }
     }
 
+    /// Compares the client cdhash pinned by the installed LaunchDaemon plist
+    /// (`FANCONTROL_CLIENT_REQUIREMENT`, `nil` if it could not be read) with the running
+    /// app's own cdhash (`nil` if unknown). The app runs this before connecting in
+    /// manual mode, so a helper pinned to another build is reported without a
+    /// connection attempt (`HelperInstallStatus.installedManuallyMismatch`).
+    public static func manualClientPinCheck(pinnedRequirement: String?, appCDHash: String?) -> ManualClientPinCheck {
+        guard let pinnedRequirement else {
+            return .unknown("\(clientRequirementEnvironmentKey) could not be read from \(manualLaunchDaemonPlistPath)")
+        }
+        guard let appCDHash, let own = normalizedCDHash(appCDHash) else {
+            return .unknown("the app's own cdhash is not available")
+        }
+        switch validateManualClientRequirement(pinnedRequirement) {
+        case .success(let pinned):
+            return pinned == own ? .matches : .mismatch(pinnedCDHash: pinned, appCDHash: own)
+        case .failure(let error):
+            // The helper refuses to start with such a value anyway.
+            return .unknown(error.description)
+        }
+    }
+
     /// `true` if a file with this owner and mode can serve as a trust anchor: owned by
     /// root and not writable by group or others (only root could have put it there).
     public static func isRootOwnedAndProtected(ownerUID: UInt32, permissions: UInt16) -> Bool {
@@ -152,6 +173,17 @@ public enum ManualInstallState: Equatable, Sendable {
     case installed
     /// Exactly one of the two files exists (`missing` is the absent path).
     case incomplete(missing: String)
+}
+
+/// Result of `FanControlHelperConstants.manualClientPinCheck`.
+public enum ManualClientPinCheck: Equatable, Sendable {
+    /// The helper pins this app's cdhash.
+    case matches
+    /// The helper pins another build: `sudo install.sh <this app>` must be re-run.
+    case mismatch(pinnedCDHash: String, appCDHash: String)
+    /// Could not decide (plist unreadable, unsigned app, malformed value); connect and
+    /// rely on the runtime detection (`HelperConnectionGate`).
+    case unknown(String)
 }
 
 /// Why a `FANCONTROL_CLIENT_REQUIREMENT` value was refused.

@@ -109,6 +109,25 @@ func fanControlErrorMessage(_ error: Error) -> String {
        FanControlManager.shared.helperStatus == .requiresApproval {
         return String(localized: "Allow “DynamicNotch” in System Settings ▸ General ▸ Login Items & Extensions (macOS 15) / Login Items (macOS 14) to let it change fan speeds.")
     }
+    if let fanError = error as? FanControlError, case .helperConnectionRejected = fanError {
+        // Sticky rejection (HelperClient does not retry on its own): localized remedy.
+        if case .rejected(let reason) = FanControlManager.shared.helperConnectionState {
+            return fanControlRejectionHelp(reason)
+        }
+        return fanControlRejectionHelp(.clientNotPinned(pinnedCDHash: "", appCDHash: ""))
+    }
     return error.localizedDescription
+}
+
+/// Localized explanation and remedy for a helper rejection
+/// (`HelperConnectionState.rejected(reason:)` / `HelperInstallStatus.installedManuallyMismatch`).
+@MainActor
+func fanControlRejectionHelp(_ reason: HelperRejectionReason) -> String {
+    switch reason {
+    case .clientNotPinned, .droppedByHelper:
+        return String(localized: "The installed helper is pinned to a different build of DynamicNotch and refuses this app. Re-run sudo install.sh with this app (FanControl/Support/manual-install/), then click Check Again.")
+    case .helperSignatureMismatch:
+        return String(localized: "The installed helper’s code signature does not match what DynamicNotch expects. Re-run sudo install.sh with this app (FanControl/Support/manual-install/), then click Check Again.")
+    }
 }
 #endif

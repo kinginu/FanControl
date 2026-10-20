@@ -312,6 +312,25 @@ identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<40 桁の 16 �
   「`sudo uninstall.sh` で削除する」旨のエラーを投げる。
 - 手動インストールされたヘルパーのプロトコル版がアプリと違う場合、`openSMCSession()` は再登録を試みずに「`install.sh` を再実行」のエラーを出す。
 
+### 固定 cdhash が一致しないとき（アプリ側の表示、2026-10-20）
+
+アプリを再ビルド・置換したのに `install.sh` を再実行していない、または別のアプリ（スモークアプリなど）を指定して入れた場合、
+plist の `FANCONTROL_CLIENT_REQUIREMENT` は別ビルドの cdhash を固定しているため、ヘルパーはこのアプリの要求をすべて拒否する。
+ヘルパー側のログは `Accepted connection N from pid …` の直後に `Connection N from pid … invalidated`（最初のメッセージで要件検査に落ちる）。
+アプリ側は次のように振る舞う（kit.md "Helper connection lifecycle"）:
+
+- **接続しない**: `HelperClient` は接続前に root 所有の plist（0644、root 不要で読める）の固定 cdhash と自分の cdhash を比べ、
+  違えば接続せずに拒否状態にする。plist を読めないなど判定できない場合は接続し、「返信の無いまま切断」が 2 回続いたら拒否とみなす。
+  ヘルパーの署名がアプリの要件に合わない場合（`NSXPCConnectionCodeSigningRequirementFailure`）は 1 回で拒否。
+- **自動で再試行しない**: 拒否は「再確認」ボタン、アプリの再起動、または `install.sh` の再実行（plist とヘルパーの更新日時・サイズが変わる）で解除されるまで続き、
+  その間の操作（プロファイル選択、自動制御に戻す）は接続せずに即エラーになる。拒否以外の失敗は 2 秒から倍々、最大 5 分の間隔を空ける。
+- **表示**: 設定 ▸ Fan Control ▸ 一般 ▸ ヘルパーで、状態が「手動インストール済み（別のビルドに固定）」、接続が「拒否（別のビルドに固定）」
+  （実行時に検出した場合は「ヘルパーが拒否」/「拒否（ヘルパーの署名が不一致）」）になり、
+  「インストール済みのヘルパーは別のビルドの DynamicNotch に固定されているため、このアプリからの接続を拒否します。このアプリを指定して sudo install.sh を再実行し（FanControl/Support/manual-install/）、「再確認」をクリックしてください。」
+  と「再確認」ボタンが出る。エラー欄にも同じ案内。スモークアプリは `HelperInstaller.status()` に `installedManuallyMismatch(...)`、要件の行に
+  `plist pins ANOTHER app build …`、拒否中は赤字で `Helper REJECTED this app (no automatic retry): …` を出し、「Check again」で再試行できる。
+- **直し方**: `sudo ./install.sh <このアプリ>` を再実行 →「再確認」。`./status.sh <App.app>` でも一致を確認できる。
+
 ### 手順
 
 ```sh

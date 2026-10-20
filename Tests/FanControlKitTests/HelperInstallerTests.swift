@@ -7,7 +7,7 @@ import FanControlXPC
 
 struct HelperInstallerTests {
     private static func installer(existing: Set<String>) -> HelperInstaller {
-        HelperInstaller(fileExists: { existing.contains($0) })
+        HelperInstaller(fileExists: { existing.contains($0) }, pinCheck: { .matches })
     }
 
     private static let both: Set<String> = [FanControlHelperConstants.manualLaunchDaemonPlistPath,
@@ -36,6 +36,31 @@ struct HelperInstallerTests {
         #expect(HelperInstaller.resolveStatus(manual: .absent, serviceStatus: .requiresApproval) == .requiresApproval)
         #expect(HelperInstaller.resolveStatus(manual: .absent, serviceStatus: service()) == .enabled)
         #expect(serviceQueried)
+    }
+
+    @Test func testStatusReportsPinMismatch() throws {
+        let pinned = String(repeating: "a", count: 40)
+        let own = String(repeating: "b", count: 40)
+        #expect(HelperInstaller.resolveStatus(manual: .installed,
+                                              pinCheck: .mismatch(pinnedCDHash: pinned, appCDHash: own),
+                                              serviceStatus: .enabled)
+                == .installedManuallyMismatch(pinnedCDHash: pinned, appCDHash: own))
+        #expect(HelperInstaller.resolveStatus(manual: .installed, pinCheck: .matches, serviceStatus: .enabled)
+                == .installedManually)
+        // Undecidable (e.g. plist unreadable): treated as installed, runtime detection takes over.
+        #expect(HelperInstaller.resolveStatus(manual: .installed, pinCheck: .unknown("x"), serviceStatus: .enabled)
+                == .installedManually)
+        // The pin check only matters for a complete manual install.
+        #expect(HelperInstaller.resolveStatus(manual: .absent, pinCheck: .mismatch(pinnedCDHash: pinned, appCDHash: own),
+                                              serviceStatus: .enabled) == .enabled)
+
+        let installer = HelperInstaller(fileExists: { Self.both.contains($0) },
+                                        pinCheck: { .mismatch(pinnedCDHash: pinned, appCDHash: own) })
+        #expect(installer.status() == .installedManuallyMismatch(pinnedCDHash: pinned, appCDHash: own))
+        #expect(try installer.register() == .installedManuallyMismatch(pinnedCDHash: pinned, appCDHash: own))
+        #expect(installer.status().isManualInstallation)
+        #expect(HelperInstallStatus.installedManually.isManualInstallation)
+        #expect(!HelperInstallStatus.enabled.isManualInstallation)
     }
 
     @Test func testStatusAndRegisterWithManualInstall() throws {

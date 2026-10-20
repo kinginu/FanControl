@@ -190,6 +190,16 @@ private struct HelperStatusRow: View {
                     .foregroundStyle(.secondary)
             }
 
+            // Refused at runtime although the files look fine (e.g. the plist could
+            // not be read, or a Team-ID build): same remedy, explained once here.
+            if case .rejected(let reason) = manager.helperConnectionState,
+               !manager.helperStatus.isManualMismatch {
+                Text(fanControlRejectionHelp(reason))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             switch manager.helperStatus {
             case .enabled:
                 EmptyView()
@@ -201,7 +211,18 @@ private struct HelperStatusRow: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Button("Check Again") {
-                    manager.refreshHelperStatus()
+                    // Forgets a rejection / backoff and probes the helper once (read-only).
+                    fanControlPerform($actionError) { try await manager.retryHelperConnection() }
+                }
+            case .installedManuallyMismatch:
+                // The plist pins another build's cdhash: the app does not connect at all
+                // until install.sh is re-run (HelperRejectionReason.clientNotPinned).
+                Text(fanControlRejectionHelp(.clientNotPinned(pinnedCDHash: "", appCDHash: "")))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Check Again") {
+                    fanControlPerform($actionError) { try await manager.retryHelperConnection() }
                 }
             case .requiresApproval:
                 Text("Allow “DynamicNotch” in System Settings ▸ General ▸ Login Items & Extensions (macOS 15) / Login Items (macOS 14) to let it change fan speeds.")
@@ -244,6 +265,7 @@ private struct HelperStatusRow: View {
         case .notRegistered: Text("Not installed")
         case .enabled: Text("Installed")
         case .installedManually: Text("Installed manually (personal mode)")
+        case .installedManuallyMismatch: Text("Installed manually, pinned to another build")
         case .requiresApproval: Text("Waiting for approval")
         case .notFound: Text("Missing from app bundle")
         case .unknown(let detail): Text("Unknown (\(detail))")
@@ -261,7 +283,16 @@ private struct HelperStatusRow: View {
                 Text("Connected")
             }
         case .error(let detail): Text("Error: \(detail)")
+        case .rejected(.clientNotPinned): Text("Refused (pinned to a different build)")
+        case .rejected(.droppedByHelper): Text("Refused by the helper")
+        case .rejected(.helperSignatureMismatch): Text("Refused (helper signature mismatch)")
         }
+    }
+}
+private extension HelperInstallStatus {
+    var isManualMismatch: Bool {
+        if case .installedManuallyMismatch = self { return true }
+        return false
     }
 }
 #endif

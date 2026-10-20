@@ -3,7 +3,14 @@ public enum HelperConnectionState: Equatable, Sendable {
     case disconnected
     case connecting
     case connected
+    /// The last call failed (transient: timeout, helper not running, interrupted).
+    /// Further calls back off exponentially (`HelperConnectionGate`).
     case error(String)
+    /// The helper does not accept this app (code-signing requirement mismatch in
+    /// either direction). Sticky: no connection is attempted until
+    /// `HelperClient.resetRejection()` (user action), a relaunch, or a change of
+    /// the installed files (re-running `install.sh`).
+    case rejected(reason: HelperRejectionReason)
 }
 
 #if os(macOS)
@@ -36,6 +43,19 @@ import FanControlXPC
 ///     (`ManualHelperSigning.installedHelperCDHash`). If it cannot be read the call
 ///     throws `.helperConnectionFailed` without connecting.
 ///
+/// - The client never connects on its own: only a call (`version`, `openSession`,
+///   `write`, `closeSession`, `keyInfo`) does, and the manager issues those only for
+///   user actions or for an already open session (docs/kit.md "Helper connection lifecycle").
+/// - Retry policy (`HelperConnectionGate`): before connecting, each call is admitted
+///   by the gate. In manual mode the LaunchDaemon plist's pinned client cdhash is
+///   compared with this app's first; a mismatch is a rejection
+///   (`.clientNotPinned`) without any connection. At runtime, an
+///   `NSXPCConnectionCodeSigningRequirementFailure` (helper signature) or two
+///   consecutive interruptions before any reply (the helper dropping us after the
+///   first message) are rejections too. A rejection sets `.rejected(reason:)` and
+///   makes every later call throw `.helperConnectionRejected` immediately. Other
+///   failures back off exponentially (2 s, 4 s, … capped at 5 min).
+///
 /// All mutable state is guarded by `lock`; `onStateChange` is invoked outside
 /// the lock on an arbitrary thread.
 public final class HelperClient: SMCWriter, @unchecked Sendable {
@@ -53,6 +73,12 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
     private let machServiceName: String
     /// `true` while the current connection uses the manual-mode (cdhash) requirement.
     private var manualMode = false
+    /// Retry / rejection policy (see the type documentation).
+    private var gate = HelperConnectionGate()
+    /// The helper has replied on the current peer connection (reset when the
+    /// connection is created or interrupted). Distinguishes "dropped right after the
+    /// first message" (requirement failure on the helper side) from a crash.
+    private var peerReplied = false
 
     public init(machServiceName: String = FanControlHelperConstants.machServiceName) {
         self.machServiceName = machServiceName
@@ -83,6 +109,59 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
 
     deinit {
         connection?.invalidate()
+    }
+
+    // MARK: Retry gate
+
+    private static func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    /// Identity of the installation the next connection would talk to (cheap file
+    /// attributes; call without `lock`). A sticky rejection is dropped when it changes.
+    private func installFingerprint() -> String {
+        switch Self.currentRequirementMode() {
+        case .manualCDHash: return "manual|" + ManualHelperSigning.installFingerprint()
+        case .teamID: return "team|" + clientTeamID
+        }
+    }
+
+    /// The current sticky rejection, if any.
+    public var rejection: HelperRejectionReason? {
+        lock.withLock { gate.rejection }
+    }
+
+    /// Forgets a rejection and the transient backoff (user action: "Check Again",
+    /// or after re-running `install.sh`). Does not connect.
+    public func resetRejection() {
+        let wasRejected: Bool = lock.withLock {
+            let rejected = gate.rejection != nil
+            gate.reset()
+            return rejected
+        }
+        if wasRejected { updateState(.disconnected) }
+    }
+
+    /// Throws without connecting if the gate refuses the call.
+    private func admit(fingerprint: String) throws {
+        let decision = lock.withLock { gate.decide(now: Self.now(), fingerprint: fingerprint) }
+        switch decision {
+        case .proceed:
+            return
+        case .rejected(let reason):
+            updateState(.rejected(reason: reason))
+            throw FanControlError.helperConnectionRejected(reason.description)
+        case .backingOff(let remaining):
+            throw FanControlError.helperConnectionFailed(
+                "not retrying for another \(Int(remaining.rounded(.up))) s after repeated failures (Check Again retries now)")
+        }
+    }
+
+    /// Records a rejection, drops the connection and publishes `.rejected`.
+    private func reject(_ reason: HelperRejectionReason, fingerprint: String) -> FanControlError {
+        lock.withLock { gate.recordRejection(reason, fingerprint: fingerprint) }
+        kitLog.error("Helper connection rejected, not retrying automatically: \(reason.description, privacy: .public)")
+        dropConnection()
+        updateState(.rejected(reason: reason))
+        return FanControlError.helperConnectionRejected(reason.description)
     }
 
     // MARK: State
@@ -134,7 +213,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
 
     // MARK: Connection
 
-    private func ensureConnection() throws -> (connection: NSXPCConnection, manual: Bool) {
+    private func ensureConnection(fingerprint: String) throws -> (connection: NSXPCConnection, manual: Bool) {
         lock.lock()
         if let connection {
             let manual = manualMode
@@ -143,6 +222,13 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
         }
         let currentTeamID = teamID
         lock.unlock()
+
+        // Manual mode: if the plist pins another build of the app, the helper would
+        // refuse us; report it without connecting at all.
+        if Self.currentRequirementMode() == .manualCDHash,
+           case .mismatch(let pinned, let app) = ManualHelperSigning.clientPinCheck() {
+            throw reject(.clientNotPinned(pinnedCDHash: pinned, appCDHash: app), fingerprint: fingerprint)
+        }
 
         let helperRequirement: (requirement: String, manual: Bool)
         do {
@@ -167,6 +253,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
         // or (manual mode) exactly the binary root installed at manualHelperPath.
         newConnection.setCodeSigningRequirement(helperRequirement.requirement)
         manualMode = helperRequirement.manual
+        peerReplied = false
         newConnection.invalidationHandler = { [weak self] in
             self?.connectionEnded(generation: currentGeneration, invalidated: true)
         }
@@ -188,29 +275,46 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
             return
         }
         sessionOpen = false
+        peerReplied = false
         if invalidated { connection = nil }
+        let rejection = gate.rejection
         lock.unlock()
+        if let rejection {
+            // The drop that caused (or followed) a rejection must not hide it.
+            updateState(.rejected(reason: rejection))
+            return
+        }
         updateState(invalidated ? .disconnected : .error("The connection to the fan control helper was interrupted."))
     }
 
-    /// Tears the connection down. The helper releases the session (restoring
-    /// original SMC values) when the connection goes away.
-    public func invalidate() {
+    /// Invalidates the connection without publishing a state.
+    private func dropConnection() {
         lock.lock()
         let old = connection
         connection = nil
         sessionOpen = false
+        peerReplied = false
         generation &+= 1
         lock.unlock()
         old?.invalidate()
-        updateState(.disconnected)
+    }
+
+    /// Tears the connection down. The helper releases the session (restoring
+    /// original SMC values) when the connection goes away. A sticky rejection
+    /// stays published (`.rejected`), otherwise the state becomes `.disconnected`.
+    public func invalidate() {
+        dropConnection()
+        updateState(rejection.map { .rejected(reason: $0) } ?? .disconnected)
     }
 
     /// Sends one request. `body` receives the proxy and must eventually
     /// resume the box exactly once (extra resumes are ignored). Races the reply
     /// against `callTimeout`; on timeout the connection is invalidated.
     private func call<T>(_ body: @escaping (FanControlHelperProtocol, ResumeOnce<T>) -> Void) async throws -> T {
-        let (connection, manual) = try ensureConnection()
+        let fingerprint = installFingerprint()
+        try admit(fingerprint: fingerprint)
+        let (connection, manual) = try ensureConnection(fingerprint: fingerprint)
+        let hadReplyBeforeSend = lock.withLock { peerReplied }
         let timeout = callTimeout
         do {
             let value: T = try await withCheckedThrowingContinuation { continuation in
@@ -220,7 +324,7 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
                     let timeoutTask = Task { [weak self] in
                         try? await Task.sleep(nanoseconds: nanoseconds)
                         guard !Task.isCancelled else { return }
-                        if box.resume(throwing: FanControlError.helperConnectionFailed("timeout")) {
+                        if box.resume(throwing: HelperTransportError(reason: "timeout", failure: .transient)) {
                             // Hung helper or lost reply: start over with a fresh
                             // connection (the helper then releases the session).
                             self?.invalidate()
@@ -230,22 +334,39 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
                     box.onResume { timeoutTask.cancel() }
                 }
                 let proxy = connection.remoteObjectProxyWithErrorHandler { error in
+                    let nsError = error as NSError
+                    let failure = HelperConnectionGate.classify(errorDomain: nsError.domain, errorCode: nsError.code,
+                                                                hadReplyBeforeSend: hadReplyBeforeSend)
                     var reason = error.localizedDescription
                     if manual {
                         // Most likely cause in manual mode: the app was rebuilt, so the
                         // helper's pinned client cdhash no longer matches.
                         reason += " (manual helper install: if the app was rebuilt or replaced, re-run sudo \(FanControlHelperConstants.manualInstallScriptName) <app> to pin its new cdhash)"
                     }
-                    box.resume(throwing: FanControlError.helperConnectionFailed(reason))
+                    box.resume(throwing: HelperTransportError(reason: reason, failure: failure))
                 }
                 guard let helper = proxy as? FanControlHelperProtocol else {
-                    box.resume(throwing: FanControlError.helperConnectionFailed("The helper proxy has an unexpected type."))
+                    box.resume(throwing: HelperTransportError(reason: "The helper proxy has an unexpected type.",
+                                                              failure: .transient))
                     return
                 }
                 body(helper, box)
             }
+            lock.withLock {
+                gate.recordSuccess()
+                peerReplied = true
+            }
             updateState(.connected)
             return value
+        } catch let transport as HelperTransportError {
+            let rejection = lock.withLock {
+                gate.recordFailure(transport.failure, now: Self.now(), fingerprint: fingerprint)
+            }
+            if let rejection {
+                throw reject(rejection, fingerprint: fingerprint)
+            }
+            updateState(.error(transport.reason))
+            throw FanControlError.helperConnectionFailed(transport.reason)
         } catch let error as FanControlError {
             if case .helperConnectionFailed(let reason) = error {
                 updateState(.error(reason))
@@ -315,6 +436,13 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
         }
         return SMCKeyInfo(dataSize: size, dataType: SMCDataType(fourCC: type), attributes: attributes)
     }
+}
+
+/// Transport-level failure of one call, classified for `HelperConnectionGate`
+/// (converted to `FanControlError` before leaving `HelperClient`).
+private struct HelperTransportError: Error {
+    var reason: String
+    var failure: HelperCallFailure
 }
 
 /// Resumes a checked continuation at most once (XPC may call both the reply

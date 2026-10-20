@@ -88,7 +88,13 @@ struct SmokeView: View {
         case .manualCDHash:
             let pinned: String
             do { pinned = try HelperInstaller.installedManualHelperCDHash() } catch { pinned = "unavailable: \(error)" }
-            return "manual (cdhash) · app team \(team) · helper cdhash \(pinned)"
+            let pin: String
+            switch HelperInstaller.manualClientPinCheck() {
+            case .matches: pin = "plist pins this app"
+            case .mismatch(let pinnedApp, let app): pin = "plist pins ANOTHER app build \(pinnedApp) (this app \(app)) → re-run sudo install.sh <this app>"
+            case .unknown(let detail): pin = "pin check unknown (\(detail))"
+            }
+            return "manual (cdhash) · app team \(team) · helper cdhash \(pinned) · \(pin)"
         }
     }
 
@@ -99,6 +105,12 @@ struct SmokeView: View {
                 .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
             Text("SMC connected: \(manager.isSMCConnected ? "yes" : "no") · helper: \(String(describing: manager.helperConnectionState))")
+            if case .rejected(let reason) = manager.helperConnectionState {
+                // Sticky: HelperClient does not reconnect until "Check again" or a reinstall.
+                Text("Helper REJECTED this app (no automatic retry): \(reason.description)")
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
             Divider()
             ForEach(manager.fans) { fan in
                 Text("\(fan.name): \(manager.currentRPMs[fan.id] ?? 0) RPM (\(fan.minRPM)–\(fan.maxRPM))")
@@ -126,6 +138,10 @@ struct SmokeView: View {
                             message = "helper protocol \(proto), build \(build)"
                         }
                     }
+                }
+                Button("Check again") {
+                    // Resets the rejection / backoff and probes with version() (read-only).
+                    Task { await run { try await manager.retryHelperConnection() } }
                 }
                 Button("Install helper") {
                     Task { await run { try await manager.installHelper() } }

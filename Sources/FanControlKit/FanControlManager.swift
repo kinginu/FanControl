@@ -418,11 +418,14 @@ public final class FanControlManager: @unchecked Sendable {
         try await recordingErrors {
             let status = self.installer.status()
             await MainActor.run { self.helperStatus = status }
-            if status != .enabled && status != .installedManually {
+            // A manual installation pinned to another build is not "installed" for this
+            // app, but there is nothing to register either: `version()` below is
+            // refused by `HelperClient` without connecting (`.clientNotPinned`).
+            if status != .enabled && !status.isManualInstallation {
                 try await self.installHelper()
             }
             var (version, _) = try await self.helperClient.version()
-            if version != FanControlHelperConstants.protocolVersion, status == .installedManually {
+            if version != FanControlHelperConstants.protocolVersion, status.isManualInstallation {
                 // Only root can replace a manually installed helper.
                 throw FanControlError.helperRejected(
                     code: -1,
@@ -481,6 +484,10 @@ public final class FanControlManager: @unchecked Sendable {
             switch status {
             case .enabled, .installedManually:
                 return
+            case .installedManuallyMismatch(let pinned, let app):
+                // Only root can re-pin: the user must re-run install.sh.
+                throw FanControlError.helperConnectionRejected(
+                    HelperRejectionReason.clientNotPinned(pinnedCDHash: pinned, appCDHash: app).description)
             case .requiresApproval:
                 await MainActor.run { HelperInstaller.openSystemSettingsLoginItems() }
                 throw FanControlError.helperNotInstalled
@@ -503,7 +510,25 @@ public final class FanControlManager: @unchecked Sendable {
         lastError = nil
     }
 
-    /// Re-reads the install status (manual installation or `SMAppService`) into `helperStatus`.
+    /// User action ("Check Again"): forgets a sticky helper rejection and the
+    /// connection backoff (`HelperClient.resetRejection()`), re-reads `helperStatus`
+    /// and, if the helper is installed, probes it once with the read-only
+    /// `version()` call so `helperConnectionState` shows whether it accepts this app
+    /// now. The only place besides install / apply / restore that connects to the
+    /// helper. A manual installation pinned to another build is reported again
+    /// without connecting. Throws (and records) the probe's error.
+    public func retryHelperConnection() async throws {
+        try await recordingErrors {
+            self.helperClient.resetRejection()
+            let status = self.installer.status()
+            await MainActor.run { self.helperStatus = status }
+            guard status == .enabled || status.isManualInstallation else { return }
+            _ = try await self.helperClient.version()
+        }
+    }
+
+    /// Re-reads the install status (manual installation or `SMAppService`) into
+    /// `helperStatus`. File / `SMAppService` reads only; never connects to the helper.
     public func refreshHelperStatus() {
         let status = installer.status()
         if Thread.isMainThread {
