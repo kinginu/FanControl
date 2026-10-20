@@ -74,6 +74,13 @@ public struct SensorReading: Identifiable, Codable, Hashable, Sendable {
 /// "sensor-based" mode, which uses two temperatures: the fan runs at its own
 /// `minRPM` at or below `startTemperature`, at its own `maxRPM` at or above
 /// `maxTemperature`, and scales linearly in between.
+///
+/// Multi-point curves (2026-10-20): a `.sensor` mode may carry a `FanCurve` in its
+/// profile (`FanProfile.curves` / `defaultCurve`). The curve then replaces the linear
+/// ramp, and `startTemperature` / `maxTemperature` are the curve's first / last
+/// temperature (`FanProfile.curve(for:)`, `FanProfile.setCurve`). The enum keeps its
+/// three cases so existing exhaustive `switch`es and `case .sensor(let key, _, _)`
+/// patterns keep compiling (docs/kit.md "Fan curves").
 public enum FanControlMode: Codable, Hashable, Sendable {
     /// The SMC controls the fan (no override).
     case automatic
@@ -91,8 +98,8 @@ public enum FanControlMode: Codable, Hashable, Sendable {
 
 /// A named set of per-fan modes.
 ///
-/// The app offers a fixed set of six profiles (`ProfileStore`, `FanProfile.fixedProfileIDs`):
-/// Automatic, Constant Quiet, Constant High, Boost (read-only presets) and
+/// The app offers a fixed set of seven profiles (`ProfileStore`, `FanProfile.fixedProfileIDs`):
+/// Automatic, Constant Quiet, Constant High, Boost, Max (read-only presets) and
 /// Custom 1 / Custom 2 (user-editable slots).
 public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
@@ -102,7 +109,7 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
     /// `.automatic` entry overrides `defaultMode`.
     public var modes: [Int: FanControlMode]
     /// Built-in profiles cannot be deleted from a `ProfileStore`. `true` for
-    /// the presets (Automatic, Constant Quiet, Constant High, Boost) and the
+    /// the presets (Automatic, Constant Quiet, Constant High, Boost, Max) and the
     /// legacy Silent / Maximum; `false` for the Custom 1 / Custom 2 slots.
     public var isBuiltIn: Bool
     /// Mode for every fan that has no entry in `modes` ("every fan" presets,
@@ -113,14 +120,51 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
     /// per-fan modes) to it. Planning (`FanControlEngine.plan`) uses
     /// `mode(for:)` and therefore honours `defaultMode` as stored.
     public var defaultMode: FanControlMode?
+    /// Multi-point curves of the `.sensor` modes in `modes`, keyed by fan id. A curve
+    /// applies only while its first / last temperature equal the mode's
+    /// `startTemperature` / `maxTemperature` (`FanCurve.matches`); otherwise (the mode
+    /// was edited by a curve-unaware editor) the mode's linear ramp is used.
+    public var curves: [Int: FanCurve]
+    /// Curve of `defaultMode` when that is `.sensor` (same matching rule); used by fans
+    /// without a `modes` entry.
+    public var defaultCurve: FanCurve?
 
     public init(id: UUID = UUID(), name: String, modes: [Int: FanControlMode] = [:], isBuiltIn: Bool = false,
-                defaultMode: FanControlMode? = nil) {
+                defaultMode: FanControlMode? = nil, curves: [Int: FanCurve] = [:], defaultCurve: FanCurve? = nil) {
         self.id = id
         self.name = name
         self.modes = modes
         self.isBuiltIn = isBuiltIn
         self.defaultMode = defaultMode
+        self.curves = curves
+        self.defaultCurve = defaultCurve
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, modes, isBuiltIn, defaultMode, curves, defaultCurve
+    }
+
+    /// `curves` / `defaultCurve` are optional in the JSON (profiles stored before 2026-10-20).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        modes = try c.decodeIfPresent([Int: FanControlMode].self, forKey: .modes) ?? [:]
+        isBuiltIn = try c.decodeIfPresent(Bool.self, forKey: .isBuiltIn) ?? false
+        defaultMode = try c.decodeIfPresent(FanControlMode.self, forKey: .defaultMode)
+        curves = try c.decodeIfPresent([Int: FanCurve].self, forKey: .curves) ?? [:]
+        defaultCurve = try c.decodeIfPresent(FanCurve.self, forKey: .defaultCurve)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(modes, forKey: .modes)
+        try c.encode(isBuiltIn, forKey: .isBuiltIn)
+        try c.encodeIfPresent(defaultMode, forKey: .defaultMode)
+        if !curves.isEmpty { try c.encode(curves, forKey: .curves) }
+        try c.encodeIfPresent(defaultCurve, forKey: .defaultCurve)
     }
 
     /// Fixed identifiers of the built-in profiles and custom slots, so they
@@ -136,6 +180,8 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
         public static let constantQuiet = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000011")!
         public static let constantHigh = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000012")!
         public static let boost = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000013")!
+        /// Every fan at full speed (added 2026-10-20). Not the legacy `maximum`.
+        public static let max = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000014")!
         public static let custom1 = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000021")!
         public static let custom2 = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000022")!
     }
@@ -147,20 +193,25 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
         public static let quietRPM = 3000
         /// Constant High: every fan at this RPM (clamped to Mn…Mx when applied).
         public static let highRPM = 5000
+        /// Max: every fan at this RPM (the maximum of Mac14,9's fans; clamped to each
+        /// fan's Mn…Mx when applied).
+        public static let maxRPM = 6800
         /// Boost: sensor followed by every fan.
         public static let boostSensorKey = "agg:cpu"
-        /// Boost: fans at `minRPM` at or below this temperature (°C).
-        /// `agg:cpu` is the *hottest* core, which idles at ~72–78 °C on Apple Silicon
-        /// (Mac14,9), so the ramp starts at 70 °C: near minimum at idle, full speed well
-        /// before the SMC would (provisional; docs/kit.md "Profiles").
-        public static let boostStartTemperature = 70.0
-        /// Boost: fans at `maxRPM` at or above this temperature (°C); equals the
-        /// emergency force-max threshold of `SafetyPolicy.default`.
-        public static let boostMaxTemperature = 95.0
+        /// Boost: first point of `boostCurve` (fans at `minRPM` at or below it, °C).
+        /// Also the default start of a new sensor-based mode in the editors.
+        public static let boostStartTemperature = 50.0
+        /// Boost: last point of `boostCurve` (fans at maximum at or above it, °C),
+        /// 10 °C below the emergency threshold of `SafetyPolicy.default`.
+        public static let boostMaxTemperature = 85.0
+        /// Boost curve (user decision 2026-10-20, full speed well before 100 °C):
+        /// 50 °C min, 60 °C 3500, 70 °C 5200, 80 °C 6400, 85 °C 6800 (`FanCurve.boost`).
+        public static var boostCurve: FanCurve { FanCurve.boost }
         /// Default of the Custom 2 slot: every fan at this RPM.
         public static let custom2RPM = 3500
 
-        /// The Boost mode (`.sensor(agg:cpu, 70 → 95 °C)`).
+        /// The Boost mode (`.sensor(agg:cpu, 50 → 85 °C)`; with `boostCurve` as the
+        /// profile's `defaultCurve`).
         public static var boostMode: FanControlMode {
             .sensor(sensorKey: boostSensorKey, startTemperature: boostStartTemperature,
                     maxTemperature: boostMaxTemperature)
@@ -174,14 +225,15 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
         public static let constantQuiet = "Constant Quiet"
         public static let constantHigh = "Constant High"
         public static let boost = "Boost"
+        public static let max = "Max"
         public static let custom1 = "Custom 1"
         public static let custom2 = "Custom 2"
     }
 
-    /// The six profiles offered by the app, in display order.
+    /// The seven profiles offered by the app, in display order.
     public static let fixedProfileIDs: [UUID] = [
         BuiltInID.automatic, BuiltInID.constantQuiet, BuiltInID.constantHigh, BuiltInID.boost,
-        BuiltInID.custom1, BuiltInID.custom2,
+        BuiltInID.max, BuiltInID.custom1, BuiltInID.custom2,
     ]
 
     /// The user-editable slots (Custom 1, Custom 2).
@@ -204,14 +256,22 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
                    defaultMode: .constant(rpm: Preset.highRPM))
     }
 
-    /// Every fan follows `agg:cpu`: `minRPM` at ≤ 50 °C, linear to `maxRPM` at ≥ 80 °C.
+    /// Every fan follows `agg:cpu` on `Preset.boostCurve` (min at ≤ 50 °C … max at ≥ 85 °C).
     public static func boost() -> FanProfile {
-        FanProfile(id: BuiltInID.boost, name: DefaultName.boost, isBuiltIn: true, defaultMode: Preset.boostMode)
+        FanProfile(id: BuiltInID.boost, name: DefaultName.boost, isBuiltIn: true, defaultMode: Preset.boostMode,
+                   defaultCurve: Preset.boostCurve)
     }
 
-    /// Default content of the Custom 1 slot: a copy of Boost (editable).
+    /// Every fan at `Preset.maxRPM` (6800 RPM, clamped to each fan's range).
+    public static func max() -> FanProfile {
+        FanProfile(id: BuiltInID.max, name: DefaultName.max, isBuiltIn: true,
+                   defaultMode: .constant(rpm: Preset.maxRPM))
+    }
+
+    /// Default content of the Custom 1 slot: a copy of Boost, curve included (editable).
     public static func defaultCustom1() -> FanProfile {
-        FanProfile(id: BuiltInID.custom1, name: DefaultName.custom1, isBuiltIn: false, defaultMode: Preset.boostMode)
+        FanProfile(id: BuiltInID.custom1, name: DefaultName.custom1, isBuiltIn: false, defaultMode: Preset.boostMode,
+                   defaultCurve: Preset.boostCurve)
     }
 
     /// Default content of the Custom 2 slot: every fan at `Preset.custom2RPM` (3500 RPM).
@@ -228,6 +288,7 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
         case BuiltInID.constantQuiet: return constantQuiet()
         case BuiltInID.constantHigh: return constantHigh()
         case BuiltInID.boost: return boost()
+        case BuiltInID.max: return max()
         case BuiltInID.custom1: return defaultCustom1()
         case BuiltInID.custom2: return defaultCustom2()
         default: return nil
@@ -241,7 +302,7 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
     public var isCustomSlot: Bool { Self.customSlotIDs.contains(id) }
 
     /// Legacy: every fan at a constant speed equal to its `minRPM`. Not part of
-    /// the fixed six (kept for `FanControlManager.availableProfiles`).
+    /// the fixed seven (kept for `FanControlManager.availableProfiles`).
     public static func silent(for fans: [FanDevice]) -> FanProfile {
         FanProfile(id: BuiltInID.silent, name: "Silent",
                    modes: Dictionary(uniqueKeysWithValues: fans.map { ($0.id, .constant(rpm: $0.minRPM)) }),
@@ -249,7 +310,8 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
     }
 
     /// Legacy: every fan at a constant speed equal to its `maxRPM`. Not part of
-    /// the fixed six (kept for `FanControlManager.availableProfiles`).
+    /// the fixed seven (kept for `FanControlManager.availableProfiles`; the
+    /// preset with the same effect is `max()`).
     public static func maximum(for fans: [FanDevice]) -> FanProfile {
         FanProfile(id: BuiltInID.maximum, name: "Maximum",
                    modes: Dictionary(uniqueKeysWithValues: fans.map { ($0.id, .constant(rpm: $0.maxRPM)) }),
@@ -262,20 +324,81 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
         modes[fan.id] ?? defaultMode ?? .automatic
     }
 
+    /// The stored curve for `fan` (its `curves` entry when it has a `modes` entry, else
+    /// `defaultCurve`), whether or not it matches the mode.
+    public func storedCurve(for fan: FanDevice) -> FanCurve? {
+        modes[fan.id] != nil ? curves[fan.id] : defaultCurve
+    }
+
+    /// The curve that drives `fan`, or `nil` unless its mode is `.sensor`:
+    /// the stored curve when it matches the mode's start / max temperatures, else the
+    /// two-point linear curve of the mode (`FanCurve.linear`), or `nil` for a degenerate
+    /// mode (`startTemperature >= maxTemperature` or non-finite: step / fail-loud rule of
+    /// `FanControlEngine`).
+    public func curve(for fan: FanDevice) -> FanCurve? {
+        guard case .sensor(_, let start, let max) = mode(for: fan) else { return nil }
+        if let stored = storedCurve(for: fan), stored.matches(startTemperature: start, maxTemperature: max) {
+            return stored
+        }
+        guard start.isFinite, max.isFinite, start < max else { return nil }
+        return .linear(startTemperature: start, maxTemperature: max)
+    }
+
+    /// Makes fan `fanID` (or, with `nil`, every fan without a `modes` entry) follow
+    /// `sensorKey` on `curve`: sets the mode to `.sensor(sensorKey, first, last)` (the
+    /// curve's normalized first / last temperatures) and stores the normalized curve.
+    /// A curve with fewer than one point is ignored.
+    public mutating func setCurve(_ curve: FanCurve, sensorKey: String, forFan fanID: Int?) {
+        let normalized = curve.normalized()
+        guard let first = normalized.points.first?.temperature, let last = normalized.points.last?.temperature
+        else { return }
+        let mode = FanControlMode.sensor(sensorKey: sensorKey, startTemperature: first, maxTemperature: last)
+        if let fanID {
+            modes[fanID] = mode
+            curves[fanID] = normalized
+        } else {
+            defaultMode = mode
+            defaultCurve = normalized
+        }
+    }
+
+    /// Drops curves that do not drive a `.sensor` mode any more (mode changed, or its
+    /// start / max no longer match the curve).
+    public mutating func removeStaleCurves() {
+        for (fan, curve) in curves {
+            guard case .sensor(_, let start, let max)? = modes[fan],
+                  curve.matches(startTemperature: start, maxTemperature: max) else {
+                curves[fan] = nil
+                continue
+            }
+        }
+        if let defaultCurve {
+            guard case .sensor(_, let start, let max)? = defaultMode,
+                  defaultCurve.matches(startTemperature: start, maxTemperature: max) else {
+                self.defaultCurve = nil
+                return
+            }
+        }
+    }
+
     /// A copy with an explicit `modes` entry for every fan in `fans`
     /// (`mode(for:)`; `.automatic` fans get no entry unless `defaultMode`
     /// is manual, in which case `.automatic` is stored explicitly).
-    /// `defaultMode` is kept for fans not in `fans`. Pass this to
+    /// `defaultMode` is kept for fans not in `fans`. Each materialized fan also gets
+    /// its stored curve (`storedCurve(for:)`) in `curves`. Pass this to
     /// `FanControlManager.applyProfile`, which opens the write session only
     /// when `modes` contains a manual mode.
     public func resolved(for fans: [FanDevice]) -> FanProfile {
         var copy = self
         for fan in fans {
             let mode = mode(for: fan)
+            let curve = storedCurve(for: fan)
             if mode.isManual || (defaultMode?.isManual ?? false) {
                 copy.modes[fan.id] = mode
+                copy.curves[fan.id] = curve
             } else {
                 copy.modes[fan.id] = nil
+                copy.curves[fan.id] = nil
             }
         }
         return copy

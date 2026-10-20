@@ -22,6 +22,7 @@ Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (intern
 | `ApplyGenerationGate.swift` | pure drop rule for stale poll write batches (unit-tested on Linux) |
 | `PowerSourceMonitor.swift` | `PowerSourceProviding` + IOKit `PowerSourceMonitor` (AC / battery, power-aware polling) |
 | `ConflictingControllerDetector.swift` | `ConflictingController` (`.fanFi`), `ConflictingControllerDetector` (other fan control apps running / helper installed) |
+| `TemperatureHistory.swift` | `TemperatureHistory`: per-key ring buffers of recent temperatures (future Temperature widget) |
 | `FanControlPlatform.swift` | arm64 assertion (`isSupported` / `requireSupported()`, backed by `FanControlCore.FanControlHost`, `sysctl hw.optional.arm64`), `defaultSafetyPolicy`, `sensorAggregateDefinitions` |
 
 ## Threading model
@@ -48,8 +49,8 @@ is `HelperClient` (lock-protected, justified in its doc comment).
 - **`FanControlPoller`** (internal actor, `FanControlPoller.swift`) owns all poll state: the
   `SMCClient`, the discovered fans, the cached temperature key list
   (`SensorCatalog.discoverTemperatureSensors` runs once; later polls use `readTemperatures(keys:)`),
-  the `AlertEvaluator`, the `TemperatureSampleFilter`, the `FanWriteStrategy`, the write-throttle
-  baseline, the unsettled set, the apply generation (`ApplyGenerationGate`), its own copy of the
+  the `AlertEvaluator`, the `TemperatureSampleFilter`, the `TemperatureSmoother`, the
+  `FanTargetStabilizer`, the `FanWriteStrategy`, the write-throttle baseline, the unsettled set, the apply generation (`ApplyGenerationGate`), its own copy of the
   monitoring flag and the sleep flag. Its executor is a private serial `DispatchSerialQueue`
   (QoS utility, the former `pollQueue`), so SMC I/O never runs on the main thread. The manager
   enters it in two FIFO-compatible ways: `enqueue { … }` (`queue.async` + `assumeIsolated`) for
@@ -60,7 +61,7 @@ is `HelperClient` (lock-protected, justified in its doc comment).
   `effectivePollingInterval` (`pollingInterval`, slowed on battery; effective range 0.5 to 300 s).
   The power source (`PowerSourceProviding`, IOKit run-loop source on the main run loop) and the
   conflict check (`ConflictingControllerDetector`, NSWorkspace launch / terminate observers on the
-  main queue) are main-actor state too. Each tick snapshots the active profile, `safetyPolicy` and the
+  main queue) are main-actor state too. Each tick snapshots the active profile, `safetyPolicy`, `tuning` and the
   session flag on the main actor (`PollContext`), then enqueues the poll on the poller.
 - Helper writes go through a FIFO `WriteSerializer` actor, so a write list (mode key first,
   then target) is never interleaved with another list. `FanControlPoller.applyTargets` is
@@ -85,9 +86,101 @@ is `HelperClient` (lock-protected, justified in its doc comment).
 
 Every poll reads `F<i>Ac`, `F<i>Tg` and the cached temperature keys, passes the temperatures
 through the `TemperatureSampleFilter` (below), appends the aggregate sensors (below), runs `AlertEvaluator` (high temperature with hysteresis; emergency latch with hysteresis; 0 RPM with
-target > 0 for 3 polls = anomaly), and publishes. If (and only if) a write session is open, it
-also computes `FanControlEngine.plan(profile:fans:sensors:policy:isEmergency:)` and writes the
-result.
+target > 0 for 3 polls = anomaly), smooths the control temperatures, and publishes. If (and only
+if) a write session is open, it also computes `FanControlEngine.plan(profile:fans:sensors:policy:isEmergency:)`
+on the smoothed values, stabilizes the result and writes it (see "Control loop").
+
+### Control loop (anti-hunting, 2026-10-20)
+
+Problem seen by the user: the fans hunted at curve boundaries (louder / quieter every few
+seconds), because the noisy max-of-cores input (`agg:cpu`) was mapped straight onto a linear ramp
+every 2 s poll and written immediately. The loop is now:
+
+```
+SMC read → TemperatureSampleFilter → SensorAggregator → TemperatureSmoother → FanControlEngine.plan
+         (implausible Tp/Te/Tg/TC)   (agg:cpu …)        (per control key)     (FanCurve, PCHIP)
+         → FanTargetStabilizer → changedTargets (25 RPM throttle, unsettled fans) → helper write
+           (deadband / dwell / slew)
+```
+
+All parameters live in `FanControlTuning` (Core, Codable, missing keys decode to the defaults),
+`FanControlManager.tuning` (default `.default`, read by the next poll, not persisted by the kit;
+`.disabled` restores the old raw behaviour):
+
+| Stage | Parameter | Default | Rule |
+|---|---|---|---|
+| smoothing | `riseTimeConstant` | 3 s | `y += (1 − e^(−dt/τ))·(x − y)`, τ = rise when `x > y` |
+| | `fallTimeConstant` | 25 s | τ = fall otherwise: fans slow down only after the load is really gone |
+| deadband | `deadbandRPM` | 150 RPM | a planned target within ±150 RPM of the last stabilized one is not rewritten (targets equal to the fan's `Mn` / `Mx` are always reached) |
+| dwell | `minimumDwell` | 10 s | a decrease or a reversal waits 10 s after the last change, **and** a decrease is made only after it has been planned on every poll for 10 s (a momentary dip does not slow the fans) |
+| | `dwellAppliesToIncreases` | `false` | consecutive increases are exempt from the dwell (a heating CPU gets more air every poll); `true` = every change waits (the literal "≥ 10 s per target" rule) |
+| slew | `maximumStepRPM` | 500 RPM / poll | full range (2317 → 6800) in ≈ 18 s while heating |
+
+- **Smoothing** (`TemperatureSmoother`, Core): only the keys followed by the active profile's
+  `.sensor` modes (`FanControlEngine.controlSensorKeys(profile:fans:)`) are smoothed, after the
+  filter and the aggregates; it runs on every poll (session or not) and in user applies. The state
+  of a key that drops out of use is forgotten (it restarts from its raw value). Non-finite samples
+  leave the state alone (the engine treats a missing reading as "run at maximum"). The smoothed
+  values are published as **`controlTemperatures`** (`[key: °C]`) and
+  **`controlTemperature(for:)`** (falls back to the raw reading for other keys); `sensorReadings`
+  stays raw (filtered). Alerts and the emergency latch use the raw values (never delayed).
+- **Stabilizer** (`FanTargetStabilizer`, Core, pure state machine per fan): automatic (`nil`)
+  passes through and drops the fan's state; the first manual target after automatic is used as-is;
+  the **emergency override bypasses** it (straight to max); **explicit applies** (`applyProfile`,
+  `setFanRPM`, `setFanControlMode`, `setFanCurve`, wake re-apply) **seed** it with their plan (no
+  limits, the dwell restarts); restore / close write automatic directly. It is reset when a session
+  opens or closes. When the emergency ends, the way back down is gradual (dwell + slew). The
+  25 RPM throttle and the unsettled-fan rewrite still apply after it, so a failed write is retried
+  with the held value.
+- **Expected behaviour** (tests in `FanControlTuningTests`, Boost curve, 2 s polls): a hottest core
+  flapping 58 ↔ 66 °C every poll at the 60 °C point (raw: > 100 direction changes in 10 min,
+  > 900 RPM swing) settles in ≤ 2 writes and never reverses; heavy random noise (±4 °C per poll)
+  still moves the target occasionally (13 reversals in 9.5 min with the test seed, ≥ 150 RPM
+  steps, band ≤ 600 RPM); a step 55 → 80 °C reaches the curve value within ≈ 20 s and comes back
+  down slowly after the load ends.
+
+### Fan curves (multi-point, 2026-10-20)
+
+`FanCurve` (Core) = `points: [Point(temperature: °C, rpm: Int)]`, evaluated with **monotone cubic
+interpolation (PCHIP, Fritsch–Carlson)**: passes through every point, no overshoot, monotone where
+the points are, linear for two points; flat before the first and after the last point; each
+point's RPM and the result are clamped to the fan's `Mn…Mx`, so fan-agnostic curves may use
+`FanCurve.fanMinimumRPM` (0, "the fan's minimum") and `fanMaximumRPM` (65 535, "its maximum").
+Empty curve → max (fail loud); non-finite temperature → max. API: `rpm(at:for:)` /
+`rpm(at:in:)`, `value(at:in:)` (unrounded, for charts), **`sample(count:rpmRange:temperatureDomain:)`**
+(evenly spaced + the points themselves), `normalized()` (sorted, deduplicated, 0…130 °C),
+`resolved(for:)` (RPMs clamped for one fan, what an editor shows), **validation**
+`validationIssues(rpmRange:)` / `isValid(rpmRange:)` (≥ 2 points, finite, 0…130 °C, strictly
+increasing, RPMs in range), `linear(startTemperature:maxTemperature:)`, `FanCurve.boost`, and the
+**10 °C grid** helpers `gridTemperatures(from:through:step:)` (30…100), `resampled(at:rpmRange:rpmStep:)`
+and `gridPresets` / `GridPreset` (`quiet`, `balanced`, `boost`, `fullSpeed`).
+
+**How a curve is attached (least disruptive choice):** `FanControlMode` keeps exactly its three
+cases, so the drop-ins' exhaustive `switch`es and `case .sensor(let key, _, _)` patterns compile
+unchanged. The curve is a payload of the profile: `FanProfile.curves: [fanID: FanCurve]` (for fans
+with a `modes` entry) and `FanProfile.defaultCurve` (for fans using `defaultMode`), both optional in
+JSON. A `.sensor(sensorKey:startTemperature:maxTemperature:)` mode with a stored curve whose first /
+last temperatures equal `startTemperature` / `maxTemperature` (±0.05 °C, `FanCurve.matches`) follows
+that curve; otherwise — no curve, or a curve-unaware editor changed start / max — it follows the
+old linear ramp (= the two-point curve). `FanProfile.curve(for:)` returns the effective curve
+(`nil` for non-sensor or degenerate modes); `setCurve(_:sensorKey:forFan:)` sets mode + curve
+consistently (`forFan: nil` = default); `removeStaleCurves()`; `resolved(for:)` materializes curves
+along with modes. `FanControlEngine.plan` and the new `FanControlEngine.targetRPM(for: profile, fan:,
+sensorTemperature:policy:)` honour curves; the old `targetRPM(for: mode, …)` is the linear ramp.
+`FanControlManager.setFanCurve(fanIndex:sensorKey:curve:)` is the curve counterpart of
+`setFanControlMode` (which drops the edited fan's curve). A new `.curve` enum case was rejected
+because it would break every exhaustive switch in the drop-ins.
+
+### Temperature history (2026-10-20)
+
+`FanControlManager.temperatureHistory` (`TemperatureHistory`, Kit, `Sendable` value, main actor)
+holds recent **raw** (filtered) readings per key: `TemperatureHistory.defaultKeys` (`agg:cpu`,
+`agg:gpu`, `TH0x`) plus the keys a view requests with `setTemperatureHistoryKeys(_:for:)` (`[]`
+releases; unrequested buffers are dropped); `temperatureHistoryKeys` is the union. Appended on every
+published poll. One ring buffer per key, `capacityPerKey` 1024 (≈ 34 min at 2 s; fewer minutes'
+worth of samples at the slower battery / paused rates), at most 32 keys (≈ 0.5 MB worst case);
+out-of-order and non-finite samples are ignored. Queries: `history(for:window:now:)` (oldest first),
+`latest(for:)`, `range` / `minimum` / `maximum(for:window:now:)`.
 
 **Emergency override:** `AlertEvaluator.evaluateEmergency(sensors:policy:)` is evaluated on every
 poll (session open or not) and its result is passed to `plan(..., isEmergency:)`. The latch turns
@@ -101,7 +194,7 @@ The latch is published as `emergencyOverrideActive` (main thread, like the other
 reported even without a write session, but fans are only forced while a session is open (the
 override never opens one). The latch resets when the SMC reader is reopened.
 
-**Write throttle:** poll-driven writes skip a fan unless its mode changes (automatic and manual)
+**Write throttle:** after the stabilizer (above), poll-driven writes skip a fan unless its mode changes (automatic and manual)
 or its target moved by more than `FanControlManager.writeThresholdRPM` (25 RPM) from the last
 successfully written value. A fan that we never forced is never "returned" to automatic by the
 poll loop. User actions (`setFanRPM`, `setFanControlMode`, `applyProfile`, wake re-apply,
@@ -360,18 +453,18 @@ still open): the session stays closed until the user acts.
 
 ## Persistence
 
-`ProfileStore` (the fixed six profiles, additional programmatic profiles and `activeProfileID`,
-`schemaVersion` 2) is stored as JSON (`ProfileStore.encodeJSON`) in `UserDefaults` under
+`ProfileStore` (the fixed seven profiles, additional programmatic profiles and `activeProfileID`,
+`schemaVersion` 3 since the curves / Max preset) is stored as JSON (`ProfileStore.encodeJSON`) in `UserDefaults` under
 **`fanControl.profileStore`** (`FanControlManager.profileStoreDefaultsKey`) on every change. The
 (Not a `SettingsStore` key: the kit owns this one and writes it as JSON *Data*.) See "Profiles" below.
-`pollingInterval`, `slowPollingOnBattery`, `batteryPollingInterval`, `reapplyProfileAfterWake` and
-`safetyPolicy` are not persisted by the kit; the app's settings layer owns them
+`pollingInterval`, `slowPollingOnBattery`, `batteryPollingInterval`, `reapplyProfileAfterWake`,
+`safetyPolicy` and `tuning` are not persisted by the kit; the app's settings layer owns them
 (`FanControlGeneralSettings.slowPollingOnBattery`, default `true`, decoded with `decodeIfPresent`
 so older stored settings keep working).
 
-## Profiles (fixed set of six, 2026-10-20)
+## Profiles (fixed set of seven, 2026-10-20)
 
-The app offers exactly six profiles (`FanProfile.fixedProfileIDs`, `ProfileStore.fixedProfiles`);
+The app offers exactly seven profiles (`FanProfile.fixedProfileIDs`, `ProfileStore.fixedProfiles`);
 users cannot create or delete profiles. Ids are fixed UUIDs (`FanProfile.BuiltInID`):
 
 | Profile | id `6F1A0000-0000-4000-8000-…` | Content (`FanProfile.Preset`, provisional values) | Editable |
@@ -379,23 +472,29 @@ users cannot create or delete profiles. Ids are fixed UUIDs (`FanProfile.BuiltIn
 | Automatic | `…000000000001` | SMC default (no override) | no |
 | Constant Quiet (定速・静音) | `…000000000011` | every fan 3000 RPM (`quietRPM`) | no |
 | Constant High (定速・強) | `…000000000012` | every fan 5000 RPM (`highRPM`) | no |
-| Boost (ブースト) | `…000000000013` | every fan `.sensor(agg:cpu, 70 → 95 °C)` (`boostStartTemperature` / `boostMaxTemperature`) | no |
-| Custom 1 (カスタム 1) | `…000000000021` | default = copy of Boost | per-fan modes + name |
-| Custom 2 (カスタム 2) | `…000000000022` | default = every fan 3500 RPM (`custom2RPM`) | per-fan modes + name |
+| Boost (ブースト) | `…000000000013` | every fan `.sensor(agg:cpu, 50 → 85 °C)` + `defaultCurve` `FanCurve.boost`: **50 °C min, 60 °C 3500, 70 °C 5200, 80 °C 6400, 85 °C 6800 (max)** (`boostCurve`) | no |
+| Max (最大) | `…000000000014` | every fan 6800 RPM (`maxRPM`; clamped to each fan's max) | no |
+| Custom 1 (カスタム 1) | `…000000000021` | default = copy of Boost (curve included) | per-fan modes + curves + name |
+| Custom 2 (カスタム 2) | `…000000000022` | default = every fan 3500 RPM (`custom2RPM`) | per-fan modes + curves + name |
 
 Constant RPMs are clamped to each fan's `Mn…Mx` when applied (Mac14,9: 2317…6800). The emergency
 override (`SafetyPolicy`) still forces every fan to max when hot, whatever the profile.
 
-- **Boost thresholds (provisional, changed 2026-10-20 from 50 → 80 °C):** `agg:cpu` is the
-  *maximum* over all CPU core sensors, and the hottest core idles at about 72–78 °C on Mac14,9
-  (probe: `agg:cpu` 72.7 °C, `TCMz` / `Tp0A` ≈ 78 °C). With 50 → 80 °C the linear curve put both
-  fans at ~5700–6500 RPM on an idle machine (SMC: 0 RPM). 70 → 95 °C keeps idle near `Mn`
-  (72.7 °C → ≈ 2800 RPM) and still ramps to full speed well before the SMC's own curve under
-  sustained load ("stronger than Apple"); 95 °C matches the emergency force-max threshold. The
-  preset is read-only: a user who wants a different ramp copies it into Custom 1 / Custom 2 and
-  retunes it there. Custom 1's factory default (`defaultCustom1()`, also restored by `reset`)
-  follows Boost; a Custom 1 already stored with the old 50 → 80 °C copy keeps it until reset.
-  The profile editor's default for a newly sensor-linked fan uses the same two values.
+- **Boost curve (user decision 2026-10-20, replaces the linear 70 → 95 °C ramp):** full speed
+  *early*, well before 100 °C: 50 °C min, 60 °C 3500, 70 °C 5200, 80 °C 6400, 85 °C 6800 (10 °C
+  below the 95 °C emergency threshold), monotone-cubic between the points. **Note:** `agg:cpu` is
+  the hottest core, which idles at ≈ 72–78 °C on Mac14,9, so Boost runs ≈ 5500–6100 RPM at idle
+  (72.7 °C → ≈ 5570 RPM) — intended as a "cool and loud" preset; the smoothing / stabilizer keep it
+  from hunting. The preset is read-only: copy into Custom 1 / 2 to retune. Custom 1's factory
+  default (`defaultCustom1()`, also restored by `reset`) is Boost with its curve.
+  `Preset.boostStartTemperature` / `boostMaxTemperature` (50 / 85 °C) are the curve's ends and the
+  editors' default for a newly sensor-linked fan.
+- **Max:** every fan at `Preset.maxRPM` (6800 = Mac14,9's `Mx`; clamped). A separate id from the
+  legacy `BuiltInID.maximum` (still used by `availableProfiles`).
+- **Curves in custom slots:** `ProfileStore` keeps a matching `FanCurve` for every `.sensor` mode of
+  a custom slot (`withCurves`, applied by `upsert` and normalization): a mode without one gets the
+  equivalent two-point linear curve, a curve whose ends no longer match its mode is replaced. So a
+  curve-unaware editor that moves start / max gets the linear ramp it shows.
 
 - **"Every fan" presets:** `FanProfile.defaultMode` (new, optional, Codable-compatible) is the mode
   of every fan without an entry in `modes`; `mode(for:)` = `modes[id] ?? defaultMode ?? .automatic`.
@@ -405,14 +504,14 @@ override (`SafetyPolicy`) still forces every fan to max when hot, whatever the p
   (`FanControlProfiles.apply` in the drop-in UI). The manager is unchanged.
 - **Presets are read-only and regenerated from code** on every decode/assignment, so a changed
   preset value reaches existing installs. Only the custom slots are persisted as edited.
-- **API:** `upsert` (custom slot: modes / `defaultMode` / name; presets ignored), `rename(id:to:)`
+- **API:** `upsert` (custom slot: modes / `defaultMode` / curves / name; presets ignored), `rename(id:to:)`
   (custom slots; empty name → default name), `reset(id:)` (custom slot → factory default; active
-  selection kept), `isModified(id:fans:)` (compares effective per-fan modes + name), `delete(id:)`
-  (no-op for the six). `profiles` / `activeProfileID` are normalized in `didSet`; an active id that
+  selection kept), `isModified(id:fans:)` (compares effective per-fan modes, effective curves + name), `delete(id:)`
+  (no-op for the seven). `profiles` / `activeProfileID` are normalized in `didSet`; an active id that
   names no stored profile becomes `nil` (= Automatic).
-- **Additional (programmatic) profiles:** the manager itself stores profiles outside the six —
+- **Additional (programmatic) profiles:** the manager itself stores profiles outside the seven —
   `setFanRPM` / `setFanControlMode` create "Custom" (`customProfileID`), and tools such as
-  HelperSmokeApp apply their own (`"Smoke sensor-linked"`). `ProfileStore` keeps them after the six
+  HelperSmokeApp apply their own (`"Smoke sensor-linked"`). `ProfileStore` keeps them after the seven
   (`additionalProfiles`; `upsert` adds, `delete` removes) so such a profile stays active across polls,
   wake re-apply and relaunch. The app UI never shows them (it reads `fixedProfiles`, not
   `availableProfiles`, which still lists the legacy Silent / Maximum built-ins for compatibility).
@@ -423,6 +522,11 @@ override (`SafetyPolicy`) still forces every fan to max when hot, whatever the p
   else → `nil` (Automatic). Nothing is re-applied by the migration. The migrated store is written
   back on the next change. Note: DynamicNotchApp and HelperSmokeApp share the bundle id and thus
   this store.
+- **Migration schema 2 → 3** (curves / Max, 2026-10-20): the Max preset appears (presets come from
+  code); a stored Custom 1 that still equals the old factory default (name "Custom 1",
+  `.sensor(agg:cpu, 70 → 95 °C)` as `defaultMode` and in every `modes` entry, no curves) becomes the
+  new default (Boost curve); any other slot keeps its values and gets two-point linear curves for
+  its `.sensor` modes (behaviour unchanged). Tested in `ProfileStoreCurveTests`.
 
 ## Settings owned by the app
 

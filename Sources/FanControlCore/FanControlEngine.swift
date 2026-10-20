@@ -66,8 +66,25 @@ public enum FanControlEngine {
     ///   `maxRPM` at or above `maxTemperature`, else `minRPM`.
     ///   If `sensorTemperature` is `nil` (sensor missing or unreadable) the fan
     ///   runs at `maxRPM`: fail hot = fail loud, never silently under-cool.
+    ///
+    /// This overload knows only the mode, so a `.sensor` mode is always the linear ramp;
+    /// use `targetRPM(for:profile:...)` to honour the profile's multi-point curve.
     public static func targetRPM(for mode: FanControlMode, fan: FanDevice, sensorTemperature: Double?) -> Int? {
         targetRPM(for: mode, fan: fan, sensorTemperature: sensorTemperature, enforceHardwareMinimum: true)
+    }
+
+    /// The target speed for `fan` under `profile` (its mode and, for `.sensor`, its curve:
+    /// `FanProfile.curve(for:)`), or `nil` for `.automatic`. A missing / non-finite
+    /// `sensorTemperature` gives `maxRPM` (fail loud). No emergency override, no smoothing.
+    public static func targetRPM(for profile: FanProfile, fan: FanDevice, sensorTemperature: Double?,
+                                 policy: SafetyPolicy = .default) -> Int? {
+        let mode = profile.mode(for: fan)
+        if case .sensor = mode, let curve = profile.curve(for: fan) {
+            guard let sensorTemperature, sensorTemperature.isFinite else { return fan.rpmRange.upperBound }
+            return curve.rpm(at: sensorTemperature, for: fan)
+        }
+        return targetRPM(for: mode, fan: fan, sensorTemperature: sensorTemperature,
+                         enforceHardwareMinimum: policy.enforceHardwareMinimum)
     }
 
     /// The hottest sensor whose key starts with one of `policy.emergencySensorPrefixes`.
@@ -80,7 +97,21 @@ public enum FanControlEngine {
             .max { $0.temperature < $1.temperature }
     }
 
+    /// Sensor keys followed by `profile`'s `.sensor` modes for `fans` (and by its
+    /// `defaultMode`): the keys `TemperatureSmoother` smooths.
+    public static func controlSensorKeys(profile: FanProfile, fans: [FanDevice]) -> Set<String> {
+        var keys = Set<String>()
+        for mode in fans.map({ profile.mode(for: $0) }) + [profile.defaultMode].compactMap({ $0 }) {
+            if case .sensor(let key, _, _) = mode { keys.insert(key) }
+        }
+        return keys
+    }
+
     /// Computes the target RPM for every fan (`nil` value = leave in automatic).
+    ///
+    /// `.sensor` modes follow the profile's curve (`targetRPM(for:profile:...)`).
+    /// `sensors` should already be smoothed for the control keys
+    /// (`TemperatureSmoother`); the result is not yet stabilized (`FanTargetStabilizer`).
     ///
     /// Emergency override: every fan (including automatic ones) is set to its
     /// `maxRPM` while the emergency is active.
@@ -110,8 +141,7 @@ public enum FanControlEngine {
             if case .sensor(let key, _, _) = mode {
                 temperature = sensors.first { $0.id == key && $0.temperature.isFinite }?.temperature
             }
-            let target = targetRPM(for: mode, fan: fan, sensorTemperature: temperature,
-                                   enforceHardwareMinimum: policy.enforceHardwareMinimum)
+            let target = targetRPM(for: profile, fan: fan, sensorTemperature: temperature, policy: policy)
             result.updateValue(target, forKey: fan.id)
         }
         return result

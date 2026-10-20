@@ -48,3 +48,24 @@ struct ProfileEditTests {
         #expect(updated.modes[1] == FanProfile.Preset.boostMode)
     }
 }
+
+/// Curves through `FanControlManager.profile(changing:...)` (`setFanControlMode`).
+struct ProfileEditCurveTests {
+    private let fans = [FanDevice(id: 0, name: "Fan 1", minRPM: 2317, maxRPM: 6800),
+                        FanDevice(id: 1, name: "Fan 2", minRPM: 2317, maxRPM: 6800)]
+
+    @Test func testUntouchedFanKeepsBoostCurveEditedFanDropsIt() {
+        let updated = FanControlManager.profile(changing: .boost(), fanIndex: 1,
+                                                to: FanProfile.Preset.boostMode, fans: fans)
+        #expect(updated.curve(for: fans[0]) == .boost)
+        // Fan 2 was set to a plain sensor mode: linear ramp.
+        #expect(updated.curves[1] == nil)
+        #expect(updated.curve(for: fans[1]) == .linear(startTemperature: 50, maxTemperature: 85))
+        // `setFanCurve`'s profile: the curve on the edited fan.
+        var curved = FanControlManager.profile(changing: .automatic(), fanIndex: 1, to: .automatic, fans: fans)
+        curved.setCurve(.boost, sensorKey: "agg:gpu", forFan: 1)
+        #expect(curved.curve(for: fans[1]) == .boost)
+        #expect(curved.mode(for: fans[1]) == .sensor(sensorKey: "agg:gpu", startTemperature: 50, maxTemperature: 85))
+        #expect(curved.id == FanControlManager.customProfileID)
+    }
+}

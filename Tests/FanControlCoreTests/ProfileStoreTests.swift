@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import FanControlCore
 
-/// The fixed set of six profiles (`ProfileStore`, docs/kit.md "Profiles").
+/// The fixed set of seven profiles (`ProfileStore`, docs/kit.md "Profiles").
 struct ProfileStoreTests {
     typealias ID = FanProfile.BuiltInID
 
@@ -13,12 +13,13 @@ struct ProfileStoreTests {
         let store = ProfileStore()
         #expect(store.profiles.map(\.id) == FanProfile.fixedProfileIDs)
         #expect(store.profiles.map(\.id) == [ID.automatic, ID.constantQuiet, ID.constantHigh, ID.boost,
-                                             ID.custom1, ID.custom2])
+                                             ID.max, ID.custom1, ID.custom2])
         #expect(store.profiles.map(\.name) == ["Automatic", "Constant Quiet", "Constant High", "Boost",
-                                               "Custom 1", "Custom 2"])
-        #expect(store.profiles.map(\.isBuiltIn) == [true, true, true, true, false, false])
-        #expect(store.profiles.map(\.isCustomSlot) == [false, false, false, false, true, true])
-        #expect(Set(FanProfile.fixedProfileIDs).count == 6)
+                                               "Max", "Custom 1", "Custom 2"])
+        #expect(store.profiles.map(\.isBuiltIn) == [true, true, true, true, true, false, false])
+        #expect(store.profiles.map(\.isCustomSlot) == [false, false, false, false, false, true, true])
+        #expect(Set(FanProfile.fixedProfileIDs).count == 7)
+        #expect(ID.max != ID.maximum)
         #expect(!FanProfile.fixedProfileIDs.contains(ID.silent))
         #expect(!FanProfile.fixedProfileIDs.contains(ID.maximum))
         #expect(store.activeProfileID == nil)
@@ -30,12 +31,18 @@ struct ProfileStoreTests {
             #expect(FanProfile.constantQuiet().mode(for: fan) == .constant(rpm: 3000))
             #expect(FanProfile.constantHigh().mode(for: fan) == .constant(rpm: 5000))
             #expect(FanProfile.boost().mode(for: fan)
-                    == .sensor(sensorKey: "agg:cpu", startTemperature: 70, maxTemperature: 95))
+                    == .sensor(sensorKey: "agg:cpu", startTemperature: 50, maxTemperature: 85))
+            #expect(FanProfile.boost().curve(for: fan) == FanCurve.boost)
+            #expect(FanProfile.max().mode(for: fan) == .constant(rpm: 6800))
             #expect(FanProfile.defaultCustom1().mode(for: fan) == FanProfile.boost().mode(for: fan))
+            #expect(FanProfile.defaultCustom1().curve(for: fan) == FanProfile.boost().curve(for: fan))
             #expect(FanProfile.defaultCustom2().mode(for: fan) == .constant(rpm: 3500))
         }
         #expect(FanProfile.fixedDefault(id: UUID()) == nil)
         #expect(FanProfile.fixedDefault(id: ID.boost) == .boost())
+        #expect(FanProfile.fixedDefault(id: ID.max) == .max())
+        #expect(FanCurve.boost.points.map(\.temperature) == [50, 60, 70, 80, 85])
+        #expect(FanCurve.boost.points.map(\.rpm) == [0, 3500, 5200, 6400, 6800])
     }
 
     @Test func testModeFallbackAndResolved() {
@@ -63,7 +70,7 @@ struct ProfileStoreTests {
         // Legacy built-ins are never stored.
         #expect(store.upsert(.silent(for: fans)) == false)
         #expect(store.upsert(.maximum(for: fans)) == false)
-        #expect(store.profiles.count == 6)
+        #expect(store.profiles.count == 7)
         // Direct assignment is normalized as well.
         store.profiles.removeAll { $0.id == ID.custom2 }
         store.profiles[2] = FanProfile(id: ID.constantHigh, name: "Hacked", defaultMode: .constant(rpm: 1))
@@ -108,7 +115,7 @@ struct ProfileStoreTests {
     @Test func testDeleteIsNoOpAndActiveNormalized() {
         var store = ProfileStore()
         for id in FanProfile.fixedProfileIDs { #expect(store.delete(id: id) == false) }
-        #expect(store.profiles.count == 6)
+        #expect(store.profiles.count == 7)
         store.activeProfileID = ID.boost
         #expect(store.activeProfile == .boost())
         // Ids outside the six (legacy built-ins, the manager's "Custom") resolve to nil = Automatic.
@@ -158,7 +165,7 @@ struct ProfileStoreTests {
 
         let data = try ProfileStore.encodeJSON(store)
         let json = try #require(String(data: data, encoding: .utf8))
-        #expect(json.contains("\"schemaVersion\" : 2"))
+        #expect(json.contains("\"schemaVersion\" : 3"))
         let decoded = try ProfileStore.decodeJSON(data)
         #expect(decoded == store)
         #expect(decoded.profile(id: ID.custom1)?.name == "Gaming")
@@ -215,12 +222,15 @@ struct ProfileStoreTests {
                                          isEmergency: false)
         }
         #expect(plan(40) == [0: 2317, 1: 2317])
-        #expect(plan(70) == [0: 2317, 1: 2317])
-        // Mac14,9 idle hottest core (agg:cpu 72.7 °C): close to minimum, not near max.
-        // 2317 + (72.7 − 70) / 25 × 4483 = 2801.2 → 2801
-        #expect(plan(72.7) == [0: 2801, 1: 2801])
-        // 82.5 °C = halfway: 2317 + (6800 − 2317) / 2 = 4558.5 → 4559 (rounded)
-        #expect(plan(82.5) == [0: 4559, 1: 4559])
+        #expect(plan(50) == [0: 2317, 1: 2317])
+        // The curve passes through its points.
+        #expect(plan(60) == [0: 3500, 1: 3500])
+        #expect(plan(70) == [0: 5200, 1: 5200])
+        #expect(plan(80) == [0: 6400, 1: 6400])
+        #expect(plan(85) == [0: 6800, 1: 6800])
+        // Between points: strictly between the neighbours (monotone cubic).
+        let mid = plan(72.7)[0]!!
+        #expect(mid > 5200 && mid < 6400)
         #expect(plan(95) == [0: 6800, 1: 6800])
         #expect(plan(100) == [0: 6800, 1: 6800])
         // No agg:cpu reading → fail hot (max).
@@ -243,5 +253,82 @@ struct ProfileStoreTests {
     private func legacyJSON(profiles: [FanProfile], active: UUID?) throws -> Data {
         struct Legacy: Encodable { var profiles: [FanProfile]; var activeProfileID: UUID? }
         return try JSONEncoder().encode(Legacy(profiles: profiles, activeProfileID: active))
+    }
+}
+
+/// Schema 3 (2026-10-20): curves in custom slots, Max preset, Custom 1 migration.
+struct ProfileStoreCurveTests {
+    typealias ID = FanProfile.BuiltInID
+    let fans = [FanDevice(id: 0, name: "Fan 1", minRPM: 2317, maxRPM: 6800),
+                FanDevice(id: 1, name: "Fan 2", minRPM: 2317, maxRPM: 6800)]
+
+    /// A schema-2 store JSON with `custom1` as the Custom 1 slot.
+    private func schema2JSON(custom1: FanProfile, active: UUID? = nil) throws -> Data {
+        struct V2: Encodable { var schemaVersion = 2; var profiles: [FanProfile]; var activeProfileID: UUID? }
+        return try JSONEncoder().encode(V2(profiles: [custom1, .defaultCustom2()], activeProfileID: active))
+    }
+
+    @Test func testUnchangedOldCustom1BecomesBoostCurve() throws {
+        let old = FanProfile(id: ID.custom1, name: "Custom 1", defaultMode: ProfileStore.legacyCustom1Mode)
+        var store = try ProfileStore.decodeJSON(schema2JSON(custom1: old, active: ID.custom1))
+        #expect(store.profile(id: ID.custom1) == .defaultCustom1())
+        #expect(store.activeProfileID == ID.custom1)
+        #expect(store.profiles.map(\.id) == FanProfile.fixedProfileIDs)
+        // Materialized (resolved) old default is migrated as well.
+        let resolvedOld = old.resolved(for: fans)
+        store = try ProfileStore.decodeJSON(schema2JSON(custom1: FanProfile(
+            id: ID.custom1, name: "Custom 1", modes: resolvedOld.modes, defaultMode: old.defaultMode)))
+        #expect(store.profile(id: ID.custom1) == .defaultCustom1())
+    }
+
+    @Test func testEditedStartMaxSlotGetsTwoPointCurve() throws {
+        let edited = FanProfile(id: ID.custom1, name: "Gaming",
+                                modes: [0: .sensor(sensorKey: "agg:gpu", startTemperature: 45, maxTemperature: 75),
+                                        1: .constant(rpm: 3000)],
+                                defaultMode: ProfileStore.legacyCustom1Mode)
+        let store = try ProfileStore.decodeJSON(schema2JSON(custom1: edited))
+        let slot = try #require(store.profile(id: ID.custom1))
+        #expect(slot.name == "Gaming")
+        #expect(slot.modes == edited.modes)
+        #expect(slot.curves == [0: .linear(startTemperature: 45, maxTemperature: 75)])
+        #expect(slot.defaultCurve == .linear(startTemperature: 70, maxTemperature: 95))
+        // Behaviour unchanged: the two-point curve is the old linear ramp.
+        let sensors = [SensorReading(id: "agg:gpu", name: "GPU", temperature: 60)]
+        #expect(FanControlEngine.plan(profile: slot, fans: fans, sensors: sensors, policy: .default,
+                                      isEmergency: false)[0] == 4559)
+        // Round trip as schema 3 keeps it.
+        #expect(try ProfileStore.decodeJSON(ProfileStore.encodeJSON(store)) == store)
+    }
+
+    @Test func testCurveUnawareEditReplacesStaleCurve() {
+        var store = ProfileStore()
+        var slot = store.profile(id: ID.custom1)!.resolved(for: fans)
+        #expect(slot.curves[0] == .boost)
+        // Old editor moves the start temperature only.
+        slot.modes[0] = .sensor(sensorKey: "agg:cpu", startTemperature: 55, maxTemperature: 85)
+        store.upsert(slot)
+        let stored = store.profile(id: ID.custom1)!
+        #expect(stored.curves[0] == .linear(startTemperature: 55, maxTemperature: 85))
+        #expect(stored.curves[1] == .boost)
+        #expect(store.isModified(id: ID.custom1, fans: fans))
+        // A custom curve set with `setCurve` is kept.
+        var custom = stored
+        custom.setCurve(FanCurve([(40, 2400), (65, 5000), (75, 6800)]), sensorKey: "agg:cpu", forFan: 1)
+        store.upsert(custom)
+        #expect(store.profile(id: ID.custom1)?.curves[1] == FanCurve([(40, 2400), (65, 5000), (75, 6800)]))
+        let didReset = store.reset(id: ID.custom1)
+        #expect(didReset)
+        #expect(!store.isModified(id: ID.custom1, fans: fans))
+        #expect(!store.isModified(id: ID.custom1))
+    }
+
+    @Test func testMaxPreset() {
+        let plan = FanControlEngine.plan(profile: .max(), fans: fans + [FanDevice(id: 2, name: "S", minRPM: 1000, maxRPM: 5000)],
+                                         sensors: [], policy: .default, isEmergency: false)
+        #expect(plan == [0: 6800, 1: 6800, 2: 5000])
+        var store = ProfileStore()
+        #expect(store.upsert(FanProfile(id: ID.max, name: "Hacked", defaultMode: .constant(rpm: 1))) == false)
+        #expect(store.delete(id: ID.max) == false)
+        #expect(store.profile(id: ID.max) == .max())
     }
 }

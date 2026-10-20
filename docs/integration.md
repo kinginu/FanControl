@@ -27,7 +27,7 @@ arm64 でない Mac ではアプリが `FanControlError.unsupportedPlatform` で
 | `FanControlWidgetSettingsView.swift` | 設定 ▸ ウィジェット ▸ Fan Control（グリッドサイズ、表示ファン/センサー、°C/°F、プロファイル選択・目標 RPM 表示） |
 | `FanControlSettingsView.swift` | 「Fan Control」設定ペイン（TabView: 一般/プロファイル/センサー＋エラーフッタ）。**全タブ共通の固定サイズ `contentSize` = 740×600 pt**（DynamicNotchApp ではホストが 760×640 の固定フレームで包む）（タブ切替でウィンドウが伸縮しない。伸びうる中身はスクロール） |
 | `FanControlGeneralTabView.swift` | 有効化、更新間隔、自動開始、非表示時停止、スリープ復帰再適用、警告、ヘルパー状態/インストール、自動制御復帰、SMC ダンプ書き出し |
-| `FanControlProfilesTabView.swift` | 固定 6 プロファイル（プリセット 4 = 読取専用でパラメータ表示、カスタム 1/2 = 編集・名前変更・初期設定に戻す）、ファンカーブ表示、適用。作成・削除は無し（kit.md「Profiles」） |
+| `FanControlProfilesTabView.swift` | 固定 7 プロファイル（プリセット 5 = 読取専用でパラメータ表示、カスタム 1/2 = 編集・名前変更・初期設定に戻す）、ファンカーブ表示、適用。作成・削除は無し（kit.md「Profiles」） |
 | `FanControlSensorsTabView.swift` | 主要な温度（CPU / GPU / SSD）＋全センサー表（キー/名前/温度、ソート可） |
 | `FanControlWidgetView.swift` | Nook ウィジェット本体（medium 100pt: ファン・主要温度・プロファイル選択 / doubleWide 250pt: ＋ファンカーブ）。`FanCurveView`・`FanControlKeyTemperaturesView` は設定ペインでも使う |
 | `FanControlLiveActivity.swift` | `FanControlAlertView`（Live Activity 表示）と `FanControlAlertCoordinator`（警告状態・一時展開通知・一般設定 `pollingInterval` / `reapplyProfileAfterWake`、および「いずれかの警告が ON」を `keepAlertsWhilePaused` として `FanControlManager` へ同期） |
@@ -328,7 +328,8 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 - [ ] `Mn` 未満の目標値（`enforceHardwareMinimum = false` で 1000 RPM 等）を適用 → `rpmOutOfRange` エラーで**何も書かれない**こと（`F0Md` が 0 のまま）。
 - [ ] プロファイル タブで「最大」を適用 → 接続状態が「接続済み（ファンを制御中）」、ファンが最大回転へ。
       `F0Md`=1 → `F0Tg` 書込で回転数が変わること（`F0Ac` を確認）。Intel の `FS! ` 経路は 2026-10-20 に削除したので確認不要。
-- [ ] プリセット「定速・静音」（3000）/「定速・強」（5000）/「ブースト」（`agg:cpu` 70→95 °C。2026-10-20 に 50→80 °C から変更、kit.md「Profiles」）をウィジェットと設定の両方から適用 → 期待どおりの回転数。
+- [ ] プリセット「定速・静音」（3000）/「定速・強」（5000）/「ブースト」（`agg:cpu` の多点カーブ 50 °C 最小・60 °C 3500・70 °C 5200・80 °C 6400・85 °C 6800。2026-10-20 に線形 70→95 °C から変更、kit.md「Profiles」）/「最大」（全ファン 6800）をウィジェットと設定の両方から適用 → 期待どおりの回転数。
+      ブーストはアイドル（`agg:cpu` ≈ 72–78 °C）でも ≈ 5500–6100 RPM になる（仕様）。
       プリセットは `defaultMode` で定義されるため、UI は `FanProfile.resolved(for:)` を渡して適用する（`FanControlProfiles.apply`）。セッションが開くこと。
 - [ ] カスタム 1/2 を編集・保存・名前変更・「初期設定に戻す」→ 適用。アクティブなスロットを保存すると次のポーリングで反映される。
 - [ ] カスタムスロットで「固定」スライダ / 「センサー連動」（センサー・開始/最大温度）を設定して保存 → 適用 → 期待通りの回転数。（2026-10-20 HelperSmokeApp: `agg:cpu` 45→75 °C を全ファンに適用 → 75 °C 超で 6800、74.35 °C で 6702 と線形カーブどおり。UI 経由は未実施。`verification/first-write-2026-10-20.md`）
@@ -337,10 +338,16 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 - [ ] 「自動制御に戻す」でファンが SMC 制御に戻る。機能を OFF にしても戻る。アプリ終了時（⌘Q）も戻る。
 - [x] 手動制御中に `kill -9` → ヘルパーがセッションを解放しファンが自動に戻る（helper.md §5）。（2026-10-20 HelperSmokeApp: 約 2 秒で automatic に復帰。`verification/first-write-2026-10-20.md`）
 - [x] 手動制御中にヘルパーへ `sudo launchctl kill SIGTERM system/<label>` → ヘルパーが復元して終了コード 0、ファンは automatic（2026-10-20、同上）。
-- [ ] ウィジェットのプロファイル選択（6 件）から切替できる。ウィジェットでは編集できない。
+- [ ] ウィジェットのプロファイル選択（7 件。「最大」を含む）から切替できる。ウィジェットでは編集できない。
 - [ ] 機能 OFF の間はプロファイル タブの「適用」が無効で、説明文が表示される。
 - [ ] 監視停止中に手動プロファイルを適用すると監視が自動で開始される。
 - [ ] 適用直後にポーリングが走っても、旧プロファイルの目標値に書き戻されない（`log stream` のヘルパー書込ログで確認）。
+- [ ] **ハンチング試験（制御ループ、kit.md「Control loop」）**: ブーストを適用し、一定の持続負荷（例: `yes > /dev/null` を P コア数ぶん、または一定負荷のベンチマーク）を
+      5 分以上かける。温度が落ち着いた後（`controlTemperatures["agg:cpu"]` ≈ 一定）、`fanfi-probe --watch 2` で `F0Tg` / `F0Ac` を 3 分記録し、
+      **定常温度で目標・実回転が ±150 RPM を超えて上下を繰り返さない**こと（`F<n>Tg` の書込は数回以内、ヘルパーの書込ログも同様）。
+      `agg:cpu` の生値（`sensorReadings`）が数 °C 揺れていても目標が揺れないこと。比較用に `manager.tuning = .disabled` で同じ試験をすると揺れが再現する（任意）。
+- [ ] 負荷の立ち上がり（アイドル → 高負荷）で目標が 1 ポーリングあたり最大 500 RPM ずつ、約 20 秒以内にカーブの値まで上がる。負荷を止めると 10 秒以上待ってから
+      500 RPM 以下の段で緩やかに下がる。緊急オーバーライド（95 °C）では即座に最大になる（遅延なし）。
 - [ ] ヘルパーを `sudo kill -STOP` で停止させて書込 → 約 8 秒で「timeout」エラーになり、以後の操作が詰まらない（確認後 `kill -CONT`）。
       `kill -CONT` 後、旧接続の解放でヘルパーが復元し `F<n>Md`=0 になること。
 - [ ] 手動制御中にヘルパーを `sudo kill -9`（SIGKILL。復元は走らない）→ `fanfi-probe` で `F<n>Md`=1 のまま残ることを確認し、

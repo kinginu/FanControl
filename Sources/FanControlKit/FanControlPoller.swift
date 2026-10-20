@@ -41,6 +41,12 @@ actor FanControlPoller {
     /// Applied to every sensor batch before alerts, planning and publishing;
     /// reset whenever sensors are rediscovered.
     var sampleFilter = TemperatureSampleFilter()
+    /// Asymmetric smoothing of the control temperatures (keys followed by the profile's
+    /// `.sensor` modes), applied after the filter and the aggregates, before planning.
+    var smoother = TemperatureSmoother()
+    /// Deadband / dwell / slew limit on poll-planned targets. Seeded by user applies,
+    /// reset when a session opens or closes.
+    var stabilizer = FanTargetStabilizer()
     /// Last successfully written state per fan (throttle baseline).
     var appliedTargets: [Int: FanTarget] = [:]
     /// Fans whose SMC state is unknown after a failed write list (e.g. `F<i>Md`
@@ -130,6 +136,7 @@ actor FanControlPoller {
         sensorKeys = discovered.map(\.id)
         alertEvaluator = AlertEvaluator()
         sampleFilter.reset()
+        smoother.reset()
         let sensors = SensorAggregator.appendingAggregates(to: sampleFilter.filter(discovered),
                                                            definitions: aggregateDefinitions)
         let substituted = sampleFilter.substitutedKeys
@@ -217,6 +224,13 @@ actor FanControlPoller {
         // is current when a session opens.
         let emergency = alertEvaluator.evaluateEmergency(sensors: sensors, policy: context.policy)
         let anomalies = alertEvaluator.evaluateFanAnomaly(fans: fans, currentRPMs: current, targetRPMs: targets)
+        let now = Date()
+        // Smoothed every poll (session or not) so the UI can show the control
+        // temperature and the state is warm when a session opens.
+        let controlSensors = smoother.smooth(
+            sensors, keys: FanControlEngine.controlSensorKeys(profile: context.profile, fans: fans),
+            at: now, tuning: context.tuning)
+        let controlTemperatures = smoother.values
 
         if systemSleeping, let started = systemSleepStartedAt,
            Date().timeIntervalSince(started) > Self.sleepSuspendTimeout {
@@ -226,9 +240,12 @@ actor FanControlPoller {
         let modes: [Int: FanControlMode]
         if context.sessionOpen {
             modes = Dictionary(uniqueKeysWithValues: fans.map { ($0.id, context.profile.mode(for: $0)) })
-            let plan = FanControlEngine.plan(profile: context.profile, fans: fans, sensors: sensors,
+            let plan = FanControlEngine.plan(profile: context.profile, fans: fans, sensors: controlSensors,
                                              policy: context.policy, isEmergency: emergency)
-            let desired = Self.targets(from: plan)
+            // The emergency override is never delayed (bypass).
+            let stabilized = stabilizer.stabilize(plan, fans: fans, at: now, tuning: context.tuning,
+                                                  bypass: emergency)
+            let desired = Self.targets(from: stabilized)
             if !systemSleeping { flagUnsettledFans(fans: fans, targets: targets, using: reader) }
             if !systemSleeping, !pollWriteInFlight, !changedTargets(desired, force: false).isEmpty {
                 pollWriteInFlight = true
@@ -247,13 +264,14 @@ actor FanControlPoller {
             modes = FanDiscovery.fanControlModes(fans: fans, using: reader)
         }
 
-        let now = Date()
         publish { manager in
             manager.fans = fans
             manager.currentRPMs = current
             manager.targetRPMs = targets
             manager.sensorReadings = sensors
             manager.substitutedSensorKeys = substituted
+            manager.controlTemperatures = controlTemperatures
+            manager.recordTemperatureHistory(sensors, at: now)
             manager.fanControlModes = modes
             manager.highTempAlertActive = highTemp
             manager.emergencyOverrideActive = emergency
@@ -284,6 +302,36 @@ actor FanControlPoller {
             "F\(fan) manual=\(observed[fan]?.isManual.map(String.init) ?? "?") Tg=\(observed[fan]?.targetRPM.map(String.init) ?? "?") applied=\(appliedTargets[fan].map { "\($0)" } ?? "none")"
         }.joined(separator: ", ")
         kitLog.notice("Unsettled fan(s) detected, rewriting: \(detail, privacy: .public)")
+    }
+
+    /// User apply / wake re-apply (on `queue`): reads fresh sensors, updates the
+    /// emergency latch and the smoother, plans `profile` and seeds the stabilizer with
+    /// the plan (explicit applies are not rate-limited). Bumps the apply generation first.
+    func planApply(profile: FanProfile, policy: SafetyPolicy,
+                   tuning: FanControlTuning) throws -> (fans: [FanDevice], plan: [Int: Int?], emergency: Bool) {
+        // Polls enqueued before this point were snapshotted with the old
+        // selection; their batches now carry a stale generation.
+        applyGate.advance()
+        try prepareReader()
+        let sensors = reader.map { readFilteredTemperatures(using: $0) } ?? []
+        // Same latch as the poll loop, so a user action cannot drop an
+        // active emergency override inside the hysteresis band.
+        let emergency = alertEvaluator.evaluateEmergency(sensors: sensors, policy: policy)
+        let now = Date()
+        let fans = polledFans
+        let controlSensors = smoother.smooth(
+            sensors, keys: FanControlEngine.controlSensorKeys(profile: profile, fans: fans), at: now, tuning: tuning)
+        let plan = FanControlEngine.plan(profile: profile, fans: fans, sensors: controlSensors, policy: policy,
+                                         isEmergency: emergency)
+        stabilizer.seed(plan, fans: fans, at: now)
+        return (fans, plan, emergency)
+    }
+
+    /// Forgets the write baseline, unsettled fans and the stabilizer (session opened / closed).
+    func resetWriteState() {
+        appliedTargets = [:]
+        unsettledFans = []
+        stabilizer.reset()
     }
 
     // MARK: - Writing
@@ -407,6 +455,7 @@ actor FanControlPoller {
 struct PollContext: Sendable {
     var profile: FanProfile
     var policy: SafetyPolicy
+    var tuning: FanControlTuning
     var sessionOpen: Bool
     /// `isMonitoring` at snapshot time: such a poll is dropped if monitoring
     /// stopped before it ran.

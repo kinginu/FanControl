@@ -1,6 +1,6 @@
 import Foundation
 
-/// Persistable store of the **fixed set of six** fan profiles plus the active selection.
+/// Persistable store of the **fixed set of seven** fan profiles plus the active selection.
 ///
 /// `profiles` always starts with exactly `FanProfile.fixedProfileIDs`, in that
 /// order (`fixedProfiles`; the only profiles the app UI shows):
@@ -10,22 +10,23 @@ import Foundation
 /// | `automatic` | Automatic | SMC default | no |
 /// | `constantQuiet` | Constant Quiet | every fan 3000 RPM | no |
 /// | `constantHigh` | Constant High | every fan 5000 RPM | no |
-/// | `boost` | Boost | every fan follows `agg:cpu`, 70 → 95 °C | no |
-/// | `custom1` | Custom 1 | default: copy of Boost | modes + name |
-/// | `custom2` | Custom 2 | default: every fan 3500 RPM | modes + name |
+/// | `boost` | Boost | every fan follows `agg:cpu` on `FanCurve.boost` (50 °C min, 60 °C 3500, 70 °C 5200, 80 °C 6400, 85 °C 6800) | no |
+/// | `max` | Max | every fan 6800 RPM (clamped to each fan's maximum) | no |
+/// | `custom1` | Custom 1 | default: copy of Boost (curve included) | modes + curves + name |
+/// | `custom2` | Custom 2 | default: every fan 3500 RPM | modes + curves + name |
 ///
 /// Presets are always regenerated from code (`FanProfile.fixedDefault(id:)`),
 /// so a stored preset never overrides a changed preset value; only the two
-/// custom slots are persisted as edited. The six cannot be deleted:
+/// custom slots are persisted as edited. The seven cannot be deleted:
 /// `upsert` replaces a custom slot (presets are ignored), `delete` is a no-op
 /// for them, `reset(id:)` restores a slot's default.
 ///
-/// `additionalProfiles` (after the six) are *programmatic* profiles that
+/// `additionalProfiles` (after the seven) are *programmatic* profiles that
 /// `FanControlManager` itself stores: the "Custom" profile of
 /// `setFanRPM` / `setFanControlMode` (`FanControlManager.customProfileID`) and
 /// profiles passed to `applyProfile` by tools such as HelperSmokeApp. They
 /// are kept (so such a profile stays active across polls and launches) but
-/// never shown by the app UI, which only offers the six. `upsert` adds or
+/// never shown by the app UI, which only offers the seven. `upsert` adds or
 /// replaces them and `delete` removes them.
 ///
 /// Every mutation keeps the invariant (`profiles` / `activeProfileID` are
@@ -39,12 +40,20 @@ import Foundation
 /// dropped. An active selection that pointed at the folded profile becomes
 /// Custom 1; one that pointed at Automatic stays; anything else becomes `nil`
 /// (Automatic). The migrated store is written back on the next change.
+///
+/// Curves (schema 3, 2026-10-20): every `.sensor` mode of a custom slot carries a
+/// matching `FanCurve` (`sanitizedSlot`: a mode without one — stored before curves, or
+/// edited by a curve-unaware editor — gets the equivalent two-point linear curve; curves
+/// that no longer match their mode are dropped). When decoding a schema ≤ 2 store, a
+/// Custom 1 slot that still holds the old factory default (Boost 70 → 95 °C, linear) is
+/// replaced by the new default (the Boost curve); an edited slot keeps its values.
 public struct ProfileStore: Codable, Hashable, Sendable {
 
     /// Version written by `encode(to:)`. Absent (= 1) in stores from before the fixed set.
-    public static let schemaVersion = 2
+    /// 3 since the curves and the Max preset (2026-10-20).
+    public static let schemaVersion = 3
 
-    /// The six fixed profiles in display order, then `additionalProfiles`
+    /// The seven fixed profiles in display order, then `additionalProfiles`
     /// (normalized on every assignment).
     public var profiles: [FanProfile] {
         didSet {
@@ -58,7 +67,7 @@ public struct ProfileStore: Codable, Hashable, Sendable {
         didSet { activeProfileID = Self.normalizedActiveID(activeProfileID, in: profiles) }
     }
 
-    /// A store with the six fixed profiles. Custom slots found in `profiles`
+    /// A store with the seven fixed profiles. Custom slots found in `profiles`
     /// keep their content; stored presets are replaced by their definition;
     /// other user profiles are kept as `additionalProfiles` (no legacy
     /// folding; that happens only when decoding an old store).
@@ -68,7 +77,7 @@ public struct ProfileStore: Codable, Hashable, Sendable {
         self.activeProfileID = Self.normalizedActiveID(activeProfileID, in: normalized)
     }
 
-    /// The six fixed profiles (`FanProfile.fixedProfileIDs` order). The app UI shows only these.
+    /// The seven fixed profiles (`FanProfile.fixedProfileIDs` order). The app UI shows only these.
     public var fixedProfiles: [FanProfile] { Array(profiles.prefix(FanProfile.fixedProfileIDs.count)) }
 
     /// Programmatic profiles stored by `FanControlManager` (`setFanRPM`'s
@@ -135,12 +144,17 @@ public struct ProfileStore: Codable, Hashable, Sendable {
     public func isModified(id: UUID, fans: [FanDevice] = []) -> Bool {
         guard let stored = profile(id: id), let fresh = FanProfile.fixedDefault(id: id) else { return false }
         if stored.name != fresh.name { return true }
-        if fans.isEmpty { return stored.modes != fresh.modes || stored.defaultMode != fresh.defaultMode }
-        return fans.contains { stored.mode(for: $0) != fresh.mode(for: $0) }
+        if fans.isEmpty {
+            return stored.modes != fresh.modes || stored.defaultMode != fresh.defaultMode
+                || stored.curves != fresh.curves || stored.defaultCurve != fresh.defaultCurve
+        }
+        return fans.contains {
+            stored.mode(for: $0) != fresh.mode(for: $0) || stored.curve(for: $0) != fresh.curve(for: $0)
+        }
     }
 
     /// Deletes a programmatic `additionalProfiles` entry (clearing
-    /// `activeProfileID` if it pointed at it). The six fixed profiles are
+    /// `activeProfileID` if it pointed at it). The seven fixed profiles are
     /// never deleted (use `reset(id:)` for a custom slot).
     /// - Returns: `true` if a profile was removed.
     @discardableResult
@@ -162,7 +176,7 @@ public struct ProfileStore: Codable, Hashable, Sendable {
         let stored = try container.decodeIfPresent([FanProfile].self, forKey: .profiles) ?? []
         let active = try container.decodeIfPresent(UUID.self, forKey: .activeProfileID)
         if version >= 2 {
-            self.init(profiles: stored, activeProfileID: active)
+            self.init(profiles: version >= 3 ? stored : Self.migratedCustom1(stored), activeProfileID: active)
         } else {
             self = Self.migratedFromLegacy(profiles: stored, activeProfileID: active)
         }
@@ -190,6 +204,24 @@ public struct ProfileStore: Codable, Hashable, Sendable {
 
     // MARK: Normalization / migration
 
+    /// The Custom 1 default before the curves (schema 2): `.sensor(agg:cpu, 70 → 95 °C)`.
+    static let legacyCustom1Mode = FanControlMode.sensor(sensorKey: "agg:cpu", startTemperature: 70,
+                                                         maxTemperature: 95)
+
+    /// Schema 2 → 3: a stored Custom 1 that still equals the old factory default (name
+    /// "Custom 1", `defaultMode` = `legacyCustom1Mode`, every `modes` entry the same, no
+    /// curves) becomes the new default (`FanProfile.defaultCustom1()`).
+    static func migratedCustom1(_ profiles: [FanProfile]) -> [FanProfile] {
+        profiles.map { profile in
+            guard profile.id == FanProfile.BuiltInID.custom1,
+                  profile.name == FanProfile.DefaultName.custom1,
+                  profile.defaultMode == legacyCustom1Mode,
+                  profile.modes.values.allSatisfy({ $0 == legacyCustom1Mode }),
+                  profile.curves.isEmpty, profile.defaultCurve == nil else { return profile }
+            return FanProfile.defaultCustom1()
+        }
+    }
+
     /// A store built from a pre-fixed-set (schema 1) profile list.
     static func migratedFromLegacy(profiles legacy: [FanProfile], activeProfileID: UUID?) -> ProfileStore {
         var store = ProfileStore()
@@ -213,7 +245,7 @@ public struct ProfileStore: Codable, Hashable, Sendable {
         return store
     }
 
-    /// The six fixed profiles (presets from code, custom slots from
+    /// The seven fixed profiles (presets from code, custom slots from
     /// `profiles` when present), then the additional profiles of `profiles`
     /// in their order (first occurrence of each id).
     static func normalized(_ profiles: [FanProfile]) -> [FanProfile] {
@@ -228,10 +260,28 @@ public struct ProfileStore: Codable, Hashable, Sendable {
         return fixed + additional
     }
 
-    /// A user (non-built-in) profile whose id is not one of the six (nor a legacy built-in id).
+    /// A user (non-built-in) profile whose id is not one of the seven (nor a legacy built-in id).
     static func isAdditional(_ profile: FanProfile) -> Bool {
         !profile.isBuiltIn && !FanProfile.fixedProfileIDs.contains(profile.id)
             && profile.id != FanProfile.BuiltInID.silent && profile.id != FanProfile.BuiltInID.maximum
+    }
+
+    /// `profile` with stale curves dropped and a two-point linear curve
+    /// (`FanCurve.linear`) added for every `.sensor` mode (in `modes` or `defaultMode`)
+    /// that has no matching curve. Degenerate modes (start ≥ max, non-finite) get none.
+    static func withCurves(_ profile: FanProfile) -> FanProfile {
+        var result = profile
+        result.removeStaleCurves()
+        for (fan, mode) in result.modes where result.curves[fan] == nil {
+            if case .sensor(_, let start, let max) = mode, start.isFinite, max.isFinite, start < max {
+                result.curves[fan] = .linear(startTemperature: start, maxTemperature: max)
+            }
+        }
+        if result.defaultCurve == nil, case .sensor(_, let start, let max)? = result.defaultMode,
+           start.isFinite, max.isFinite, start < max {
+            result.defaultCurve = .linear(startTemperature: start, maxTemperature: max)
+        }
+        return result
     }
 
     static func normalizedActiveID(_ id: UUID?, in profiles: [FanProfile]) -> UUID? {
@@ -239,9 +289,10 @@ public struct ProfileStore: Codable, Hashable, Sendable {
         return id
     }
 
-    /// A custom slot with `isBuiltIn == false` and a non-empty name.
+    /// A custom slot with `isBuiltIn == false`, a non-empty name and a matching curve for
+    /// every `.sensor` mode (`withCurves`).
     static func sanitizedSlot(_ profile: FanProfile) -> FanProfile {
-        var slot = profile
+        var slot = withCurves(profile)
         slot.isBuiltIn = false
         let trimmed = slot.name.trimmingCharacters(in: .whitespacesAndNewlines)
         slot.name = trimmed.isEmpty ? (FanProfile.defaultName(id: slot.id) ?? slot.name) : slot.name

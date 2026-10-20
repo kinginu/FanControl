@@ -45,7 +45,7 @@ Mac（Apple Silicon, macOS 26, Swift 6.3.3 / Command Line Tools）で確認済�
 
 - 実 macOS SDK に対して `swift build` が警告 0 で通る。2026-10-20 から `swift-tools-version: 6.0`、全ターゲット（テスト含む）Swift 6 言語モード
   （strict concurrency complete）、デプロイメントターゲット macOS 26。`FanControlManager` は `@MainActor`、ポーリングは専用キューを executor とする actor（`docs/kit.md`「Threading model」）
-- `swift test` で 226 tests（36 suites）が通る（2026-10-20、温度閾値の設定とセンサー名のローカライズの追加後。Xcode 26.6）
+- `swift test` で 262 tests（42 suites）が通る（2026-10-20、温度閾値の設定とセンサー名のローカライズの追加後。Xcode 26.6）
 - 実機の SMC 読取（2026-10-19、Mac14,9 / M2 Pro）: `fanfi-probe` でファン 2 基（2317〜6800 RPM）と温度キー 259 個を取得。
   書込は未試行。結果と所見は `docs/integration.md` §6 Phase 1、生出力は `docs/verification/`
 - Mac14,9 のダンプに基づく Apple Silicon 対応（2026-10-19）: `TemperatureSampleFilter`（`Tp*` の 0 °C 付近の偽値を置換）、

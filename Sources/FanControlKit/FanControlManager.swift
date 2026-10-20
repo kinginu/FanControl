@@ -47,8 +47,10 @@ import FanControlXPC
 ///   dropped by the write queue, so a poll cannot undo the apply.
 /// - While a session is open, every poll recomputes `FanControlEngine.plan`
 ///   (including the `SafetyPolicy` emergency override, which also applies to
-///   the automatic profile) and writes only targets that moved by more than
-///   `writeThresholdRPM`, or mode changes.
+///   the automatic profile) on smoothed control temperatures, stabilizes the
+///   result (`FanTargetStabilizer`: deadband, dwell, slew limit; bypassed by the
+///   emergency override and by explicit applies) and writes only targets that
+///   moved by more than `writeThresholdRPM`, or mode changes.
 /// - On termination all fans are returned to automatic (bounded wait), and the
 ///   helper additionally restores original SMC values when our connection drops.
 @MainActor
@@ -94,6 +96,13 @@ public final class FanControlManager {
     /// Keys whose value in `sensorReadings` was substituted by the
     /// `TemperatureSampleFilter` in the latest poll (e.g. to dim them in the UI).
     public internal(set) var substitutedSensorKeys: Set<String> = []
+    /// Smoothed control temperature (°C) per sensor key followed by the active
+    /// profile's sensor-based modes (`TemperatureSmoother` with `tuning`): what the fan
+    /// curve is evaluated at. Raw values stay in `sensorReadings`. Updated every poll.
+    public internal(set) var controlTemperatures: [String: Double] = [:]
+    /// Recent raw temperatures of `temperatureHistoryKeys` (`TemperatureHistory`),
+    /// appended on every published poll.
+    public internal(set) var temperatureHistory = TemperatureHistory()
     /// While a write session is open: the active profile's mode per fan.
     /// Otherwise: the mode detected from the SMC (`FanDiscovery.fanControlModes`).
     public internal(set) var fanControlModes: [Int: FanControlMode] = [:]
@@ -178,6 +187,9 @@ public final class FanControlManager {
     /// Silicon; see `SafetyPolicy.defaultEmergencySensorPrefixes`).
     /// Not persisted by the kit.
     public var safetyPolicy: SafetyPolicy = FanControlPlatform.defaultSafetyPolicy
+    /// Anti-hunting parameters (input smoothing, deadband, dwell, slew limit;
+    /// docs/kit.md "Control loop"). Read by the next poll. Not persisted by the kit.
+    public var tuning: FanControlTuning = .default
 
     /// Copies user-set thresholds (clamped by `ThresholdBounds`) into
     /// `safetyPolicy`, keeping `emergencySensorPrefixes` and
@@ -249,6 +261,31 @@ public final class FanControlManager {
     /// (`FanControlPlatform.sensorAggregateDefinitions`). Fixed for the process.
     public nonisolated var sensorAggregateDefinitions: [SensorAggregateDefinition] { poller.aggregateDefinitions }
 
+    /// The smoothed control temperature of `key` (`controlTemperatures`), falling back
+    /// to its raw reading when the key is not followed by the active profile.
+    public func controlTemperature(for key: String) -> Double? {
+        controlTemperatures[key] ?? sensorReadings.first { $0.id == key && $0.temperature.isFinite }?.temperature
+    }
+
+    /// Keys recorded into `temperatureHistory`: `TemperatureHistory.defaultKeys` plus
+    /// every key requested with `setTemperatureHistoryKeys(_:for:)`.
+    public var temperatureHistoryKeys: Set<String> {
+        historyKeyRequests.values.reduce(into: Set(TemperatureHistory.defaultKeys)) { $0.formUnion($1) }
+    }
+
+    /// A view that charts temperatures requests its keys while visible (`[]` releases),
+    /// under a name unique to the view. Keys no longer requested (and not default) are
+    /// dropped from `temperatureHistory`.
+    public func setTemperatureHistoryKeys(_ keys: Set<String>, for holder: String) {
+        historyKeyRequests[holder] = keys.isEmpty ? nil : keys
+        temperatureHistory.retainOnly(temperatureHistoryKeys)
+    }
+
+    /// Poller publication (main actor).
+    func recordTemperatureHistory(_ sensors: [SensorReading], at date: Date) {
+        temperatureHistory.record(sensors, keys: temperatureHistoryKeys, at: date)
+    }
+
     /// Hottest CPU/GPU sensor (per `safetyPolicy.emergencySensorPrefixes`),
     /// falling back to the hottest sensor overall, skipping keys excluded from
     /// ranking (`SensorCatalog.isExcludedFromRanking(_:)`, e.g. `Tf*`).
@@ -263,6 +300,8 @@ public final class FanControlManager {
 
     /// Nook pause request + live-data holds (`isPauseInEffect`).
     @ObservationIgnored private var pauseState = MonitoringPauseState()
+    /// `setTemperatureHistoryKeys` requests per holder.
+    @ObservationIgnored private var historyKeyRequests: [String: Set<String>] = [:]
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var systemObservers: [(NotificationCenter, NSObjectProtocol)] = []
     /// Pending wake re-apply attempts (`wakeReapplyDelays`).
@@ -369,7 +408,7 @@ public final class FanControlManager {
     /// A refresh requested while monitoring that is still queued when
     /// `stopMonitoring()` runs is dropped.
     public func refreshNow() {
-        let context = PollContext(profile: resolvedActiveProfile, policy: safetyPolicy,
+        let context = PollContext(profile: resolvedActiveProfile, policy: safetyPolicy, tuning: tuning,
                                   sessionOpen: helperClient.isSessionOpen,
                                   requiresMonitoring: isMonitoring)
         poller.enqueue { $0.poll(context) }
@@ -465,8 +504,24 @@ public final class FanControlManager {
         }
     }
 
+    /// Makes fan `fanIndex` follow `sensorKey` on `curve` (multi-point; see `FanCurve`),
+    /// editing the active profile like `setFanControlMode` (built-in → "Custom").
+    /// The curve's RPMs are clamped to the fan's range when evaluated (no range error).
+    public func setFanCurve(fanIndex: Int, sensorKey: String, curve: FanCurve) async throws {
+        try await recordingErrors {
+            let fans = try await self.poller.run { try $0.discoveredFans() }
+            guard fans.contains(where: { $0.id == fanIndex }) else {
+                throw FanControlError.keyNotFound("F\(fanIndex)Tg")
+            }
+            var updated = Self.profile(changing: self.resolvedActiveProfile, fanIndex: fanIndex, to: .automatic,
+                                       fans: fans)
+            updated.setCurve(curve, sensorKey: sensorKey, forFan: fanIndex)
+            try await self.apply(updated, force: true, allowOpeningSession: true, makeActive: true)
+        }
+    }
+
     /// The profile `setFanControlMode` applies: `base` with fan `fanIndex` set to
-    /// `mode`. The other fans keep their *effective* mode: `base` is resolved for
+    /// `mode` (its curve, if any, is dropped: a `.sensor` mode set here runs linear). The other fans keep their *effective* mode: `base` is resolved for
     /// `fans` first, so a preset's `defaultMode` (Constant High, Boost, …) is
     /// materialised into per-fan modes instead of being dropped (untouched fans
     /// would otherwise fall back to automatic), and `apply` sees every manual fan
@@ -479,9 +534,11 @@ public final class FanControlManager {
         var updated = resolved
         if base.isBuiltIn {
             updated = FanProfile(id: customProfileID, name: "Custom", modes: resolved.modes, isBuiltIn: false,
-                                 defaultMode: base.defaultMode)
+                                 defaultMode: base.defaultMode, curves: resolved.curves,
+                                 defaultCurve: base.defaultCurve)
         }
         updated.modes[fanIndex] = mode
+        updated.curves[fanIndex] = nil
         return updated
     }
 
@@ -541,10 +598,7 @@ public final class FanControlManager {
                 }
             }
             try await self.helperClient.openSession()
-            await self.poller.run { poller in
-                poller.appliedTargets = [:]
-                poller.unsettledFans = []
-            }
+            await self.poller.run { $0.resetWriteState() }
             // Termination restore and wake handling must work even if
             // monitoring was never started (idempotent).
             self.registerSystemObserversIfNeeded()
@@ -560,10 +614,7 @@ public final class FanControlManager {
         _ = try? await poller.serializer.run { [helperClient] in
             await helperClient.closeSession()
         }
-        await poller.run { poller in
-            poller.appliedTargets = [:]
-            poller.unsettledFans = []
-        }
+        await poller.run { $0.resetWriteState() }
         syncSessionFlag()
     }
 
@@ -720,20 +771,10 @@ public final class FanControlManager {
         guard helperClient.isSessionOpen else { return }
         do {
             let policy = safetyPolicy
-            let (fans, sensors, emergency) = try await poller.run {
-                poller throws -> ([FanDevice], [SensorReading], Bool) in
-                // Polls enqueued before this point were snapshotted with the old
-                // selection; their batches now carry a stale generation.
-                poller.applyGate.advance()
-                try poller.prepareReader()
-                let sensors = poller.reader.map { poller.readFilteredTemperatures(using: $0) } ?? []
-                // Same latch as the poll loop, so a user action cannot drop an
-                // active emergency override inside the hysteresis band.
-                let emergency = poller.alertEvaluator.evaluateEmergency(sensors: sensors, policy: policy)
-                return (poller.polledFans, sensors, emergency)
+            let tuning = self.tuning
+            let (fans, plan, emergency) = try await poller.run { poller throws in
+                try poller.planApply(profile: profile, policy: policy, tuning: tuning)
             }
-            let plan = FanControlEngine.plan(profile: profile, fans: fans, sensors: sensors, policy: policy,
-                                             isEmergency: emergency)
             try await poller.applyTargets(FanControlPoller.targets(from: plan), force: force)
             fanControlModes = Dictionary(uniqueKeysWithValues: fans.map { ($0.id, profile.mode(for: $0)) })
             emergencyOverrideActive = emergency
