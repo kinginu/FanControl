@@ -10,11 +10,14 @@ protocol). Everything except a few pure types (`FanWriteStrategy`, `FanTarget`,
 arm64, the manager logs an error at init, and every SMC open fails with
 `FanControlError.unsupportedPlatform`.
 
-<!-- TODO: verify after refactor — FanControlManager is being split into smaller types; the file table and the "Threading model" section name the pre-split layout. -->
-
 | File | Contents |
 |---|---|
 | `FanControlManager.swift` | The `@MainActor @Observable` singleton `FanControlManager.shared` |
+| `MonitoringService.swift` | Internal: poll-loop driver (monitoring flag, timer, effective interval, pause / holds) |
+| `FanController.swift` | Internal: apply / session / restore / selection rollback / termination; `ProfileSelectionRollback` |
+| `HelperCoordinator.swift` | Internal: install status, connection handshake, session flag, conflicting controllers |
+| `WakeCoordinator.swift` | Internal: sleep / wake re-apply attempts |
+| `ErrorRecorder.swift` | Internal: records a user action's error into `lastError` and rethrows |
 | `FanControlPoller.swift` | Internal actor on the poll queue: SMC reads, polling, write planning, `WriteSerializer` |
 | `HelperInstaller.swift` | `SMAppService.daemon(plistName:)` wrapper that knows about the manual install; `HelperInstallStatus` |
 | `HelperClient.swift` | Async `NSXPCConnection` client (`SMCWriter`), `HelperConnectionState`, choice of helper requirement |
@@ -29,15 +32,61 @@ arm64, the manager logs an error at init, and every SMC open fails with
 | `TemperatureHistory.swift` | Per-key ring buffers of recent temperatures |
 | `FanControlPlatform.swift` | arm64 check (`isSupported` / `requireSupported()`), `defaultSafetyPolicy`, `sensorAggregateDefinitions` |
 
+## Architecture
+
+`FanControlManager` is a thin `@MainActor @Observable` facade. The public API (names, signatures,
+isolation, observable properties) is the same as before the split (2026-10-20); behind it, each
+concern is an internal component that can be built and tested on its own:
+
+```
+host app / views ── public API ──► FanControlManager  (facade, @MainActor @Observable)
+                                   owns: poll snapshot, profileStore, safetyPolicy,
+                                         tuning, temperature history, lastError
+                                          │ forwards state and actions
+        ┌───────────────────┬─────────────┴──────┬────────────────────┐
+        ▼                   ▼                    ▼                    ▼
+ MonitoringService     FanController       HelperCoordinator     WakeCoordinator
+ timer, interval,      apply, session,     install status,       sleep / wake
+ power source,         restore, rollback,  handshake, session    re-apply attempts
+ pause / holds         termination         flag, conflicts       (host: the facade)
+        │ poll hook         │      └── uses ──────►│
+        ▼                   ▼                      ▼
+ FanControlPoller (actor on the poll queue) ──► HelperClient (XPC) ──► root helper
+        └── publishes the poll snapshot to the facade (main queue)
+```
+
+| Component | Owns | Talks to |
+|---|---|---|
+| `MonitoringService` | `isMonitoring`, `isMonitoringPaused`, `isPauseInEffect`, `isOnBattery`, `effectivePollingInterval`, the interval settings, `keepAlertsWhilePaused`, the `Timer`, `MonitoringPauseState`, the `PowerSourceProviding` | the poller (monitoring flag, reader close); hooks `poll` (facade's `refreshNow()`), `beforePoll` (conflict check if due), `isSessionOpen` (slow poll while paused) |
+| `FanController` | apply with selection rollback (`ProfileSelectionRollback`), open / close session, `restoreDefaultControl`, wake re-apply task, termination restore (`willTerminate` observer), `customProfileID`, `profile(changing:…)` | the poller, `HelperCoordinator`, and its `FanControllerHost` (the facade: profile store, active profile, policy, tuning, monitoring start, apply result) |
+| `HelperCoordinator` | `helperStatus`, `helperConnectionState`, `isSMCWriteSessionOpen`, `conflictingControllers(Statuses)`, `HelperClient`, `HelperInstaller`, `ConflictingControllerDetector`, app launch / terminate observers | `HelperClient`; hooks `onSessionFlagChange` (reschedules a paused timer), `onConflictingControllersChange` (facade posts the notification) |
+| `WakeCoordinator` | `reapplyProfileAfterWake`, the pending attempts at `[0, 2, 5]` s, will-sleep / did-wake observers | its `WakeCoordinatorHost` (the facade: session flag, poll, poller sleep flag, close / re-apply via `FanController`); the scheduler is injectable |
+| `FanControlPoller` | all poll-queue state (unchanged) | publishes into the facade |
+
+- The facade keeps the poll snapshot because `FanControlPoller` publishes into it, and the
+  notifications keep the manager as their `object`. State owned by a component is exposed through
+  forwarding computed properties; the components are `@Observable` themselves, so observation
+  through the facade (SwiftUI, `withObservationTracking`) still works. Settings forward both
+  `get` and `set` (`@Bindable` bindings keep working).
+- Errors: `FanController` and `HelperCoordinator` wrap the former recording methods in an
+  `ErrorRecorder` the facade installs at init, so `lastError` is set exactly where it was before
+  (nested user actions record the same error more than once, as before).
+- Component hooks and host references are wired at the end of the facade's `init` and are weak,
+  so the facade still owns everything and is deallocated as before.
+- Component tests: `Tests/FanControlKitTests/ManagerComponentsTests.swift` (timer / pause rules,
+  wake attempt schedule with a fake host and scheduler, selection rollback, applies that must not
+  write without a session, conflict-check throttle, install status → error mapping).
+
 ## Threading model
 
 Swift 6 language mode with complete strict concurrency. The compiler checks the isolation below.
 The code has no `nonisolated(unsafe)`, and the only `@unchecked Sendable` is `HelperClient`,
 which is lock-protected and documented.
 
-- **`FanControlManager` is `@MainActor`.** Every observable property, the poll timer, the profile
-  store, the pause / live-data-hold state and the wake bookkeeping are isolated to the main
-  actor. Views call its synchronous methods directly (`startMonitoring`, `stopMonitoring`,
+- **`FanControlManager` and its components (`MonitoringService`, `FanController`,
+  `HelperCoordinator`, `WakeCoordinator`) are `@MainActor`.** Every observable property, the poll
+  timer, the profile store, the pause / live-data-hold state and the wake bookkeeping are
+  isolated to the main actor. Views call its synchronous methods directly (`startMonitoring`, `stopMonitoring`,
   `refreshNow`, `setMonitoringPaused`, `setLiveDataHold`, `saveProfile`, `deleteProfile`,
   `clearLastError`, `refreshHelperStatus`) and `await` its async ones. Code off the main actor
   must `await` both kinds. The `nonisolated` members are the static constants
@@ -58,14 +107,14 @@ which is lock-protected and documented.
 - A main run-loop `Timer` (`.common` mode, 10 % tolerance) fires every
   `effectivePollingInterval`, which is clamped to 0.5–300 s. On each tick, the main actor takes
   a snapshot of the active profile, `safetyPolicy`, `tuning` and the session flag
-  (`PollContext`) and enqueues the poll. The power source monitor and the conflict detector are
-  main-actor state too.
+  (`PollContext`) and enqueues the poll. The timer, the power source monitor
+  (`MonitoringService`) and the conflict detector (`HelperCoordinator`) are main-actor state too.
 - Helper writes go through a FIFO `WriteSerializer` actor, so one write list (mode keys first,
   then targets) never interleaves with another. `FanControlPoller.applyTargets` is
   `nonisolated`: it plans on the poller, writes through the serializer, and never touches the
   main actor. The termination restore blocks the main thread for up to 2 s.
 - `HelperClient` is lock-protected. Its `@Sendable onStateChange` callback is mirrored into
-  `helperConnectionState` / `isSMCWriteSessionOpen` on the main actor. Every XPC call races
+  `helperConnectionState` / `isSMCWriteSessionOpen` on the main actor (by `HelperCoordinator`). Every XPC call races
   `HelperClient.callTimeout` (8 s). On timeout the call throws
   `.helperConnectionFailed("timeout")` and invalidates the connection, which ends the session; the
   helper then restores. `ResumeOnce` (first of reply or timeout) is a checked `Sendable` built on

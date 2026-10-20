@@ -25,11 +25,21 @@ import FanControlXPC
 /// App-side fan control state and actions (design doc §3.1), following the
 /// DynamicNotch manager pattern (`@Observable` + `static let shared`).
 ///
+/// A thin facade (docs/kit.md "Architecture"): it owns the poll snapshot that
+/// `FanControlPoller` publishes, the profile store and the safety / tuning
+/// settings, and forwards everything else to its components:
+/// - `MonitoringService`: monitoring flag, poll timer, effective interval
+///   (power source), Nook pause / live-data holds;
+/// - `FanController`: apply / session / restore / rollback / termination;
+/// - `HelperCoordinator`: install status, connection handshake, session flag,
+///   conflicting controllers;
+/// - `WakeCoordinator`: sleep / wake re-apply.
+///
 /// Threading model (docs/kit.md "Threading model"):
-/// - The manager is `@MainActor`: every observable property, the timer, the
-///   profile store and the pause / wake bookkeeping live on the main actor.
-///   Views call its synchronous methods directly and `await` its async ones;
-///   off-main callers `await` both. The constants, `clientTeamID`,
+/// - The manager and its components are `@MainActor`: every observable property,
+///   the timer, the profile store and the pause / wake bookkeeping live on the
+///   main actor. Views call its synchronous methods directly and `await` its async
+///   ones; off-main callers `await` both. The constants, `clientTeamID`,
 ///   `sensorAggregateDefinitions` and `exportSMCDump()` are `nonisolated`.
 /// - SMC reads (`SMCClient`), discovery, alert evaluation and write planning run
 ///   on a private serial dispatch queue: the executor of `FanControlPoller`, an
@@ -67,22 +77,22 @@ public final class FanControlManager {
     public nonisolated static let profileStoreDefaultsKey = "fanControl.profileStore"
     /// Id of the user profile created when a single fan is changed while a
     /// built-in profile is active.
-    public nonisolated static let customProfileID = UUID(uuidString: "6F1A0000-0000-4000-8000-0000000000C0")!
+    public nonisolated static let customProfileID = FanController.customProfileID
     /// Poll-driven target changes at or below this many RPM are not written.
     public nonisolated static let writeThresholdRPM = 25
     /// Seconds after `NSWorkspace.didWakeNotification` at which the active profile
     /// is re-applied while a session is open (`reapplyProfileAfterWake`).
-    public nonisolated static let wakeReapplyDelays: [TimeInterval] = [0, 2, 5]
+    public nonisolated static let wakeReapplyDelays: [TimeInterval] = WakeCoordinator.defaultReapplyDelays
     /// While monitoring, `conflictingControllers` is re-checked at most this often
     /// from the poll timer (besides app launch / terminate notifications).
-    public nonisolated static let conflictCheckInterval: TimeInterval = 60
+    public nonisolated static let conflictCheckInterval: TimeInterval = HelperCoordinator.conflictCheckInterval
     /// Shown when `helperStatus == .requiresApproval` (`installHelper` throws
     /// `.helperNotInstalled` in that case, which carries no message of its own).
     /// English only; an app with its own localized text may show that instead.
     public nonisolated static let helperApprovalInstructions =
         "Allow the DynamicNotch fan control helper in System Settings > General > Login Items & Extensions, then try again."
 
-    // MARK: - State (read-only to views; set on the main actor by the manager and `FanControlPoller`)
+    // MARK: - Poll snapshot (read-only to views; set on the main actor by `FanControlPoller`)
 
     public internal(set) var fans: [FanDevice] = []
     public internal(set) var currentRPMs: [Int: Int] = [:]
@@ -107,18 +117,8 @@ public final class FanControlManager {
     /// Otherwise: the mode detected from the SMC (`FanDiscovery.fanControlModes`).
     public internal(set) var fanControlModes: [Int: FanControlMode] = [:]
     public internal(set) var isSMCConnected: Bool = false
-    public internal(set) var isMonitoring: Bool = false
-    /// The host's last `setMonitoringPaused` request (Nook hidden). Whether the
-    /// slow / stopped polling is actually in effect is `isPauseInEffect`.
-    public internal(set) var isMonitoringPaused: Bool = false
-    /// `isMonitoringPaused` and no live-data hold (`setLiveDataHold(_:for:)`):
-    /// the poll timer runs slowed (or stopped) only while this is `true`.
-    public internal(set) var isPauseInEffect: Bool = false
     public internal(set) var lastUpdate: Date?
     public internal(set) var lastError: FanControlError?
-    public internal(set) var helperStatus: HelperInstallStatus = .notRegistered
-    public internal(set) var helperConnectionState: HelperConnectionState = .disconnected
-    public internal(set) var isSMCWriteSessionOpen: Bool = false
     public internal(set) var highTempAlertActive: Bool = false {
         didSet {
             guard highTempAlertActive != oldValue else { return }
@@ -140,47 +140,63 @@ public final class FanControlManager {
                                             userInfo: ["fanIDs": anomalousFanIDs])
         }
     }
+
+    // MARK: - Monitoring state (`MonitoringService`)
+
+    public var isMonitoring: Bool { monitoring.isMonitoring }
+    /// The host's last `setMonitoringPaused` request (Nook hidden). Whether the
+    /// slow / stopped polling is actually in effect is `isPauseInEffect`.
+    public var isMonitoringPaused: Bool { monitoring.isMonitoringPaused }
+    /// `isMonitoringPaused` and no live-data hold (`setLiveDataHold(_:for:)`):
+    /// the poll timer runs slowed (or stopped) only while this is `true`.
+    public var isPauseInEffect: Bool { monitoring.isPauseInEffect }
     /// `true` while the Mac runs on battery (`PowerSourceProviding`, IOKit
     /// power-source notifications by default). `false` on AC and on desktops.
-    public internal(set) var isOnBattery: Bool = false
+    public var isOnBattery: Bool { monitoring.isOnBattery }
     /// The interval the poll timer uses while the Nook pause is not in effect
     /// (`PollingIntervalPolicy.effectiveInterval`): `pollingInterval`, or
     /// `max(pollingInterval, batteryPollingInterval)` while `slowPollingOnBattery`
     /// and `isOnBattery`; clamped to 0.5...300 s. The paused low-frequency poll is
     /// `max(5 × effectivePollingInterval, 10 s)`.
-    public internal(set) var effectivePollingInterval: TimeInterval = 2.0
+    public var effectivePollingInterval: TimeInterval { monitoring.effectivePollingInterval }
+    /// Interval of the scheduled poll timer, `nil` when none is scheduled (tests).
+    var scheduledTimerInterval: TimeInterval? { monitoring.scheduledTimerInterval }
+
+    // MARK: - Helper state (`HelperCoordinator`)
+
+    public var helperStatus: HelperInstallStatus { helper.helperStatus }
+    public var helperConnectionState: HelperConnectionState { helper.helperConnectionState }
+    public var isSMCWriteSessionOpen: Bool { helper.isSMCWriteSessionOpen }
     /// Display names of other fan control apps that are running now (e.g. `["FanFi"]`,
     /// design doc §5.2): both writing at once override each other. Refreshed on
     /// `startMonitoring()`, on app launch / terminate notifications and at most every
     /// `conflictCheckInterval` while polling; `refreshConflictingControllers()` forces it.
-    public internal(set) var conflictingControllers: [String] = [] {
-        didSet {
-            guard conflictingControllers != oldValue else { return }
-            NotificationCenter.default.post(name: .fanControlConflictingControllersChanged, object: self,
-                                            userInfo: ["names": conflictingControllers])
-        }
-    }
+    /// Changes post `.fanControlConflictingControllersChanged`.
+    public var conflictingControllers: [String] { helper.conflictingControllers }
     /// Full result of the last conflict check, including controllers whose helper
     /// is installed while the app is not running (informational).
-    public internal(set) var conflictingControllerStatuses: [ConflictingControllerStatus] = []
+    public var conflictingControllerStatuses: [ConflictingControllerStatus] { helper.conflictingControllerStatuses }
 
     // MARK: - Settings
 
     /// Seconds between polls (effective value clamped to 0.5...300, slowed on
     /// battery: `effectivePollingInterval`). A change of the effective interval
     /// reschedules the timer while monitoring.
-    public var pollingInterval: TimeInterval = 2.0 {
-        didSet { updateEffectivePollingInterval() }
+    public var pollingInterval: TimeInterval {
+        get { monitoring.pollingInterval }
+        set { monitoring.pollingInterval = newValue }
     }
     /// When `true` (default), polling slows to `batteryPollingInterval` (if that is
     /// longer than `pollingInterval`) while the Mac runs on battery (design doc
     /// §5.4 (a)). The app mirrors `FanControlGeneralSettings.slowPollingOnBattery` into this.
-    public var slowPollingOnBattery: Bool = true {
-        didSet { updateEffectivePollingInterval() }
+    public var slowPollingOnBattery: Bool {
+        get { monitoring.slowPollingOnBattery }
+        set { monitoring.slowPollingOnBattery = newValue }
     }
     /// Poll interval on battery while `slowPollingOnBattery` is on (default 10 s).
-    public var batteryPollingInterval: TimeInterval = PollingIntervalPolicy.defaultBatteryInterval {
-        didSet { updateEffectivePollingInterval() }
+    public var batteryPollingInterval: TimeInterval {
+        get { monitoring.batteryPollingInterval }
+        set { monitoring.batteryPollingInterval = newValue }
     }
     /// Starts as `FanControlPlatform.defaultSafetyPolicy` (= `SafetyPolicy.default`;
     /// the emergency prefixes exclude `TG`, a battery-area sensor on Apple
@@ -216,16 +232,18 @@ public final class FanControlManager {
     /// Either way the helper itself also hands forced fans back before sleep and
     /// re-applies the session's last targets after wake (`docs/helper.md` §5),
     /// so the fans are not left stopped if this notification is late.
-    public var reapplyProfileAfterWake: Bool = true
+    public var reapplyProfileAfterWake: Bool {
+        get { wake.reapplyProfileAfterWake }
+        set { wake.reapplyProfileAfterWake = newValue }
+    }
     /// When `true` (default), `setMonitoringPaused(true)` without a write session
     /// keeps a slow poll (`max(5 × pollingInterval, 10 s)`, the same rate as with
     /// a session) so the high-temperature and fan-anomaly alerts still fire while
     /// the Nook is hidden. When `false`, polling stops while paused unless a
     /// session is open. The app mirrors "any alert enabled" into this.
-    public var keepAlertsWhilePaused: Bool = true {
-        didSet {
-            if keepAlertsWhilePaused != oldValue, isMonitoring, isPauseInEffect { scheduleTimer() }
-        }
+    public var keepAlertsWhilePaused: Bool {
+        get { monitoring.keepAlertsWhilePaused }
+        set { monitoring.keepAlertsWhilePaused = newValue }
     }
     /// Team ID the helper's code signature must carry
     /// (`FanControlHelperConstants.helperCodeSigningRequirement(teamID:)`, checked by
@@ -296,29 +314,19 @@ public final class FanControlManager {
                 .max { $0.temperature < $1.temperature }
     }
 
-    // MARK: - Private (main actor)
+    // MARK: - Components and private state
 
-    /// Nook pause request + live-data holds (`isPauseInEffect`).
-    @ObservationIgnored private var pauseState = MonitoringPauseState()
+    /// Poll loop driver: monitoring flag, timer, effective interval, pause / holds.
+    @ObservationIgnored let monitoring: MonitoringService
+    /// Apply / session / restore / rollback / termination.
+    @ObservationIgnored let controller: FanController
+    /// Install status, handshake, session flag, conflicting controllers.
+    @ObservationIgnored let helper: HelperCoordinator
+    /// Sleep / wake re-apply.
+    @ObservationIgnored let wake: WakeCoordinator
     /// `setTemperatureHistoryKeys` requests per holder.
     @ObservationIgnored private var historyKeyRequests: [String: Set<String>] = [:]
-    @ObservationIgnored private var timer: Timer?
-    @ObservationIgnored private var systemObservers: [(NotificationCenter, NSObjectProtocol)] = []
-    /// Pending wake re-apply attempts (`wakeReapplyDelays`).
-    @ObservationIgnored private var wakeWorkItems: [DispatchWorkItem] = []
-    /// AC / battery source (`isOnBattery`).
-    @ObservationIgnored private let powerSource: any PowerSourceProviding
-    /// Finds other fan control apps (`conflictingControllers`).
-    @ObservationIgnored private let conflictDetector: ConflictingControllerDetector
-    /// When `conflictingControllers` was last refreshed.
-    @ObservationIgnored private var lastConflictCheck: Date?
-    /// Interval of the scheduled poll timer, `nil` when none is scheduled (tests).
-    @ObservationIgnored private(set) var scheduledTimerInterval: TimeInterval?
-
-    // MARK: - Private (Sendable, any isolation)
-
     @ObservationIgnored private nonisolated let helperClient: HelperClient
-    @ObservationIgnored private nonisolated let installer: HelperInstaller
     /// Owns the poll queue and all poll state (SMC reader, fans, alert latch,
     /// sample filter, write strategy, throttle baseline, apply generation).
     @ObservationIgnored private nonisolated let poller: FanControlPoller
@@ -340,12 +348,14 @@ public final class FanControlManager {
                 conflictDetector: ConflictingControllerDetector = ConflictingControllerDetector()) {
         self.defaults = defaults
         self.helperClient = helperClient
-        self.installer = installer
-        let powerSource = powerSource ?? PowerSourceMonitor()
-        self.powerSource = powerSource
-        self.conflictDetector = conflictDetector
         let poller = FanControlPoller(helperClient: helperClient)
         self.poller = poller
+        let helper = HelperCoordinator(client: helperClient, installer: installer, conflictDetector: conflictDetector)
+        self.helper = helper
+        let monitoring = MonitoringService(poller: poller, powerSource: powerSource ?? PowerSourceMonitor())
+        self.monitoring = monitoring
+        self.wake = WakeCoordinator()
+        self.controller = FanController(poller: poller, helper: helper)
         if let data = defaults.data(forKey: Self.profileStoreDefaultsKey),
            let store = try? ProfileStore.decodeJSON(data) {
             self.profileStore = store
@@ -355,21 +365,24 @@ public final class FanControlManager {
         if !FanControlPlatform.isSupported {
             kitLog.error("Fan control disabled: \(FanControlPlatform.unsupportedPlatformDetail, privacy: .public)")
         }
-        helperClient.onStateChange = { [weak self] state in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.helperConnectionState = state
-                self.syncSessionFlag()
-            }
+        // Wiring (all hooks run on the main actor).
+        let recorder = ErrorRecorder { [weak self] error in self?.record(error) }
+        helper.recordErrors = recorder
+        controller.recordErrors = recorder
+        controller.host = self
+        wake.host = self
+        helper.onSessionFlagChange = { [weak monitoring] in monitoring?.sessionStateDidChange() }
+        helper.onConflictingControllersChange = { [weak self] names in
+            guard let self else { return }
+            NotificationCenter.default.post(name: .fanControlConflictingControllersChanged, object: self,
+                                            userInfo: ["names": names])
         }
+        monitoring.isSessionOpen = { [weak helper] in helper?.isSMCWriteSessionOpen ?? false }
+        monitoring.beforePoll = { [weak helper] in helper?.refreshConflictingControllersIfDue() }
+        monitoring.poll = { [weak self] in self?.refreshNow() }
         // First job on the poll queue: every later poll can publish.
         poller.enqueue { [weak self] poller in
             if let self { poller.attach(self) }
-        }
-        isOnBattery = powerSource.isOnBattery
-        updateEffectivePollingInterval()
-        powerSource.startObserving { [weak self] onBattery in
-            self?.powerSourceDidChange(onBattery)
         }
     }
 
@@ -377,12 +390,10 @@ public final class FanControlManager {
 
     /// Opens the SMC, discovers fans and sensors once, then polls every `pollingInterval`.
     public func startMonitoring() {
-        guard !isMonitoring else { return }
-        isMonitoring = true
-        poller.enqueue { $0.monitoringActive = true }
+        guard monitoring.markStarted() else { return }
         registerSystemObserversIfNeeded()
         refreshConflictingControllers()
-        scheduleTimer()
+        monitoring.scheduleTimer()
         refreshNow()
     }
 
@@ -391,16 +402,9 @@ public final class FanControlManager {
     /// reader). Does not close a write session: call `restoreDefaultControl()`
     /// first if fans should return to automatic.
     public func stopMonitoring() {
-        guard isMonitoring else { return }
-        isMonitoring = false
-        timer?.invalidate()
-        timer = nil
-        cancelWakeWork()
+        guard monitoring.stop() else { return }
+        wake.cancelPendingWork()
         isSMCConnected = false
-        poller.enqueue { poller in
-            poller.monitoringActive = false
-            poller.closeReader()
-        }
     }
 
     /// Polls once immediately. Also works when not monitoring: the SMC is then
@@ -414,28 +418,10 @@ public final class FanControlManager {
         poller.enqueue { $0.poll(context) }
     }
 
-    /// Timer / wake / un-pause polls: only while monitoring.
-    private func pollIfMonitoring() {
-        guard isMonitoring else { return }
-        if lastConflictCheck.map({ Date().timeIntervalSince($0) >= Self.conflictCheckInterval }) ?? true {
-            refreshConflictingControllers()
-        }
-        refreshNow()
-    }
-
     /// Re-runs the conflict check (`conflictingControllers`,
     /// `conflictingControllerStatuses`). Cheap: `NSRunningApplication` and `stat`.
     public func refreshConflictingControllers() {
-        lastConflictCheck = Date()
-        let statuses = conflictDetector.detect()
-        if statuses != conflictingControllerStatuses { conflictingControllerStatuses = statuses }
-        let names = ConflictingControllerDetector.runningNames(statuses)
-        if names != conflictingControllers {
-            if !names.isEmpty {
-                kitLog.notice("Other fan control app running: \(names.joined(separator: ", "), privacy: .public)")
-            }
-            conflictingControllers = names
-        }
+        helper.refreshConflictingControllers()
     }
 
     /// Call with `true` when the Nook is hidden and `false` when it is shown
@@ -446,10 +432,7 @@ public final class FanControlManager {
     /// working) or while `keepAlertsWhilePaused` is `true` (so alerts keep
     /// firing); otherwise it stops.
     public func setMonitoringPaused(_ paused: Bool) {
-        guard paused != isMonitoringPaused else { return }
-        isMonitoringPaused = paused
-        pauseState.requested = paused
-        syncPauseInEffect()
+        monitoring.setPaused(paused)
     }
 
     /// A view that shows live data regardless of the Nook (the settings pane)
@@ -459,21 +442,10 @@ public final class FanControlManager {
     /// so releasing the last hold returns to the paused rate without the view
     /// having to remember or restore the previous pause state.
     public func setLiveDataHold(_ held: Bool, for holder: String) {
-        pauseState.setHold(held, for: holder)
-        syncPauseInEffect()
+        monitoring.setLiveDataHold(held, for: holder)
     }
 
-    /// Reschedules the timer when `isPauseInEffect` changes; polls at once when
-    /// the pause ends.
-    private func syncPauseInEffect() {
-        let inEffect = pauseState.isInEffect
-        guard inEffect != isPauseInEffect else { return }
-        isPauseInEffect = inEffect
-        scheduleTimer()
-        if !inEffect { pollIfMonitoring() }
-    }
-
-    // MARK: - Control
+    // MARK: - Control (`FanController`)
 
     /// Sets a constant speed for one fan (see `setFanControlMode`).
     /// Throws `.rpmOutOfRange` if `rpm` is outside the fan's range.
@@ -486,60 +458,20 @@ public final class FanControlManager {
     /// "Custom" profile (`customProfileID`), which becomes active. Opens the
     /// write session (installing the helper if needed) for manual modes.
     public func setFanControlMode(fanIndex: Int, mode: FanControlMode) async throws {
-        try await recordingErrors {
-            let fans = try await self.poller.run { try $0.discoveredFans() }
-            guard let fan = fans.first(where: { $0.id == fanIndex }) else {
-                throw FanControlError.keyNotFound("F\(fanIndex)Tg")
-            }
-            let base = self.resolvedActiveProfile
-            let policy = self.safetyPolicy
-            if case .constant(let rpm) = mode {
-                let allowed = policy.enforceHardwareMinimum ? fan.rpmRange : 0...fan.rpmRange.upperBound
-                guard allowed.contains(rpm) else {
-                    throw FanControlError.rpmOutOfRange(fan: fanIndex, rpm: rpm, allowed: allowed)
-                }
-            }
-            let updated = Self.profile(changing: base, fanIndex: fanIndex, to: mode, fans: fans)
-            try await self.apply(updated, force: true, allowOpeningSession: true, makeActive: true)
-        }
+        try await controller.setFanControlMode(fanIndex: fanIndex, mode: mode)
     }
 
     /// Makes fan `fanIndex` follow `sensorKey` on `curve` (multi-point; see `FanCurve`),
     /// editing the active profile like `setFanControlMode` (built-in → "Custom").
     /// The curve's RPMs are clamped to the fan's range when evaluated (no range error).
     public func setFanCurve(fanIndex: Int, sensorKey: String, curve: FanCurve) async throws {
-        try await recordingErrors {
-            let fans = try await self.poller.run { try $0.discoveredFans() }
-            guard fans.contains(where: { $0.id == fanIndex }) else {
-                throw FanControlError.keyNotFound("F\(fanIndex)Tg")
-            }
-            var updated = Self.profile(changing: self.resolvedActiveProfile, fanIndex: fanIndex, to: .automatic,
-                                       fans: fans)
-            updated.setCurve(curve, sensorKey: sensorKey, forFan: fanIndex)
-            try await self.apply(updated, force: true, allowOpeningSession: true, makeActive: true)
-        }
+        try await controller.setFanCurve(fanIndex: fanIndex, sensorKey: sensorKey, curve: curve)
     }
 
-    /// The profile `setFanControlMode` applies: `base` with fan `fanIndex` set to
-    /// `mode` (its curve, if any, is dropped: a `.sensor` mode set here runs linear). The other fans keep their *effective* mode: `base` is resolved for
-    /// `fans` first, so a preset's `defaultMode` (Constant High, Boost, …) is
-    /// materialised into per-fan modes instead of being dropped (untouched fans
-    /// would otherwise fall back to automatic), and `apply` sees every manual fan
-    /// in `modes`. A built-in base becomes the "Custom" profile (`customProfileID`,
-    /// carrying the preset's `defaultMode` for fans not discovered yet); a user
-    /// profile keeps its id, name and `defaultMode`.
+    /// The profile `setFanControlMode` applies (`FanController.profile(changing:fanIndex:to:fans:)`).
     nonisolated static func profile(changing base: FanProfile, fanIndex: Int, to mode: FanControlMode,
                                     fans: [FanDevice]) -> FanProfile {
-        let resolved = base.resolved(for: fans)
-        var updated = resolved
-        if base.isBuiltIn {
-            updated = FanProfile(id: customProfileID, name: "Custom", modes: resolved.modes, isBuiltIn: false,
-                                 defaultMode: base.defaultMode, curves: resolved.curves,
-                                 defaultCurve: base.defaultCurve)
-        }
-        updated.modes[fanIndex] = mode
-        updated.curves[fanIndex] = nil
-        return updated
+        FanController.profile(changing: base, fanIndex: fanIndex, to: mode, fans: fans)
     }
 
     /// Applies `profile` (writing immediately, bypassing the throttle) and makes
@@ -548,9 +480,7 @@ public final class FanControlManager {
     /// and selected *before* the writes; if writing fails, the previous
     /// selection and stored version are restored.
     public func applyProfile(_ profile: FanProfile) async throws {
-        try await recordingErrors {
-            try await self.apply(profile, force: true, allowOpeningSession: true, makeActive: true)
-        }
+        try await controller.applyProfile(profile)
     }
 
     /// Adds or replaces a user profile. Built-in profiles are ignored. If it is
@@ -569,92 +499,34 @@ public final class FanControlManager {
     /// Ensures the helper is registered (`installHelper`), checks its protocol
     /// version (re-registering a stale helper once) and opens the write session.
     public func openSMCSession() async throws {
-        try await recordingErrors {
-            let status = self.installer.status()
-            self.helperStatus = status
-            // A manual installation pinned to another build is not "installed" for this
-            // app, but there is nothing to register either: `version()` below is
-            // refused by `HelperClient` without connecting (`.clientNotPinned`).
-            if status != .enabled && !status.isManualInstallation {
-                try await self.installHelper()
-            }
-            var (version, _) = try await self.helperClient.version()
-            if version != FanControlHelperConstants.protocolVersion, status.isManualInstallation {
-                // Only root can replace a manually installed helper.
-                throw FanControlError.helperRejected(
-                    code: -1,
-                    message: "The manually installed helper speaks protocol \(version), the app needs \(FanControlHelperConstants.protocolVersion). Re-run sudo \(FanControlHelperConstants.manualInstallScriptName) with this app.")
-            }
-            if version != FanControlHelperConstants.protocolVersion {
-                // A helper from an older/newer app build is still registered.
-                self.helperClient.invalidate()
-                try? await self.installer.unregister()
-                try await self.installHelper()
-                (version, _) = try await self.helperClient.version()
-                guard version == FanControlHelperConstants.protocolVersion else {
-                    throw FanControlError.helperRejected(
-                        code: -1,
-                        message: "Helper protocol version \(version) does not match the app's \(FanControlHelperConstants.protocolVersion).")
-                }
-            }
-            try await self.helperClient.openSession()
-            await self.poller.run { $0.resetWriteState() }
-            // Termination restore and wake handling must work even if
-            // monitoring was never started (idempotent).
-            self.registerSystemObserversIfNeeded()
-            self.syncSessionFlag()
-        }
+        try await controller.openSession()
     }
 
     /// Closes the write session after pending writes. The helper restores the
     /// original value of every key written during the session. Poll batches
     /// still queued are dropped (apply generation bump).
     public func closeSMCSession() async {
-        await poller.run { _ = $0.applyGate.advance() }
-        _ = try? await poller.serializer.run { [helperClient] in
-            await helperClient.closeSession()
-        }
-        await poller.run { $0.resetWriteState() }
-        syncSessionFlag()
+        await controller.closeSession()
     }
+
+    /// Activates the Automatic profile, returns every fan to automatic and closes the session.
+    ///
+    /// If no session is open but the SMC reports a fan in manual mode (e.g. the
+    /// helper crashed or was killed mid-session, so it could not restore; or
+    /// another tool forced the fan), this explicit user action opens a session
+    /// just to write automatic and closes it again.
+    public func restoreDefaultControl() async throws {
+        try await controller.restoreDefaultControl()
+    }
+
+    // MARK: - Helper (`HelperCoordinator`)
 
     /// Registers the helper daemon (no-op for a manual installation, see
     /// `HelperInstaller.register()`). If the user still has to approve it, opens
     /// System Settings > General > Login Items & Extensions and throws
     /// `.helperNotInstalled` (show `helperApprovalInstructions`).
     public func installHelper() async throws {
-        try await recordingErrors {
-            // `SMAppService.register()` talks to launchd / BTM: keep it off the main actor.
-            let status = try await Self.register(self.installer)
-            self.helperStatus = status
-            switch status {
-            case .enabled, .installedManually:
-                return
-            case .installedManuallyMismatch(let pinned, let app):
-                // Only root can re-pin: the user must re-run install.sh.
-                throw FanControlError.helperConnectionRejected(
-                    HelperRejectionReason.clientNotPinned(pinnedCDHash: pinned, appCDHash: app).description)
-            case .requiresApproval:
-                HelperInstaller.openSystemSettingsLoginItems()
-                throw FanControlError.helperNotInstalled
-            case .notFound:
-                throw FanControlError.helperConnectionFailed(
-                    "\(FanControlHelperConstants.plistName) is missing from DynamicNotch.app/Contents/Library/LaunchDaemons.")
-            case .notRegistered, .unknown:
-                throw FanControlError.helperNotInstalled
-            }
-        }
-    }
-
-    /// Runs `installer.register()` on the global concurrent executor.
-    private nonisolated static func register(_ installer: HelperInstaller) async throws -> HelperInstallStatus {
-        try installer.register()
-    }
-
-    /// Clears `lastError` (e.g. when the user dismisses it). The manager never
-    /// clears it on its own; a later failure sets it again.
-    public func clearLastError() {
-        lastError = nil
+        try await helper.install()
     }
 
     /// User action ("Check Again"): forgets a sticky helper rejection and the
@@ -665,52 +537,21 @@ public final class FanControlManager {
     /// helper. A manual installation pinned to another build is reported again
     /// without connecting. Throws (and records) the probe's error.
     public func retryHelperConnection() async throws {
-        try await recordingErrors {
-            self.helperClient.resetRejection()
-            let status = self.installer.status()
-            self.helperStatus = status
-            guard status == .enabled || status.isManualInstallation else { return }
-            _ = try await self.helperClient.version()
-        }
+        try await helper.retryConnection()
     }
 
     /// Re-reads the install status (manual installation or `SMAppService`) into
     /// `helperStatus`. File / `SMAppService` reads only; never connects to the helper.
     public func refreshHelperStatus() {
-        helperStatus = installer.status()
+        helper.refreshStatus()
     }
 
-    /// Activates the Automatic profile, returns every fan to automatic and closes the session.
-    ///
-    /// If no session is open but the SMC reports a fan in manual mode (e.g. the
-    /// helper crashed or was killed mid-session, so it could not restore; or
-    /// another tool forced the fan), this explicit user action opens a session
-    /// just to write automatic and closes it again.
-    public func restoreDefaultControl() async throws {
-        try await recordingErrors {
-            self.profileStore.activeProfileID = FanProfile.BuiltInID.automatic
-            // Drop poll batches planned from the previous profile.
-            await self.poller.run { _ = $0.applyGate.advance() }
-            if !self.helperClient.isSessionOpen {
-                let orphaned = try await self.poller.run { poller throws -> Bool in
-                    try poller.prepareReader()
-                    guard let reader = poller.reader else { return false }
-                    return FanDiscovery.fanControlModes(fans: poller.polledFans, using: reader)
-                        .values.contains { $0.isManual }
-                }
-                if orphaned { try await self.openSMCSession() }
-            }
-            if self.helperClient.isSessionOpen {
-                do {
-                    let fans = try await self.poller.run { try $0.discoveredFans() }
-                    try await self.poller.applyTargets(FanControlPoller.allAutomatic(fans), force: true)
-                } catch {
-                    await self.closeSMCSession()
-                    throw error
-                }
-            }
-            await self.closeSMCSession()
-        }
+    // MARK: - Errors and diagnostics
+
+    /// Clears `lastError` (e.g. when the user dismisses it). The manager never
+    /// clears it on its own; a later failure sets it again.
+    public func clearLastError() {
+        lastError = nil
     }
 
     /// Every SMC key with type, size, attributes and raw bytes (diagnostics, design doc §5.7).
@@ -733,298 +574,68 @@ public final class FanControlManager {
         await poller.dump()
     }
 
-    // MARK: - Applying
+    // MARK: - Internal
 
-    private var resolvedActiveProfile: FanProfile {
+    var resolvedActiveProfile: FanProfile {
         guard let id = profileStore.activeProfileID else { return .automatic() }
         return availableProfiles.first { $0.id == id } ?? .automatic()
     }
 
-    /// Plans `profile` against fresh fans/sensors and writes it.
-    ///
-    /// - `allowOpeningSession`: `true` only for explicit user actions
-    ///   (`applyProfile`, `setFanRPM`, `setFanControlMode`). With `false` (wake
-    ///   re-apply) the call returns immediately if no session is open, so it can
-    ///   never open the helper session or trigger the install/approval flow.
-    /// - A profile with manual modes starts monitoring first if it is stopped
-    ///   (sensor-based modes, the emergency override and the throttle baseline
-    ///   rely on polling), then opens the session if needed. An automatic profile
-    ///   without a session writes nothing.
-    /// - `makeActive`: stores (user profiles) and selects `profile` on the main
-    ///   actor *before* writing, so polls snapshotted from then on plan it; on a
-    ///   failed write the previous selection and stored version are restored.
-    /// - The apply generation is bumped on the poll queue before planning, so a poll
-    ///   batch planned from the previous profile that is still queued in the
-    ///   `WriteSerializer` is dropped instead of undoing this apply.
-    private func apply(_ profile: FanProfile, force: Bool, allowOpeningSession: Bool,
-                       makeActive: Bool) async throws {
-        if !allowOpeningSession && !helperClient.isSessionOpen { return }
-        let needsSession = profile.modes.values.contains { $0.isManual }
-        if needsSession {
-            if !isMonitoring { startMonitoring() }
-            if !helperClient.isSessionOpen {
-                guard allowOpeningSession else { return }
-                try await openSMCSession()
-            }
-        }
-        let rollback = makeActive ? selectProfile(profile) : nil
-        guard helperClient.isSessionOpen else { return }
-        do {
-            let policy = safetyPolicy
-            let tuning = self.tuning
-            let (fans, plan, emergency) = try await poller.run { poller throws in
-                try poller.planApply(profile: profile, policy: policy, tuning: tuning)
-            }
-            try await poller.applyTargets(FanControlPoller.targets(from: plan), force: force)
-            fanControlModes = Dictionary(uniqueKeysWithValues: fans.map { ($0.id, profile.mode(for: $0)) })
-            emergencyOverrideActive = emergency
-        } catch {
-            if let rollback { rollBackSelection(rollback) }
-            throw error
-        }
+    /// Sleep / wake (`WakeCoordinator`), termination (`FanController`) and
+    /// app launch / terminate (`HelperCoordinator`) observers. Idempotent.
+    func registerSystemObserversIfNeeded() {
+        wake.registerObserversIfNeeded()
+        controller.registerObserversIfNeeded()
+        helper.registerObserversIfNeeded()
     }
 
-    /// Stores (user profiles) and selects `profile` in one `profileStore`
-    /// assignment; returns what is needed to undo it.
-    private func selectProfile(_ profile: FanProfile) -> ProfileSelectionRollback {
-        let rollback = ProfileSelectionRollback(
-            previousActiveID: profileStore.activeProfileID,
-            profileID: profile.id,
-            isBuiltIn: profile.isBuiltIn,
-            previousStored: profileStore.profiles.first { $0.id == profile.id })
-        var store = profileStore
-        if !profile.isBuiltIn { store.upsert(profile) }
-        store.activeProfileID = profile.id
-        profileStore = store
-        return rollback
+    /// `ErrorRecorder` target: stores the error in `lastError` (only on a change).
+    private func record(_ error: FanControlError) {
+        if lastError != error { lastError = error }
     }
-
-    /// Undoes `selectProfile` after a failed apply.
-    private func rollBackSelection(_ rollback: ProfileSelectionRollback) {
-        var store = profileStore
-        if let previous = rollback.previousStored {
-            store.upsert(previous)
-        } else if !rollback.isBuiltIn {
-            store.profiles.removeAll { $0.id == rollback.profileID }
-        }
-        store.activeProfileID = rollback.previousActiveID
-        profileStore = store
-    }
-
-    // MARK: - Timer
-
-    /// Recomputes `effectivePollingInterval`; reschedules the timer (while
-    /// monitoring) when it changed.
-    private func updateEffectivePollingInterval() {
-        let interval = PollingIntervalPolicy.effectiveInterval(
-            pollingInterval: pollingInterval, batteryInterval: batteryPollingInterval,
-            slowOnBattery: slowPollingOnBattery, onBattery: isOnBattery)
-        guard interval != effectivePollingInterval else { return }
-        effectivePollingInterval = interval
-        if isMonitoring { scheduleTimer() }
-    }
-
-    /// `PowerSourceProviding` callback (main actor).
-    private func powerSourceDidChange(_ onBattery: Bool) {
-        guard onBattery != isOnBattery else { return }
-        isOnBattery = onBattery
-        updateEffectivePollingInterval()
-    }
-
-    private func scheduleTimer() {
-        timer?.invalidate()
-        timer = nil
-        scheduledTimerInterval = nil
-        guard isMonitoring else { return }
-        let interval: TimeInterval
-        if isPauseInEffect {
-            // Slow mode keeps sensor-based modes / the emergency override (session)
-            // and the alerts (`keepAlertsWhilePaused`) alive while hidden.
-            guard isSMCWriteSessionOpen || keepAlertsWhilePaused else { return }
-            interval = PollingIntervalPolicy.pausedInterval(effective: effectivePollingInterval)
-        } else {
-            interval = effectivePollingInterval
-        }
-        let newTimer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            // Scheduled on the main run loop below.
-            MainActor.assumeIsolated { self?.pollIfMonitoring() }
-        }
-        newTimer.tolerance = interval * 0.1
-        RunLoop.main.add(newTimer, forMode: .common)
-        timer = newTimer
-        scheduledTimerInterval = interval
-    }
-
-    /// Mirrors `helperClient.isSessionOpen`; reschedules the timer when paused
-    /// (a session keeps slow polling alive).
-    private func syncSessionFlag() {
-        let open = helperClient.isSessionOpen
-        guard open != isSMCWriteSessionOpen else { return }
-        isSMCWriteSessionOpen = open
-        if isPauseInEffect { scheduleTimer() }
-    }
-
-    // MARK: - Sleep / wake / termination
-
-    private func registerSystemObserversIfNeeded() {
-        guard systemObservers.isEmpty else { return }
-        // All three observers are delivered on the main queue (`queue: .main`).
-        let workspaceCenter = NSWorkspace.shared.notificationCenter
-        let wake = workspaceCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
-                                               queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.handleWake() }
-        }
-        let sleep = workspaceCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil,
-                                                queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.handleWillSleep() }
-        }
-        let terminate = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
-                                                               object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.restoreOnTermination() }
-        }
-        systemObservers = [(workspaceCenter, wake), (workspaceCenter, sleep),
-                           (NotificationCenter.default, terminate)]
-        // Another fan control app launched or quit (`conflictingControllers`).
-        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
-            let token = workspaceCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-                let bundleIdentifier = app?.bundleIdentifier
-                MainActor.assumeIsolated { self?.applicationLaunchedOrTerminated(bundleIdentifier) }
-            }
-            systemObservers.append((workspaceCenter, token))
-        }
-    }
-
-    private func applicationLaunchedOrTerminated(_ bundleIdentifier: String?) {
-        guard conflictDetector.isRelevant(bundleIdentifier: bundleIdentifier) else { return }
-        refreshConflictingControllers()
-    }
-
-    /// Nothing destructive: the helper hands the forced fans back to the SMC
-    /// itself (`docs/helper.md` §5). Cancels pending wake attempts and stops
-    /// poll-driven writes until wake.
-    private func handleWillSleep() {
-        cancelWakeWork()
-        poller.enqueue { poller in
-            poller.systemSleeping = true
-            poller.systemSleepStartedAt = Date()
-        }
-        if helperClient.isSessionOpen {
-            kitLog.notice("System will sleep; poll writes suspended (the helper hands the fans back to the SMC)")
-        }
-    }
-
-    /// Across sleep the SMC resets `F<n>Tg` to 0 but keeps `F<n>Md` = 1
-    /// (first-write test 4), so with a session open:
-    /// - `reapplyProfileAfterWake == true`: the active profile is re-applied right
-    ///   away and again at `wakeReapplyDelays` (bypassing the throttle, never opening
-    ///   a session; errors are recorded only for the last attempt, since the SMC may
-    ///   reject writes right at wake);
-    /// - `false`: the session is closed immediately (the helper restores).
-    /// The flag is read when each attempt runs. Polls resume (and flag unsettled
-    /// fans) at once.
-    private func handleWake() {
-        cancelWakeWork()
-        poller.enqueue { poller in
-            poller.systemSleeping = false
-            poller.systemSleepStartedAt = nil
-        }
-        pollIfMonitoring()
-        guard helperClient.isSessionOpen else { return }
-        guard reapplyProfileAfterWake else {
-            kitLog.notice("Woke with a session open and reapplyProfileAfterWake off: closing the session")
-            Task { await self.closeSMCSession() }
-            return
-        }
-        kitLog.notice("Woke with a session open: re-applying the active profile at \(Self.wakeReapplyDelays.map { "\($0)s" }.joined(separator: ", "), privacy: .public)")
-        let delays = Self.wakeReapplyDelays
-        for (index, delay) in delays.enumerated() {
-            let isLast = index == delays.count - 1
-            let item = DispatchWorkItem { [weak self] in
-                // Executed on the main queue (`asyncAfter` below).
-                MainActor.assumeIsolated { self?.reapplyAfterWake(polling: delay > 0, isLast: isLast) }
-            }
-            wakeWorkItems.append(item)
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
-        }
-    }
-
-    /// One wake re-apply attempt (`handleWake`).
-    private func reapplyAfterWake(polling: Bool, isLast: Bool) {
-        if polling { pollIfMonitoring() }
-        guard helperClient.isSessionOpen else { return }
-        guard reapplyProfileAfterWake else {
-            Task { await self.closeSMCSession() }
-            return
-        }
-        let profile = resolvedActiveProfile
-        Task {
-            if isLast {
-                try? await self.recordingErrors {
-                    try await self.apply(profile, force: true, allowOpeningSession: false, makeActive: false)
-                }
-            } else {
-                try? await self.apply(profile, force: true, allowOpeningSession: false, makeActive: false)
-            }
-        }
-    }
-
-    private func cancelWakeWork() {
-        wakeWorkItems.forEach { $0.cancel() }
-        wakeWorkItems = []
-    }
-
-    /// Returns every fan to automatic and closes the session, waiting at most
-    /// 2 s. The detached task never hops to the main actor (whose thread is
-    /// blocked here): it only uses the poller and the helper client.
-    /// If it does not finish, the helper still restores the original values
-    /// when the dying process's connection is invalidated.
-    private func restoreOnTermination() {
-        guard helperClient.isSessionOpen else { return }
-        let semaphore = DispatchSemaphore(value: 0)
-        let fans = self.fans
-        let helperClient = self.helperClient
-        let poller = self.poller
-        Task.detached {
-            // Drop queued poll batches (the poll queue is not blocked here), then
-            // close through the serializer so no batch can slip in between.
-            await poller.run { _ = $0.applyGate.advance() }
-            try? await poller.applyTargets(FanControlPoller.allAutomatic(fans), force: true)
-            _ = try? await poller.serializer.run { await helperClient.closeSession() }
-            semaphore.signal()
-        }
-        _ = semaphore.wait(timeout: .now() + 2)
-    }
-
-    // MARK: - Utilities
 
     private func persistProfileStore() {
         if let data = try? ProfileStore.encodeJSON(profileStore) {
             defaults.set(data, forKey: Self.profileStoreDefaultsKey)
         }
     }
+}
 
-    /// Stores the error in `lastError` and rethrows it.
-    private func recordingErrors(_ body: () async throws -> Void) async throws {
-        do {
-            try await body()
-        } catch {
-            let fanError = FanControlPoller.fanControlError(from: error)
-            if lastError != fanError { lastError = fanError }
-            throw error
-        }
+// MARK: - Component hosts
+
+extension FanControlManager: FanControllerHost {
+    func fanControllerDidApply(modes: [Int: FanControlMode], emergencyOverride: Bool) {
+        fanControlModes = modes
+        emergencyOverrideActive = emergencyOverride
     }
 }
 
-/// Unified logging for the app-side kit.
-/// `log stream --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-kit"'`
-let kitLog = Logger(subsystem: "com.example.dynamicnotch.DynamicNotch", category: "fancontrol-kit")
+extension FanControlManager: WakeCoordinatorHost {
+    var isSessionOpen: Bool { helperClient.isSessionOpen }
 
-/// What `selectProfile` changed, for `rollBackSelection`.
-private struct ProfileSelectionRollback: Sendable {
-    var previousActiveID: UUID?
-    var profileID: UUID
-    var isBuiltIn: Bool
-    var previousStored: FanProfile?
+    func pollIfMonitoring() {
+        monitoring.pollIfMonitoring()
+    }
+
+    func setSystemSleeping(_ sleeping: Bool) {
+        poller.enqueue { poller in
+            poller.systemSleeping = sleeping
+            poller.systemSleepStartedAt = sleeping ? Date() : nil
+        }
+    }
+
+    func closeSessionAfterWake() {
+        controller.closeSessionInBackground()
+    }
+
+    func reapplyActiveProfileAfterWake(recordingErrors: Bool) {
+        controller.reapplyActiveProfile(recordingErrors: recordingErrors)
+    }
 }
+
+/// Unified logging for the app-side kit. The subsystem is the configured client bundle id
+/// (`FanControlIdentifiers.clientBundleIdentifier`, DynamicNotch: "com.example.dynamicnotch.DynamicNotch"),
+/// the same subsystem the helper logs under.
+/// `/usr/bin/log stream --predicate 'subsystem == "<client bundle id>" AND category == "fancontrol-kit"'`
+let kitLog = Logger(subsystem: FanControlHelperConstants.appBundleIdentifier, category: "fancontrol-kit")
 #endif

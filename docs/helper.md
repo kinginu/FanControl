@@ -107,9 +107,10 @@ plutil -p YourApp.app/Contents/Info.plist | grep FanControl                     
 `FANCONTROL_APP_ID`, `FANCONTROL_HELPER_ID` and `FANCONTROL_HELPER_INFO_PLIST` build settings are
 the only place the identifiers appear.
 
-Not configurable through the plist: the helper executable name (`FanControlHelper`), the
-protocol version, and the `fancontrol-kit` log subsystem in `FanControlManager.swift`
-(still `com.example.dynamicnotch.DynamicNotch`).
+Not configurable through the plist: the helper executable name (`FanControlHelper`) and the
+protocol version. Both log subsystems follow the configured client bundle id: the helper's
+`fancontrol-helper` category and the app-side `fancontrol-kit` category (`kitLog` in
+`FanControlManager.swift`) log under `FanControlClientBundleIdentifier`.
 
 ## 1. Bundle layout
 
