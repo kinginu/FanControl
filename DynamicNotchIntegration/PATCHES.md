@@ -330,3 +330,36 @@ Live Activity 設定（`LiveActivitiesSettings` の有効/無効リスト）で�
 「スリープ解除後にプロファイルを再適用」設定を `FanControlManager.reapplyProfileAfterWake` に同期するだけでよく、
 これは (e) で生成する `FanControlAlertCoordinator`（`FanControlUI`）が起動時と設定変更時（設定の変更ストリーム）に自動で行う
 （同時に「いずれかの警告が ON」を `FanControlManager.keepAlertsWhilePaused` に同期し、Nook 非表示中も警告用の低頻度ポーリングを続ける）。
+
+## (h) Power Profiles（F2、2026-10-21）
+
+設定ペイン `FanControlPowerProfilesSettingsView`、ウィジェット用の状態行 `FanControlPowerProfileStatusLine`、
+起動フック `FanControlPowerProfiles.start()` は **`FanControlUI`**（`Sources/FanControlUI/PowerProfiles/`）にある。
+アプリ側は既存ソースへ 4 か所（いずれも `// F2:` 付き）。仕様は `DynamicNotchApp/docs/power-profiles.md`。
+
+1. 設定タブの識別子と型エイリアス（`Support/FanControl-Patches.swift`。(d) の extension 内と、FanControlUI 名のエイリアス群）:
+
+```swift
+static let powerProfiles = Self("powerProfiles")
+typealias FanControlPowerProfilesSettingsView = FanControlUI.FanControlPowerProfilesSettingsView
+```
+
+2. 設定ウィンドウのタブ（`Sources/SettingsRootView.swift`、Fan Control の直後）:
+
+```swift
+tab(.powerProfiles, "Power Profiles", "bolt.badge.automatic") { FanControlPowerProfilesSettingsView() } // F2
+```
+
+3. 起動処理（`Support/FanControl-Patches.swift` の `FanControlStartup.applicationDidFinishLaunching()` の末尾）:
+
+```swift
+FanControlPowerProfiles.start()
+```
+
+`PowerProfileEngine.shared.start()` と、Fan Control 無効時（`FanControlSettingKey.general`）はファンを切り替えない
+`FanProfileArbiter.shared.isApplyAllowed` を設定する。Power Profiles の既定は OFF でルールも空なので、ユーザーが有効にするまで何も切り替えない。
+
+4. ウィジェット（このディレクトリの `FanControlWidgetView.swift`）: ヘッダー直下に `FanControlPowerProfileStatusLine(isCompact:)`。
+
+文字列: ペインの文字列は `Localizable/en.strings` の「F2: Power Profiles」節、タブ名 "Power Profiles" は
+`DynamicNotchApp/Support/strings/power-profiles.json`。
