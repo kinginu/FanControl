@@ -41,11 +41,16 @@ struct FanControlWidgetView: View {
     /// The profile drawn by the curve and named by the selector.
     private var displayedProfile: FanProfile { previewProfile ?? FanControlProfiles.active }
 
+    // Widget restyle (2026-10-20): typography / spacing / colours follow the other Nook widgets
+    // (DynamicNotchApp NookWidgetChrome: 8 pt vertical inset, subheadline-semibold secondary
+    // header, quaternary RPM track, hierarchical empty state). Layout is unchanged.
     var body: some View {
         content
             .frame(width: gridSize.widthInPoints)
+            .padding(.vertical, 8)
             .frame(maxHeight: .infinity, alignment: .top)
             .onAppear {
+                if !isPreview { FanControlWidgetPresence.visibleCount += 1 }
                 guard general.isEnabled else { return }
                 // With "Start Monitoring at Launch" off, monitoring starts the
                 // first time the widget is shown (design doc §5.5 (b)).
@@ -55,9 +60,23 @@ struct FanControlWidgetView: View {
                 manager.setMonitoringPaused(false)
             }
             .onDisappear {
-                if general.pauseWhenNookHidden { manager.setMonitoringPaused(true) }
+                guard !isPreview else { return }
+                FanControlWidgetPresence.visibleCount = max(FanControlWidgetPresence.visibleCount - 1, 0)
+                // Fallback only (PATCHES.md (b-2)): pausing is driven by the host's
+                // FanControlNookVisibility hook, which sees every screen's Nook. The widget's
+                // own disappear runs after that hook (the Nook content fades out), so it must
+                // never re-pause while a Fan Control widget is still shown on another screen,
+                // and it stays out of the way once a host has reported Nook visibility.
+                if general.pauseWhenNookHidden,
+                   !FanControlWidgetPresence.hostReportsVisibility,
+                   FanControlWidgetPresence.visibleCount == 0 {
+                    manager.setMonitoringPaused(true)
+                }
             }
     }
+
+    /// Preview / debug renders (DEBUG galleries) do not count as a shown widget.
+    private var isPreview: Bool { previewProfile != nil || previewGridSize != nil }
 
     @ViewBuilder
     private var content: some View {
@@ -107,16 +126,20 @@ struct FanControlWidgetView: View {
     private var header: some View {
         HStack(spacing: 4) {
             Image(systemName: "fan")
+                .symbolRenderingMode(.hierarchical)
             Text("Fans")
+                .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 0)
             if manager.highTempAlertActive {
                 Image(systemName: "thermometer.high")
                     .foregroundStyle(.red)
                     .help(Text("High temperature"))
+                    .accessibilityLabel(Text("High temperature"))
             }
         }
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(manager.highTempAlertActive ? Color.red : Color.secondary)
+        .font(.subheadline.weight(.semibold))
+        .lineLimit(1)
+        .foregroundStyle(manager.highTempAlertActive ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
     }
 
     // MARK: Fans
@@ -176,6 +199,7 @@ struct FanControlWidgetView: View {
             }
         }
         .menuStyle(.borderlessButton)
+        .controlSize(.small)
         .disabled(isApplying)
         .font(isCompact ? .caption2 : .caption)
         .fixedSize(horizontal: !isCompact, vertical: true)
@@ -230,6 +254,19 @@ struct FanControlWidgetView: View {
     }
 }
 
+// MARK: - Presence (pause fallback)
+
+/// How many Fan Control widgets are on screen (one per screen whose Nook is open), and whether
+/// the host reports Nook visibility itself. `hostReportsVisibility` is meant to be set by the
+/// host hook (`FanControlNookVisibility.nookVisibilityChanged`, FanControlSettingsView.swift —
+/// one line: `FanControlWidgetPresence.hostReportsVisibility = true`); until then the widget's
+/// fallback pause only fires when the last visible widget disappears.
+@MainActor
+enum FanControlWidgetPresence {
+    static var visibleCount = 0
+    static var hostReportsVisibility = false
+}
+
 // MARK: - Fan row
 
 private struct FanRow: View {
@@ -263,6 +300,9 @@ private struct FanRow: View {
 
             RPMBar(fraction: fraction, tint: isAnomalous ? .red : .accentColor)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: fan.name))
+        .accessibilityValue(Text(verbatim: rpmText + (isCompact ? " RPM" : "")))
     }
 
     /// "2,500" (compact) / "2,500 RPM", optionally "→ 3,000" for the target.
@@ -282,12 +322,12 @@ private struct RPMBar: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.15))
+                Capsule().fill(.quaternary)
                 Capsule().fill(tint)
                     .frame(width: proxy.size.width * fraction)
             }
         }
-        .frame(height: 3)
+        .frame(height: 4)
         .animation(.easeOut(duration: 0.3), value: fraction)
     }
 }
@@ -504,15 +544,18 @@ private struct FanControlEmptyState: View {
     let message: LocalizedStringKey
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 6) {
             Image(systemName: systemImage)
-                .font(.title3)
+                .font(.title2)
+                .symbolRenderingMode(.hierarchical)
             Text(message)
-                .font(.caption2)
+                .font(.caption.weight(.medium))
                 .multilineTextAlignment(.center)
+                .lineLimit(3)
         }
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 #endif
