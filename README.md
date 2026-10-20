@@ -3,6 +3,8 @@
 統合設計書（`docs/integration-design.md`）の案C（全 Swift 実装 + SMAppService 方式の特権ヘルパー）の実装である。
 SMC の読取（温度・RPM）はアプリ内で IOKit を直接呼び、書込だけを root の launchd ヘルパーに XPC 経由で依頼する。
 Mach サービス名は `com.example.dynamicnotch.DynamicNotch.fanfi`（既存の FanFi と競合しない）。
+**対応は Apple Silicon のみ（Intel は 2026-10-20 に廃止）**: 書込は `F<n>Md` + `F<n>Tg` だけ。arm64 でない Mac では
+アプリが `FanControlError.unsupportedPlatform` で SMC を開かず、ヘルパーは起動時に終了する。
 ホストアプリのプロジェクトに依存せずビルド・テストできるよう、
 本実装は DynamicNotch 本体から切り離した独立 SwiftPM パッケージとして作成し、Xcode プロジェクトへローカルパッケージとして組み込む方針にしている。
 
@@ -42,11 +44,11 @@ Linux 上で確認済み:
 Mac（Apple Silicon, macOS 26, Swift 6.3.3 / Command Line Tools）で確認済み:
 
 - 実 macOS SDK に対して `swift build` が警告 0 で通る（Swift 5 言語モード。`-swift-version 6` でも診断 0）
-- `swift test` で 139 tests（23 suites）が通る（2026-10-20、ランキング除外キー追加後）
+- `swift test` で 190 tests（29 suites）が通る（2026-10-20、Intel 対応廃止後）
 - 実機の SMC 読取（2026-10-19、Mac14,9 / M2 Pro）: `fanfi-probe` でファン 2 基（2317〜6800 RPM）と温度キー 259 個を取得。
   書込は未試行。結果と所見は `docs/integration.md` §6 Phase 1、生出力は `docs/verification/`
 - Mac14,9 のダンプに基づく Apple Silicon 対応（2026-10-19）: `TemperatureSampleFilter`（`Tp*` の 0 °C 付近の偽値を置換）、
-  Apple Silicon では `emergencySensorPrefixes` から `TG` を除外（`SafetyPolicy.default(appleSilicon:)` / `FanControlPlatform`）、
+  `emergencySensorPrefixes` から `TG` を除外（`SafetyPolicy.defaultEmergencySensorPrefixes`。Intel 廃止で機種別の分岐は削除）、
   `SensorCatalog` に Apple Silicon の名前を追加。詳細は `docs/kit.md` と `docs/integration.md` §6/§8
 - 集約センサー（2026-10-20）: `SensorAggregator` が `agg:cpu` / `agg:cpu.p` / `agg:cpu.e` / `agg:gpu`（グループ最大値）を合成し、センサー連動プロファイルが単一キーに依存しないようにした（`docs/kit.md`）
 - 手動インストール（個人利用）モード（2026-10-20）: ヘルパーは LaunchDaemon plist の `FANCONTROL_CLIENT_REQUIREMENT`（アプリの cdhash 固定、形式を厳密に検証）でクライアントを検証し、
@@ -57,7 +59,7 @@ Mac（Apple Silicon, macOS 26, Swift 6.3.3 / Command Line Tools）で確認済�
   `Tools/IntegrationTypeCheck` で `swift build`（Swift 5 / Swift 6 言語モードとも警告・エラー 0）。DynamicNotch 側はスタブ（`docs/integration.md` §7）
 
 テストは Swift Testing（`import Testing`）で書かれている。XCTest は Xcode.app にしか同梱されないため
-XCTest から移行した。Xcode.app があれば（確認済み: Xcode 26.6 で `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` → 139 tests 通過）、または Linux の Swift 6 ツールチェーンでは、そのまま `swift test` で動く。
+XCTest から移行した。Xcode.app があれば（確認済み: Xcode 26.6 で `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` → 190 tests 通過）、または Linux の Swift 6 ツールチェーンでは、そのまま `swift test` で動く。
 Command Line Tools だけの環境では Testing.framework の検索パスを自分で渡す必要がある（下記）。
 SMC の読取確認は `swift run fanfi-probe`（`--dump` で全キー、`--watch N` で繰返し）。読み取り専用で sudo も不要。
 

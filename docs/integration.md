@@ -3,6 +3,8 @@
 対象: DynamicNotch の実 Xcode プロジェクト（最小 macOS 14.6、バンドル ID `com.example.dynamicnotch.DynamicNotch`）。
 設計: `docs/integration-design.md`（§4 UI/ウィジェット/Live Activity/設定、§6 段階案 = 案C）。
 ヘルパーの詳細: `docs/helper.md`。
+対応プラットフォーム: **Apple Silicon のみ（Intel は 2026-10-20 に廃止）**。書込は `F<n>Md` + `F<n>Tg` だけで、Intel の `FS! ` 経路は削除済み。
+arm64 でない Mac ではアプリが `FanControlError.unsupportedPlatform` で SMC を開かず、ヘルパーは起動時に終了する（kit.md / helper.md）。
 
 ## 0. 構成物
 
@@ -141,9 +143,9 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
 一時例外は Mac App Store 審査で拒否されうるため、Developer ID 配布（非サンドボックス）を前提とする。
 ヘルパー（`FanControlHelper`）自体は root の launchd デーモンであり、**サンドボックス化しない**（App Sandbox entitlement を付けない）。
 
-安全検査はヘルパーが最終責任を持つ（helper.md §4）: 書込許可リスト（`F<n>Tg` / `F<n>Md` / `FS! `。`F<n>Mn` は 2026-10-20 のレビューで除外）、
-ペイロード 1〜32 バイトかつ SMC の `dataSize` と一致、`F<n>Tg`/`F<n>Mn` はセッション開始時に読んだハードウェア
-`F<n>Mn`〜`F<n>Mx`（±1 RPM 許容）、`F<n>Md` は 0/1、`FS! ` は `1 << FNum` 未満。アプリ側のポーリング書込は
+安全検査はヘルパーが最終責任を持つ（helper.md §4）: 書込許可リスト（`F<n>Tg` / `F<n>Md` のみ。`F<n>Mn` は 2026-10-20 のレビューで、`FS! ` は同日の Intel 廃止で除外）、
+ペイロード 1〜32 バイトかつ SMC の `dataSize` と一致、`F<n>Tg` はセッション開始時に読んだハードウェア
+`F<n>Mn`〜`F<n>Mx`（±1 RPM 許容）、`F<n>Md` は 0/1、それ以外のキーは拒否。アプリ側のポーリング書込は
 目標値の変化が 25 RPM（`FanControlManager.writeThresholdRPM`）以下なら書かない（kit.md）。
 
 ## 5. UI ファイルとパッチ
@@ -175,7 +177,7 @@ Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・�
 
 ## 6. Mac での検証チェックリスト（Phase 1 → 5）
 
-実機（できれば Apple Silicon と Intel の両方、ファンレスの MacBook Air も）で順に確認する。
+Apple Silicon の実機（できれば複数機種、ファンレスの MacBook Air も）で順に確認する。Intel は 2026-10-20 に対応を廃止したので対象外。
 
 ### Phase 1: 読み取り（ヘルパー不要）
 
@@ -205,10 +207,10 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       `Tp/Te/Tg/TC` の 10 °C 未満の値は直前の採用値（連続 5 回まで）→ 同接頭辞グループのその回の最大値 → 生値の順に置き換える（kit.md「Temperature sample filter」）。
       Mac14,9 のパターン（`0.00 / 6.70 / 8.43` など）はテストで再現済み。UI 上の表示とセンサー連動モードでの効き方は組込後に確認。
 - [x] 集約センサー（`SensorAggregator`、kit.md「Aggregate sensors」）: フィルタ後の値から `agg:cpu`「CPU (max)」（`Tp/Te/TC`）、
-      `agg:cpu.p`「CPU Performance Cores (max)」、`agg:cpu.e`「CPU Efficiency Cores (max)」、`agg:gpu`「GPU (max)」（Apple Silicon は `Tg`、Intel は `Tg/TG`）を
+      `agg:cpu.p`「CPU Performance Cores (max)」、`agg:cpu.e`「CPU Efficiency Cores (max)」、`agg:gpu`「GPU (max)」（`Tg`）を
       `sensorReadings` の末尾に追加。`fanfi-probe` の各読取の後に「Aggregates」として表示される（2026-10-20、Mac14,9 で 4 つとも出ることを確認）。
       `.sensor(sensorKey: "agg:cpu", …)` が `plan` でそのまま解決されることはテストで確認。UI 上の表示は組込後に確認。
-- [x] 緊急判定の接頭辞: Apple Silicon では `TG` を除外（`SafetyPolicy.default(appleSilicon:)`、`FanControlPlatform.isAppleSilicon`）。Intel は従来どおり `TG` を含む。
+- [x] 緊急判定の接頭辞: `TG` を除外した `Tp/Te/TC/Tg`（`SafetyPolicy.defaultEmergencySensorPrefixes` = `SafetyPolicy.default`。Intel 廃止で機種別の分岐は削除）。
 - [x] 以下の UI 項目は 2026-10-20 にDynamicNotch（`DynamicNotchApp/`）へ組み込んで一部実施（下記「DynamicNotch UI」）。
 
 **Mac14,9 の所見（ダンプから読み取れる範囲）**
@@ -235,7 +237,7 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
     最大値（緊急判定）には影響しないが、センサー連動モードで単一の `Tp*` キーを選ぶと 0 °C 付近を読むことがある → `TemperatureSampleFilter` で対策（上記）。
   - `TCMz` は同時刻の `Tp*` 実測値の最大値と一致し（例 66.36 = `Tp1C`）、固定パターンの影響を受けなかった。`TCMb` も `Tp*` の値の一つと一致する。
     センサー連動モードで CPU 温度を使うなら単一の `Tp*` より `TCMz` が適している可能性がある（1 機種・短時間の観察のみ。名前は付けていない）。
-  - `TG*`（`ioft`、33 °C 前後、`TB0T` とほぼ同値）は Intel では GPU 用接頭辞として `emergencySensorPrefixes` に入っているが、この機種では GPU の値に見えない（GPU は `Tg*`）→ Apple Silicon の既定から除外済み（上記）。
+  - `TG*`（`ioft`、33 °C 前後、`TB0T` とほぼ同値）は Intel では GPU 用接頭辞だったが、この機種では GPU の値に見えない（GPU は `Tg*`）→ 既定の `emergencySensorPrefixes` から除外済み（上記）。
 - 名前が付かないが関連が深そうなキー（値の推移からの推測を含むため要確認）: `TCMb`/`TCMz`/`TCDX`（CPU 系 55〜75 °C）、`TPD*`・`TRD*`（44 °C / 48 °C 前後の群）、
   `Th0*`（48 °C 前後）、`TVM0`/`TVm0`/`TVm1`（60〜67 °C）、`TD*`（29〜34 °C、`TDBP` 等）、`TB1T`/`TB2T` は「Battery 1T/2T」と表示されていた（`TB0T` と同値。「Battery 1/2」に変更済み）。
   `TH0a`/`TH0b`/`TH0x`（「Storage」、38 °C 前後）は SSD と思われるが未確認。
@@ -323,7 +325,7 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 - [ ] 「自動制御に戻す」→ `F0Md`=0、`F0Ac` が SMC 制御（アイドルなら数十秒で 0 RPM）に戻ること。ヘルパーは `F0Tg` を記録値（0）に書き戻さない（helper.md §4）。
 - [ ] `Mn` 未満の目標値（`enforceHardwareMinimum = false` で 1000 RPM 等）を適用 → `rpmOutOfRange` エラーで**何も書かれない**こと（`F0Md` が 0 のまま）。
 - [ ] プロファイル タブで「最大」を適用 → 接続状態が「接続済み（ファンを制御中）」、ファンが最大回転へ。
-      Apple Silicon では `F0Md`=1 → `F0Tg` 書込、Intel では `FS! ` ビット → `F0Tg` 書込で回転数が変わること（`F0Ac` を確認）。
+      `F0Md`=1 → `F0Tg` 書込で回転数が変わること（`F0Ac` を確認）。Intel の `FS! ` 経路は 2026-10-20 に削除したので確認不要。
 - [ ] プリセット「定速・静音」（3000）/「定速・強」（5000）/「ブースト」（`agg:cpu` 70→95 °C。2026-10-20 に 50→80 °C から変更、kit.md「Profiles」）をウィジェットと設定の両方から適用 → 期待どおりの回転数。
       プリセットは `defaultMode` で定義されるため、UI は `FanProfile.resolved(for:)` を渡して適用する（`FanControlProfiles.apply`）。セッションが開くこと。
 - [ ] カスタム 1/2 を編集・保存・名前変更・「初期設定に戻す」→ 適用。アクティブなスロットを保存すると次のポーリングで反映される。
@@ -396,11 +398,16 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 
 - **Team ID**（§5.1）: `Helper-Info.plist` と `teamIdentifierPlaceholder` の実値。出荷前に必須。
 - **Mach サービス名**（§5.2）: `com.example.dynamicnotch.DynamicNotch.fanfi` で既存 FanFi と非競合。両方が同時に SMC を書くと互いに上書きし合うため、併用時の注意をユーザーに示すかは要判断。
+- **Intel 対応の廃止（決定 2026-10-20）**: Apple Silicon のみ対応。`FanWriteStrategy` の `FS! ` / target-only 分岐、`SMCKey.forceBits`、
+  ヘルパー許可リストの `^FS! $`、`HelperWritePolicy` / `PowerTransitionPolicy` / `SessionRegistry` / `UnsettledFanDetector` の強制ビット処理、
+  `SafetyPolicy.default(appleSilicon:)` / `SensorAggregator.definitions(appleSilicon:)` の Intel 側の表、`SensorCatalog` の Intel 専用名を削除した。
+  arm64 でない Mac は `FanControlError.unsupportedPlatform`（アプリ）／起動拒否（ヘルパー、終了コード 78）。`F<n>Md` の無いファンは
+  `FanControlError.fanModeKeyMissing` で拒否する（フォールバックしない）。
 - **新しい Apple Silicon の `Ftst` キー**（§5.7, helper.md §4）: 一部機種では `F<n>Md` だけでは目標値が効かず `Ftst` アンロックが必要との報告がある。現状ヘルパーの書込許可リスト外（2026-10-20 のレビューで `F<n>Mn` も許可リストから外した）。Phase 4 で実機確認後に追加を判断。
   Mac14,9（M2 Pro）/ macOS 26 には `Ftst` キー自体が存在しない（読取で keyNotFound、§6 Phase 1）。この機種では許可リストに足しても書けない。
 - **温度閾値**（§5.6）: 警告 90°C（ヒステリシス 5°C）、強制最大 95°C は暫定値。機種別に妥当性を確認し、設定 UI に出すか決める（現状 UI には出していない）。
-  対象センサー接頭辞は実装済み: Apple Silicon は `Tp/Te/TC/Tg`、Intel は `Tp/Te/TC/Tg/TG`（`SafetyPolicy.default(appleSilicon:)`。Mac14,9 では `TG*` は GPU ではなく 33 °C 前後の `ioft` キー）。
-  判定は `sysctl hw.optional.arm64`（Rosetta 下でも Apple Silicon と判定）。`Tf06` は 94.5〜105 °C の一定値だが接頭辞外（§6 Phase 1 の所見参照。ランキング除外キーは緊急判定の接頭辞に一致しないことをテストで確認）。
+  対象センサー接頭辞は実装済み: `Tp/Te/TC/Tg`（`SafetyPolicy.defaultEmergencySensorPrefixes`。Mac14,9 では `TG*` は GPU ではなく 33 °C 前後の `ioft` キー。
+  Intel 用の `TG` 入りの表は 2026-10-20 に削除）。`Tf06` は 94.5〜105 °C の一定値だが接頭辞外（§6 Phase 1 の所見参照。ランキング除外キーは緊急判定の接頭辞に一致しないことをテストで確認）。
   要確認: 他の Apple Silicon 機種でも `TG*` が GPU でないか、`TC*`（`TCMz` 等）を対象に含めたままでよいか。
   センサー値フィルタ（`TemperatureSampleFilter`、下限 10 °C・保持 5 回・グループ最大値へのフォールバック）も暫定値。急な下降は棄却しない方針（kit.md）。
   センサー連動の CPU センサー → 集約センサーで対応: `agg:cpu`（`Tp/Te/TC` の最大値）などを仮想センサーとして提供し、センサー連動の既定センサーを `agg:cpu` にした（kit.md「Aggregate sensors」）。

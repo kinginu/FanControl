@@ -1,7 +1,10 @@
 # FanControlHelper（特権ヘルパー）
 
 DynamicNotch のファン制御で SMC に書き込むための root 権限 launchd デーモン。
-`SMAppService`（macOS 13+）で登録する（Team ID 付き署名が前提。Team ID が無い個人利用では §6 の手動インストールを使う）。読み取り（温度・RPM）はアプリ本体が `FanControlSMC.SMCClient` で直接行い、**書き込みだけ**このヘルパーを XPC 経由で使う（設計書 §3.3 の Step 7）。
+`SMAppService`（macOS 13+）で登録する（Team ID 付き署名が前提。Team ID が無い個人利用では §6 の手動インストールを使う）。
+**Apple Silicon 専用（Intel 対応は 2026-10-20 に廃止）**: 書込は `F<n>Md` + `F<n>Tg` のみ。Intel の `FS! ` 強制ビット経路は削除した。
+arm64 でないハードウェア（`sysctl hw.optional.arm64` ≠ 1、`FanControlHost.isAppleSilicon`）では、ヘルパーは起動直後に `fault` ログ
+`Refusing to start: this Mac is not Apple silicon …` を出し、リスナーを開かずに終了する（終了コード 78 = `EX_CONFIG`）。読み取り（温度・RPM）はアプリ本体が `FanControlSMC.SMCClient` で直接行い、**書き込みだけ**このヘルパーを XPC 経由で使う（設計書 §3.3 の Step 7）。
 
 関連ソース:
 
@@ -116,9 +119,9 @@ case .notFound: /* plist がバンドルに無い・配置ミス */ break
 - 接続の invalidation / interruption（アプリ終了・クラッシュ）でセッションを解放。
 - セッション中に書いた各キーの **書込前の値** を初回書込の直前に記録する。記録（読み取り）に失敗した場合は書込自体を `6 smcError` で拒否する。
 - close / 解放 / ヘルパーの SIGTERM 時の復元（`HelperWritePolicy.restore`、書込前レビュー 2026-10-20 で順序を変更。`docs/verification/pre-write-review-2026-10-20.md`）:
-  1. `F<n>Mn` を記録値に戻す（現在は許可リスト外なので通常は記録されない）。
-  2. モード系キーを**固定の自動値**に戻す: `F<n>Md` = 0、`FS! ` = 記録値からこのセッションが立てたビットを落とした値（記録値そのものには戻さない。前のセッションの手動状態を再現しないため）。「このセッションが立てたビット」は、書込値のうちセッション開始時の記録値で**立っていなかった**ビットだけ（`HelperWritePolicy.newlySetForceBits`。記録時点で SMC や他のツールが立てていたビットは数えないので、復元・スリープ・復帰でも落とさない）。失敗したら 1 回だけ再試行する。
-  3. `F<n>Tg` は、このセッションでモード系キー（`F<n>Md` または `FS! ` のビット）を書いて**いない**ファン（target-only）だけ記録値に戻す。値はハードウェア `Mn`〜`Mx` にクランプする。
+  1. `F<n>Md` を**固定の自動値** 0 に戻す（記録値そのものには戻さない。前のセッションの手動状態を再現しないため）。失敗したら 1 回だけ再試行する。
+  2. `F<n>Tg` は、このセッションで `F<n>Md` を書いて**いない**ファン（`Tg` だけを書いたクライアント。`FanWriteStrategy` はそうしない）だけ記録値に戻す。値はハードウェア `Mn`〜`Mx` にクランプする。
+  （Intel 廃止前の「`F<n>Mn` を記録値に戻す」段と `FS! ` のビット処理は削除した。）
   モードを自動に戻したファンの `F<n>Tg` は書かない（自動制御中は SMC が目標値を持つ）。Apple Silicon ではアイドル時の記録値が `Tg` = 0（`Mn` 未満）で、
   旧実装のように `F<n>Md` = 1 のまま書き戻すとファン停止を指令することになり、続く `Md` = 0 が失敗すると手動 0 RPM のまま残る恐れがあった。
   モードの復元に失敗したファンの `F<n>Tg` も書き戻さず、最後に検証済みの目標値（`Mn`〜`Mx` 内）のまま残す（ログに記録）。
@@ -131,10 +134,11 @@ case .notFound: /* plist がバンドルに無い・配置ミス */ break
 | パターン | 用途 |
 |---|---|
 | `^F[0-9]Tg$` | 目標回転数 |
-| `^F[0-9]Md$` | ファンモード（Apple Silicon） |
-| `^FS! $` | 強制モードビットマスク（Intel） |
+| `^F[0-9]Md$` | ファンモード（1 = 手動、0 = 自動） |
 
-`F<n>Mn`（Intel の「最小値＝目標値」手法）は 2026-10-20 に許可リストから外した（アプリは書かない。Apple Silicon では読取専用 `0x84`）。`Ftst` などのアンロックキーも許可しない。
+`^FS! $`（Intel の強制モードビットマスク）は Intel 廃止（2026-10-20）で許可リストから外した。`F<n>Mn`（Intel の「最小値＝目標値」手法）も
+同日のレビューで外した（アプリは書かない。Apple Silicon では読取専用 `0x84`）。`Ftst` などのアンロックキーも許可しない。
+`HelperWritePolicy.validate` も `F<n>Md` / `F<n>Tg` 以外のキーを `7 badRequest` で拒否する（許可リストの背後の多重防御）。
 
 加えて、キーは 4 文字 ASCII、ペイロードは 1〜32 バイト、かつ SMC が返す `dataSize` と一致しなければ拒否する。
 さらに SMC が返す属性に書込ビット `0x40`（`SMCKeyInfo.isWritable`）が無いキーは `7 badRequest` で拒否する。
@@ -145,21 +149,22 @@ case .notFound: /* plist がバンドルに無い・配置ミス */ break
 |---|---|---|
 | `F<n>Md` | 0 または 1 | `7 badRequest` |
 | `F<n>Tg` | セッション開始時に読んだハードウェア `F<n>Mn`〜`F<n>Mx`（丸め誤差として ±1 RPM 許容） | `7 badRequest`（Mn/Mx が読めなかったファンは `6 smcError`） |
-| `FS! ` | `1 << FNum` 以上のビットを含まない | `7 badRequest`（`FNum` が読めなければ `6 smcError`） |
+| それ以外（`FS! `、`F<n>Mn` など） | 常に拒否 | `7 badRequest` |
 
 アプリ側の `SafetyPolicy.enforceHardwareMinimum = false` はクライアント側の計画にしか効かず、最小値未満の目標値はヘルパーが拒否する
 （アプリ側でも `FanWriteStrategy.writes(for:)` が書込列を作る前に `rpmOutOfRange` で拒否するので、`F<n>Md` = 1 だけ書かれて `F<n>Tg` で失敗する状態にはならない）。
 ヘルパー自身は書込頻度を制限しない。アプリ側（`FanControlManager`）がポーリング由来の書込を、目標値の変化が 25 RPM（`writeThresholdRPM`）以下なら省略する（docs/kit.md）。
 
-### プラットフォーム別の書込手順
+### 書込手順（Apple Silicon のみ）
 
-- **Apple Silicon**: `F<n>Md` を `1` にしてから `F<n>Tg` を書く（自動モード中の `F<n>Tg` 書込は SMC に上書き／拒否される可能性があるため。実機では未確認）。`F<n>Md` = `0` で自動制御に戻る。
+- `F<n>Md` を `1` にしてから `F<n>Tg` を書く（自動モード中の `F<n>Tg` 書込は SMC に上書き／拒否される可能性があるため）。`F<n>Md` = `0` で自動制御に戻る（初回書込で実機確認済み）。
+  `F<n>Md` が無いファンは制御しない（アプリ側 `FanWriteStrategy` が `FanControlError.fanModeKeyMissing` で拒否し、`FS! ` や `Tg` だけの書込へフォールバックしない）。
   `F<n>Md` = 1 と `F<n>Tg` の間に失敗した場合はアプリが `F<n>Md` = 0 に戻す（kit.md「部分的な失敗」）。
   （一部の新しい機種では追加のアンロックキー `Ftst` が必要との報告があるが、現状は許可リスト外。実機で確認後に追加を検討。
   Mac14,9 / macOS 26 では `Ftst` は存在しない。同機種の属性は `F<n>Md` = `0xd0`（`ui8 `）、`F<n>Tg` = `0xd4`（`flt `）で書込ビット `0x40` あり、
-  `F<n>Mn` = `0x84` は `0x40` なし（integration.md §6 Phase 1）。いずれも書込は未試行。）
-- **Intel**: `FS! `（ui16 ビットマスク、bit n = ファン n を強制）を立てて `F<n>Tg` を書く。ビットを 0 に戻すと自動制御。（`F<n>Mn` を目標値に設定する手法は使わない。）
-- 値のエンコード（`fpe2`, `flt ` など）はアプリ側（`FanControlCore.SMCCodec`）の責務。ヘルパーは上記の検証を通ったバイト列をそのまま書く。
+  `F<n>Mn` = `0x84` は `0x40` なし（integration.md §6 Phase 1）。）
+- **Intel**: 対応を廃止（2026-10-20）。`FS! ` は許可リスト外で、`F<n>Mn` を目標値に設定する手法も使わない。
+- 値のエンコード（`flt ` など）はアプリ側（`FanControlCore.SMCCodec`）の責務。ヘルパーは上記の検証を通ったバイト列をそのまま書く。
 
 ## 5. Mac での手動テスト
 
@@ -178,7 +183,7 @@ codesign -d -r- DynamicNotch.app
 確認項目:
 
 1. アプリから `version` → `(1, "1.0 (1)")` が返る。
-2. `openSession` → `writeKey("F0Md", [1])` → `writeKey("F0Tg", <fpe2/flt エンコード値>)` で回転数が変わる（`F0Ac` を読んで確認）。
+2. `openSession` → `writeKey("F0Md", [1])` → `writeKey("F0Tg", <flt エンコード値>)` で回転数が変わる（`F0Ac` を読んで確認）。
 3. 許可外キー（例 `TC0P`）は `4 keyNotAllowed`、サイズ不一致は `7 badRequest`。
 4. 別プロセス（署名済み 2 つ目のビルド）から `openSession` → `1 notSessionOwner`。
 5. （スリープ／復帰）手動制御中にスリープ → 復帰。ログに `Power: system will sleep; … handed back to the SMC: F0Md=0 …` と `Power: wake recovery 1/3 … wrote …` が出て、`fanfi-probe --watch 1` で復帰後に `manual(0)` のサンプルが出ないこと（下の「スリープ／復帰」）。
@@ -203,15 +208,15 @@ codesign -d -r- DynamicNotch.app
 | 通知 | 動作 |
 |---|---|
 | `kIOMessageCanSystemSleep` | 常に許可（`IOAllowPowerChange`）。スリープを拒否しない |
-| `kIOMessageSystemWillSleep` | セッションが開いていれば、セッションが強制中のファン（最後の `F<n>Md` 書込が非 0、またはこのセッションが立てた `FS! ` ビット）を SMC に返す: `F<n>Md` = 0、`FS! ` は該当ビットを落とす。`F<n>Tg` は書かない。セッションとクライアントの意図は保持。書込の成否にかかわらず直後に `IOAllowPowerChange`（30 秒制限に対し数回の SMC 呼出のみ） |
+| `kIOMessageSystemWillSleep` | セッションが開いていれば、セッションが強制中のファン（最後の `F<n>Md` 書込が非 0）を SMC に返す: `F<n>Md` = 0。`F<n>Tg` は書かない。セッションとクライアントの意図は保持。書込の成否にかかわらず直後に `IOAllowPowerChange`（30 秒制限に対し数回の SMC 呼出のみ） |
 | `kIOMessageSystemHasPoweredOn` | 0 s / 1 s / 3 s（`PowerTransitionPolicy.wakeRetryDelays`。復帰直後の `Md` = 3 過渡中の書込は SMC が 1〜2 秒後に `Md` = 0 へ戻す際に捨てるため、過渡が終わった後の試行で書き直す）に復旧を試みる。各回でファンを読み直すので冪等（揃っていれば何も書かない）。新たなスリープで残りの試行は破棄 |
 
 復帰時の各試行（セッションあり、`PowerTransitionPolicy.wakeRecovery`）:
 
 - `Md` は非 0 なら手動扱い（`Md` = 3 の過渡状態も含む）。そのため 1 回目の試行は `Md` = 3 を手動と見て `F<n>Tg` だけを書き、これは定着しない。SMC が `Md` = 0 に戻した後の 2 回目の試行が `F<n>Md` = 1 → `F<n>Tg` を書き直して定着する（再テストで確認した想定動作。下のログ例）。
-- 記憶したファン（強制中で目標値の記録あり）: 手動でなければモードキー（`F<n>Md` = 最後に書かれた値 / `FS! ` ビット）→ `F<n>Tg` = 最後の目標値の順で書く。手動だが `F<n>Tg` が記憶値から 5 RPM を超えてずれていれば `F<n>Tg` だけ書く。
-- それ以外で手動モードのファン（目標の記録が無い `F<n>Md` = 1。テスト 4 の Fan 2 のように SMC が手動で起こしたもの、`Md`=1 だけ成功して `Tg` が失敗したもの）: `F<n>Md` = 0（`FS! ` はビットを落とす）で SMC に返す。
-- 書込順は `F<n>Md`（ファン番号順）→ `FS! ` 1 回 → `F<n>Tg`。記憶はクライアントの最新の書込なので、復帰後にアプリが目標を変えれば以降の試行はそれに従う。
+- 記憶したファン（強制中で目標値の記録あり）: 手動でなければ `F<n>Md` = 最後に書かれた値 → `F<n>Tg` = 最後の目標値の順で書く。手動だが `F<n>Tg` が記憶値から 5 RPM を超えてずれていれば `F<n>Tg` だけ書く。
+- それ以外で手動モードのファン（目標の記録が無い `F<n>Md` = 1。テスト 4 の Fan 2 のように SMC が手動で起こしたもの、`Md`=1 だけ成功して `Tg` が失敗したもの）: `F<n>Md` = 0 で SMC に返す。
+- 書込順は `F<n>Md`（ファン番号順）→ `F<n>Tg`。記憶はクライアントの最新の書込なので、復帰後にアプリが目標を変えれば以降の試行はそれに従う。
 
 セッションなしで復帰した場合は 1 回目の試行でファンを読み、手動モードのファンがあれば警告ログだけ出す（別のツールの可能性があるので書かない）。
 

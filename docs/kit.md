@@ -1,5 +1,10 @@
 # FanControlKit (app-side layer)
 
+**Apple Silicon only (Intel dropped 2026-10-20).** The only write scheme is `F<i>Md` + `F<i>Tg`;
+the Intel `FS! ` force-bit path, per-architecture sensor/policy tables and the
+`FanControlPlatform.isAppleSilicon` branching were removed. On a non-arm64 Mac the manager logs an
+error at init and every SMC open fails with `FanControlError.unsupportedPlatform`.
+
 `FanControlKit` is what DynamicNotch links. It depends on `FanControlCore` (models, codec, engine),
 `FanControlSMC` (in-process, read-only IOKit SMC access) and `FanControlXPC` (helper protocol).
 Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (internal),
@@ -12,9 +17,9 @@ Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (intern
 | `HelperInstaller.swift` | `SMAppService.daemon(plistName:)` wrapper aware of the manual installation, `HelperInstallStatus` |
 | `HelperClient.swift` | async `NSXPCConnection` client (`SMCWriter`), `HelperConnectionState`, helper requirement selection |
 | `ManualHelperSigning.swift` | own Team ID lookup and cdhash of the root-owned manually installed helper (manual-install mode) |
-| `FanWriteStrategy.swift` | pure per-platform write sequences (unit-tested on Linux) |
+| `FanWriteStrategy.swift` | pure `F<i>Md` + `F<i>Tg` write sequences (unit-tested on Linux) |
 | `ApplyGenerationGate.swift` | pure drop rule for stale poll write batches (unit-tested on Linux) |
-| `FanControlPlatform.swift` | `isAppleSilicon` (`sysctl hw.optional.arm64`) and `defaultSafetyPolicy` |
+| `FanControlPlatform.swift` | arm64 assertion (`isSupported` / `requireSupported()`, backed by `FanControlCore.FanControlHost`, `sysctl hw.optional.arm64`), `defaultSafetyPolicy`, `sensorAggregateDefinitions` |
 
 ## Threading model
 
@@ -79,7 +84,7 @@ leave the fan forced at a stale target (at idle `F0Tg` = 0, i.e. stopped). Two d
 - On any failure the manager drops the baseline of every fan in the failed list, marks them
   "unsettled" (the next poll writes their planned state regardless of the throttle) and, if the
   session is still open, immediately writes `FanWriteStrategy.rollbackWrites(afterFailureOf:)`
-  (`F<i>Md ← 0` / `FS! ` bits cleared for the fans that were being forced). If that rollback
+  (`F<i>Md ← 0` for the fans that were being forced). If that rollback
   succeeds those fans get an `.automatic` baseline and are no longer unsettled. The original
   error is rethrown / stored in `lastError`. A timeout invalidates the connection, so the helper
   restores instead (the rollback is skipped because the session is gone).
@@ -94,7 +99,7 @@ rewritten by this very poll, bypassing the throttle — when it is
 2. applied `.manual(rpm)` but read back as automatic, or with `F<i>Tg` more than 50 RPM
    (`UnsettledFanDetector.targetToleranceRPM`) away from `rpm`;
 3. applied `.automatic` but read back as manual.
-Target-only fans (no mode key / `FS! `) are only checked for rules 1–2 on the target. Each newly
+Only fans the strategy can control (`FanWriteStrategy.fans`, i.e. with `F<i>Md`) are checked. Each newly
 flagged fan is logged at notice level (category `fancontrol-kit`):
 `Unsettled fan(s) detected, rewriting: F0 manual=true Tg=0 applied=manual(rpm: 3000)`. Between
 `NSWorkspace.willSleepNotification` and wake, polls neither flag nor write (the helper has handed
@@ -182,8 +187,8 @@ Settings below).
 first `startMonitoring` or `openSMCSession`), all fans are set to automatic and the session is
 closed (both through the `WriteSerializer`, after bumping the apply generation), waiting at most 2 s
 on the main thread. Independently, the helper hands the fans back to the SMC when the client
-connection goes away (`docs/helper.md` §4: mode keys to automatic; `F<i>Tg` is written back only for
-target-only fans, clamped into `Mn...Mx`).
+connection goes away (`docs/helper.md` §4: `F<i>Md` to automatic; `F<i>Tg` is written back only for
+fans whose `F<i>Md` the session never wrote, clamped into `Mn...Mx`).
 
 **Temperature sample filter** (`FanControlCore.TemperatureSampleFilter`): on Mac14,9 the `Tp*`
 (P-core) keys read either their real value or a fixed near-zero pattern (`0.00 / 6.70 / 8.43`,
@@ -206,23 +211,24 @@ temperature key (Mac14,9: ~20 `Tp*`, `Te*`, `Tg*` keys), so a sensor-linked prof
 key follows one core. After filtering, every batch (discovery, each poll, the fresh read of a user
 apply) gets synthetic `SensorReading`s appended, computed from the **filtered** values, so
 `sensorReadings` and `plan` see the same aggregates. Each value is the maximum of the finite member
-readings; an aggregate without any finite member is omitted (Intel/fanless machines simply lack
-it, and a profile bound to a missing aggregate fails hot like any missing sensor).
+readings; an aggregate without any finite member is omitted (a machine without such keys simply
+lacks it, and a profile bound to a missing aggregate fails hot like any missing sensor).
 `sensorType` is the existing case `.greatest` (no new `SensorType` case, so persisted data and
 exhaustive switches are unaffected); `SensorReading.isAggregate` / `SensorAggregator.isAggregate(_:)`
 test for the `agg:` id prefix, which cannot collide with a 4-character SMC key.
 
-| id | name | members (Apple Silicon) | members (Intel) | overview |
-|---|---|---|---|---|
-| `agg:cpu` | CPU (max) | `Tp` `Te` `TC` | `Tp` `Te` `TC` | yes |
-| `agg:cpu.p` | CPU Performance Cores (max) | `Tp` | `Tp` | no |
-| `agg:cpu.e` | CPU Efficiency Cores (max) | `Te` | `Te` | no |
-| `agg:gpu` | GPU (max) | `Tg` | `Tg` `TG` | yes |
+| id | name | members | overview |
+|---|---|---|---|
+| `agg:cpu` | CPU (max) | `Tp` `Te` `TC` | yes |
+| `agg:cpu.p` | CPU Performance Cores (max) | `Tp` | no |
+| `agg:cpu.e` | CPU Efficiency Cores (max) | `Te` | no |
+| `agg:gpu` | GPU (max) | `Tg` | yes |
 
-Members are the table's prefixes filtered by `SafetyPolicy.defaultEmergencySensorPrefixes(appleSilicon:)`,
-so `TG*` (battery-area `ioft` keys on Mac14,9) is excluded on Apple Silicon exactly as for the
-emergency check. The table is `SensorAggregator.definitions(appleSilicon:)`; the manager uses
-`FanControlPlatform.sensorAggregateDefinitions` (also `manager.sensorAggregateDefinitions`).
+Every member prefix is in `SafetyPolicy.defaultEmergencySensorPrefixes`, so `TG*` (battery-area
+`ioft` keys on Mac14,9) is excluded exactly as for the emergency check. The table is the single
+static `SensorAggregator.definitions` (the per-architecture `definitions(appleSilicon:)` was removed
+2026-10-20); the manager uses `FanControlPlatform.sensorAggregateDefinitions` (also
+`manager.sensorAggregateDefinitions`; both kept for the drop-ins).
 `FanControlEngine.plan` needs no change: `.sensor(sensorKey: "agg:cpu", …)` is looked up by id.
 Aggregate ids do not match any emergency prefix, so the emergency maximum and alerts are unchanged
 (an aggregate's value is always one member's value). `SensorCatalog.displayName(for:)` returns the
@@ -245,14 +251,21 @@ picks them, and `FanControlManager.hottestSensor`'s fallback (no emergency-prefi
 them. No excluded key matches an emergency prefix or aggregate member, so emergency handling,
 alerts and aggregates are unchanged (tested in `SensorRankingTests`).
 
-**Safety policy selection:** `safetyPolicy` starts as `FanControlPlatform.defaultSafetyPolicy`
-= `SafetyPolicy.default(appleSilicon: FanControlPlatform.isAppleSilicon)`. On Apple Silicon the
-emergency prefixes are `Tp/Te/TC/Tg` (`TG*` excluded: on Mac14,9 those are `ioft` battery-area
-sensors at ~33 °C; the GPU is `Tg*`); on Intel they stay `Tp/Te/TC/Tg/TG` (`TG0P`/`TG0D` = GPU).
-`isAppleSilicon` uses `sysctl hw.optional.arm64` (true on Apple Silicon also under Rosetta), not
-`FanWriteStrategy`'s key-presence detection: `F<i>Md` also exists on some late Intel models and
-the strategy is only known after fan discovery. `SafetyPolicy.default` (static) is unchanged and
-keeps the full list; `SafetyPolicy`'s stored properties and Codable keys are unchanged.
+**Safety policy:** `safetyPolicy` starts as `FanControlPlatform.defaultSafetyPolicy` =
+`SafetyPolicy.default`, whose emergency prefixes are `SafetyPolicy.defaultEmergencySensorPrefixes`
+= `Tp/Te/TC/Tg` (`TG*` excluded: on Mac14,9 those are `ioft` battery-area sensors at ~33 °C; the
+GPU is `Tg*`). Since Intel was dropped (2026-10-20) there is one list; `default(appleSilicon:)` /
+`defaultEmergencySensorPrefixes(appleSilicon:)` were removed (no caller outside the package).
+`SafetyPolicy`'s stored properties and Codable keys are unchanged; a persisted policy that still
+contains `TG` decodes as stored.
+
+**Platform check:** `FanControlPlatform.isSupported` (`FanControlHost.isAppleSilicon`, `sysctl
+hw.optional.arm64`, true on Apple Silicon also under Rosetta). `FanControlManager.init` logs an
+error on unsupported hardware, and `requireSupported()` runs before every SMC open, so polls,
+refreshes and applies fail with `FanControlError.unsupportedPlatform` (published to `lastError`).
+A fan that has `F<i>Tg` but no `F<i>Md` is not controllable: it is listed in
+`FanWriteStrategy.fansMissingModeKey` and writes to it fail with `FanControlError.fanModeKeyMissing`
+(no `FS! ` / target-only fallback).
 
 The persisted active profile is **not** re-applied automatically at launch (design doc §5.5 is
 still open): the session stays closed until the user acts.
@@ -333,7 +346,7 @@ the DynamicNotch drop-in UI this is `FanControlAlertCoordinator.syncManagerSetti
 | `pollingInterval` | 2.0 s | timer interval (clamped to 0.5...300 s); setting it reschedules the timer |
 | `reapplyProfileAfterWake` | `true` | `true`: re-apply on wake at 0 / 2 / 5 s; `false`: close an open session immediately on wake |
 | `keepAlertsWhilePaused` | `true` | keep a slow poll while paused without a session (the drop-in coordinator mirrors `highTemperatureAlertEnabled \|\| fanAnomalyAlertEnabled`) |
-| `safetyPolicy` | `FanControlPlatform.defaultSafetyPolicy` | thresholds; taken per poll. An app that persists its own policy should start from `SafetyPolicy.default(appleSilicon: FanControlPlatform.isAppleSilicon)` |
+| `safetyPolicy` | `FanControlPlatform.defaultSafetyPolicy` | thresholds; taken per poll. An app that persists its own policy should start from `SafetyPolicy.default` |
 | `clientTeamID` | `FanControlHelperConstants.teamIdentifierPlaceholder` | Team ID in the helper code-signing requirement checked on every new helper connection (forwards to `HelperClient.clientTeamID`); set before the first helper call unless the constant was replaced; ignored in manual-install mode (below) |
 
 `HelperClient.callTimeout` (default 8 s, `<= 0` disables) is set on the `HelperClient` passed to
@@ -460,32 +473,36 @@ These are the hooks for Live Activities (design doc §4.2).
 ## Helper-side checks (see `docs/helper.md` §4)
 
 The helper is the safety authority. Independently of the kit's planning it rejects writes to
-keys outside the allowlist (`F<n>Tg`, `F<n>Md`, `FS! `; `F<n>Mn` and `Ftst` are not allowed), keys
+keys outside the allowlist (`F<n>Tg`, `F<n>Md`; `FS! `, `F<n>Mn` and `Ftst` are not allowed), keys
 whose SMC attributes lack the write bit `0x40`, payloads that are not 1 to 32 bytes or do not match
 the key's `dataSize`, `F<n>Md` values other than 0/1, `F<n>Tg` values outside the hardware
-`F<n>Mn...F<n>Mx` read at session open (with a ±1 RPM rounding tolerance), and `FS! ` bits at or
-above `1 << FNum` (`FanControlXPC.HelperWritePolicy.validate`). `safetyPolicy.enforceHardwareMinimum = false`
+`F<n>Mn...F<n>Mx` read at session open (with a ±1 RPM rounding tolerance), and any other key
+(`FanControlXPC.HelperWritePolicy.validate`). `safetyPolicy.enforceHardwareMinimum = false`
 therefore only affects client planning; sub-minimum targets are refused by `FanWriteStrategy`
 (`.rpmOutOfRange`, nothing written) and by the helper.
 
 ## Write sequences (`FanWriteStrategy`)
 
-Detected per fan from key presence and `keyInfo`, not from the CPU architecture:
+Apple Silicon only (Intel dropped 2026-10-20). A fan is controllable when both `F<i>Tg` and
+`F<i>Md` have key info; their types/sizes come from `keyInfo`.
 
-| Style | Detection | Manual | Automatic |
-|---|---|---|---|
-| `.modeKey` (Apple Silicon) | `F<i>Md` exists | `F<i>Md ← 1`, then `F<i>Tg ← rpm` (`flt `) | `F<i>Md ← 0` |
-| `.forceBits` (Intel) | `FS! ` exists | `FS! ← mask \| 1<<i` (current mask read first), then `F<i>Tg ← rpm` (`fpe2`) | `FS! ← mask & ~(1<<i)` |
-| `.targetOnly` | neither | `F<i>Tg ← rpm` | nothing (the helper restores values on session close) |
+| Fan | Manual | Automatic |
+|---|---|---|
+| `F<i>Md` exists (`fans`) | `F<i>Md ← 1`, then `F<i>Tg ← rpm` (`flt `) | `F<i>Md ← 0` |
+| `F<i>Tg` but no `F<i>Md` (`fansMissingModeKey`) | throws `.fanModeKeyMissing(fan:)` | throws `.fanModeKeyMissing(fan:)` |
+| no `F<i>Tg` | throws `.keyNotFound("F<i>Tg")` | throws `.keyNotFound("F<i>Tg")` |
 
-Mac14,9 / macOS 26: `FS! ` and `Ftst` are absent, so both fans are `.modeKey`; `F<i>Md` is `ui8 `
+The former `.forceBits` (Intel `FS! ` bitmask) and `.targetOnly` styles and the `ControlStyle`
+enum were removed. A list that contains any failing fan throws before producing a write.
+
+Mac14,9 / macOS 26: `FS! ` and `Ftst` are absent, both fans have `F<i>Md`; `F<i>Md` is `ui8 `
 (1 byte, `01` / `00`) and `F<i>Tg` little-endian `flt ` (2317 RPM = `00 d0 10 45`, the same bytes
 the read path decodes from `F<i>Mn`). `F<i>Mn` is never written. Manual targets outside the
 fan's `F<i>Mn...F<i>Mx` throw `.rpmOutOfRange` before any write is produced (`FanWriteInfo.rpmLimits`).
 `rollbackWrites(afterFailureOf:)` returns the writes that hand the fans of a failed manual list
 back to automatic.
 
-Mode writes always come before target writes. Batches write `FS! ` once with all bits merged.
+Mode writes always come before target writes.
 
 ## Not verifiable without a Mac
 
@@ -508,7 +525,7 @@ SMC reads (the `SMCClient` path behind `FanControlManager` polling and `exportSM
 on Mac14,9 / macOS 26 with the read-only `fanfi-probe` executable (`swift run fanfi-probe`,
 `--dump`, `--watch N`); results and per-model findings are in `docs/integration.md` §6 Phase 1.
 - Whether the provisional thresholds (alert 90 °C, emergency 95 °C, hysteresis 5 °C, sensor
-  prefixes `Tp/Te/TC/Tg/TG`) suit each model (design doc §5.6).
+  prefixes `Tp/Te/TC/Tg`) suit each Apple Silicon model (design doc §5.6).
 - Sleep/wake: on Mac14,9 the SMC resets `F<i>Tg` to 0 and keeps `F<i>Md` = 1 across sleep
   (first-write test 4). The immediate wake re-apply, the helper's own sleep hand-back / wake
   recovery and the unsettled detection are implemented but not yet re-tested on hardware
