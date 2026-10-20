@@ -9,6 +9,9 @@ public extension Notification.Name {
     static let fanControlFanAnomalyChanged = Notification.Name("FanControlFanAnomalyChanged")
     /// Posted (object: `FanControlManager`) on the main thread after every published poll.
     static let fanControlDidUpdate = Notification.Name("FanControlDidUpdate")
+    /// Posted (object: `FanControlManager`) when `conflictingControllers` changes.
+    /// `userInfo["names"]` is the new `[String]`.
+    static let fanControlConflictingControllersChanged = Notification.Name("FanControlConflictingControllersChanged")
 }
 
 #if os(macOS)
@@ -68,6 +71,9 @@ public final class FanControlManager {
     /// Seconds after `NSWorkspace.didWakeNotification` at which the active profile
     /// is re-applied while a session is open (`reapplyProfileAfterWake`).
     public nonisolated static let wakeReapplyDelays: [TimeInterval] = [0, 2, 5]
+    /// While monitoring, `conflictingControllers` is re-checked at most this often
+    /// from the poll timer (besides app launch / terminate notifications).
+    public nonisolated static let conflictCheckInterval: TimeInterval = 60
     /// Shown when `helperStatus == .requiresApproval` (`installHelper` throws
     /// `.helperNotInstalled` in that case, which carries no message of its own).
     /// English only; an app with its own localized text may show that instead.
@@ -125,13 +131,47 @@ public final class FanControlManager {
                                             userInfo: ["fanIDs": anomalousFanIDs])
         }
     }
+    /// `true` while the Mac runs on battery (`PowerSourceProviding`, IOKit
+    /// power-source notifications by default). `false` on AC and on desktops.
+    public internal(set) var isOnBattery: Bool = false
+    /// The interval the poll timer uses while the Nook pause is not in effect
+    /// (`PollingIntervalPolicy.effectiveInterval`): `pollingInterval`, or
+    /// `max(pollingInterval, batteryPollingInterval)` while `slowPollingOnBattery`
+    /// and `isOnBattery`; clamped to 0.5...300 s. The paused low-frequency poll is
+    /// `max(5 × effectivePollingInterval, 10 s)`.
+    public internal(set) var effectivePollingInterval: TimeInterval = 2.0
+    /// Display names of other fan control apps that are running now (e.g. `["FanFi"]`,
+    /// design doc §5.2): both writing at once override each other. Refreshed on
+    /// `startMonitoring()`, on app launch / terminate notifications and at most every
+    /// `conflictCheckInterval` while polling; `refreshConflictingControllers()` forces it.
+    public internal(set) var conflictingControllers: [String] = [] {
+        didSet {
+            guard conflictingControllers != oldValue else { return }
+            NotificationCenter.default.post(name: .fanControlConflictingControllersChanged, object: self,
+                                            userInfo: ["names": conflictingControllers])
+        }
+    }
+    /// Full result of the last conflict check, including controllers whose helper
+    /// is installed while the app is not running (informational).
+    public internal(set) var conflictingControllerStatuses: [ConflictingControllerStatus] = []
 
     // MARK: - Settings
 
-    /// Seconds between polls (effective value clamped to 0.5...300). Changing it
+    /// Seconds between polls (effective value clamped to 0.5...300, slowed on
+    /// battery: `effectivePollingInterval`). A change of the effective interval
     /// reschedules the timer while monitoring.
     public var pollingInterval: TimeInterval = 2.0 {
-        didSet { if isMonitoring { scheduleTimer() } }
+        didSet { updateEffectivePollingInterval() }
+    }
+    /// When `true` (default), polling slows to `batteryPollingInterval` (if that is
+    /// longer than `pollingInterval`) while the Mac runs on battery (design doc
+    /// §5.4 (a)). The app mirrors `FanControlGeneralSettings.slowPollingOnBattery` into this.
+    public var slowPollingOnBattery: Bool = true {
+        didSet { updateEffectivePollingInterval() }
+    }
+    /// Poll interval on battery while `slowPollingOnBattery` is on (default 10 s).
+    public var batteryPollingInterval: TimeInterval = PollingIntervalPolicy.defaultBatteryInterval {
+        didSet { updateEffectivePollingInterval() }
     }
     /// Starts as `FanControlPlatform.defaultSafetyPolicy` (= `SafetyPolicy.default`;
     /// the emergency prefixes exclude `TG`, a battery-area sensor on Apple
@@ -216,6 +256,14 @@ public final class FanControlManager {
     @ObservationIgnored private var systemObservers: [(NotificationCenter, NSObjectProtocol)] = []
     /// Pending wake re-apply attempts (`wakeReapplyDelays`).
     @ObservationIgnored private var wakeWorkItems: [DispatchWorkItem] = []
+    /// AC / battery source (`isOnBattery`).
+    @ObservationIgnored private let powerSource: any PowerSourceProviding
+    /// Finds other fan control apps (`conflictingControllers`).
+    @ObservationIgnored private let conflictDetector: ConflictingControllerDetector
+    /// When `conflictingControllers` was last refreshed.
+    @ObservationIgnored private var lastConflictCheck: Date?
+    /// Interval of the scheduled poll timer, `nil` when none is scheduled (tests).
+    @ObservationIgnored private(set) var scheduledTimerInterval: TimeInterval?
 
     // MARK: - Private (Sendable, any isolation)
 
@@ -228,15 +276,24 @@ public final class FanControlManager {
 
     // MARK: - Init
 
-    /// Cheap: no SMC or XPC I/O (only the profile store is read from UserDefaults).
+    /// Cheap: no SMC or XPC I/O (only the profile store is read from UserDefaults
+    /// and the power source from IOKit).
     /// On a non-Apple-Silicon Mac this logs an error; every later SMC open then
     /// fails with `FanControlError.unsupportedPlatform` (Intel dropped 2026-10-20).
+    ///
+    /// - `powerSource`: `nil` (default) uses `PowerSourceMonitor` (IOKit).
+    /// - `conflictDetector`: finds other fan control apps (`conflictingControllers`).
     public init(defaults: UserDefaults = .standard,
                 helperClient: HelperClient = HelperClient(),
-                installer: HelperInstaller = HelperInstaller()) {
+                installer: HelperInstaller = HelperInstaller(),
+                powerSource: (any PowerSourceProviding)? = nil,
+                conflictDetector: ConflictingControllerDetector = ConflictingControllerDetector()) {
         self.defaults = defaults
         self.helperClient = helperClient
         self.installer = installer
+        let powerSource = powerSource ?? PowerSourceMonitor()
+        self.powerSource = powerSource
+        self.conflictDetector = conflictDetector
         let poller = FanControlPoller(helperClient: helperClient)
         self.poller = poller
         if let data = defaults.data(forKey: Self.profileStoreDefaultsKey),
@@ -259,6 +316,11 @@ public final class FanControlManager {
         poller.enqueue { [weak self] poller in
             if let self { poller.attach(self) }
         }
+        isOnBattery = powerSource.isOnBattery
+        updateEffectivePollingInterval()
+        powerSource.startObserving { [weak self] onBattery in
+            self?.powerSourceDidChange(onBattery)
+        }
     }
 
     // MARK: - Lifecycle
@@ -269,6 +331,7 @@ public final class FanControlManager {
         isMonitoring = true
         poller.enqueue { $0.monitoringActive = true }
         registerSystemObserversIfNeeded()
+        refreshConflictingControllers()
         scheduleTimer()
         refreshNow()
     }
@@ -304,7 +367,25 @@ public final class FanControlManager {
     /// Timer / wake / un-pause polls: only while monitoring.
     private func pollIfMonitoring() {
         guard isMonitoring else { return }
+        if lastConflictCheck.map({ Date().timeIntervalSince($0) >= Self.conflictCheckInterval }) ?? true {
+            refreshConflictingControllers()
+        }
         refreshNow()
+    }
+
+    /// Re-runs the conflict check (`conflictingControllers`,
+    /// `conflictingControllerStatuses`). Cheap: `NSRunningApplication` and `stat`.
+    public func refreshConflictingControllers() {
+        lastConflictCheck = Date()
+        let statuses = conflictDetector.detect()
+        if statuses != conflictingControllerStatuses { conflictingControllerStatuses = statuses }
+        let names = ConflictingControllerDetector.runningNames(statuses)
+        if names != conflictingControllers {
+            if !names.isEmpty {
+                kitLog.notice("Other fan control app running: \(names.joined(separator: ", "), privacy: .public)")
+            }
+            conflictingControllers = names
+        }
     }
 
     /// Call with `true` when the Nook is hidden and `false` when it is shown
@@ -680,20 +761,35 @@ public final class FanControlManager {
 
     // MARK: - Timer
 
-    private var effectivePollingInterval: TimeInterval {
-        min(max(pollingInterval, 0.5), 300)
+    /// Recomputes `effectivePollingInterval`; reschedules the timer (while
+    /// monitoring) when it changed.
+    private func updateEffectivePollingInterval() {
+        let interval = PollingIntervalPolicy.effectiveInterval(
+            pollingInterval: pollingInterval, batteryInterval: batteryPollingInterval,
+            slowOnBattery: slowPollingOnBattery, onBattery: isOnBattery)
+        guard interval != effectivePollingInterval else { return }
+        effectivePollingInterval = interval
+        if isMonitoring { scheduleTimer() }
+    }
+
+    /// `PowerSourceProviding` callback (main actor).
+    private func powerSourceDidChange(_ onBattery: Bool) {
+        guard onBattery != isOnBattery else { return }
+        isOnBattery = onBattery
+        updateEffectivePollingInterval()
     }
 
     private func scheduleTimer() {
         timer?.invalidate()
         timer = nil
+        scheduledTimerInterval = nil
         guard isMonitoring else { return }
         let interval: TimeInterval
         if isPauseInEffect {
             // Slow mode keeps sensor-based modes / the emergency override (session)
             // and the alerts (`keepAlertsWhilePaused`) alive while hidden.
             guard isSMCWriteSessionOpen || keepAlertsWhilePaused else { return }
-            interval = max(effectivePollingInterval * 5, 10)
+            interval = PollingIntervalPolicy.pausedInterval(effective: effectivePollingInterval)
         } else {
             interval = effectivePollingInterval
         }
@@ -704,6 +800,7 @@ public final class FanControlManager {
         newTimer.tolerance = interval * 0.1
         RunLoop.main.add(newTimer, forMode: .common)
         timer = newTimer
+        scheduledTimerInterval = interval
     }
 
     /// Mirrors `helperClient.isSessionOpen`; reschedules the timer when paused
@@ -735,6 +832,20 @@ public final class FanControlManager {
         }
         systemObservers = [(workspaceCenter, wake), (workspaceCenter, sleep),
                            (NotificationCenter.default, terminate)]
+        // Another fan control app launched or quit (`conflictingControllers`).
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+            let token = workspaceCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                let bundleIdentifier = app?.bundleIdentifier
+                MainActor.assumeIsolated { self?.applicationLaunchedOrTerminated(bundleIdentifier) }
+            }
+            systemObservers.append((workspaceCenter, token))
+        }
+    }
+
+    private func applicationLaunchedOrTerminated(_ bundleIdentifier: String?) {
+        guard conflictDetector.isRelevant(bundleIdentifier: bundleIdentifier) else { return }
+        refreshConflictingControllers()
     }
 
     /// Nothing destructive: the helper hands the forced fans back to the SMC
