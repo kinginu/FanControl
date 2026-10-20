@@ -228,7 +228,7 @@ collide at the launchd level.
 | `closeSession` | Closes the session |
 | `readKeyInfo(key)` | `(rc, dataSize, typeFourCC, attributes, message)`. No session needed. |
 | `setChargeLimitEnabled(enabled)` | `(rc, read-back 0/1 or -1, message)`. Writes `CHWA` only. No session needed, never restored ([Charge limit (CHWA)](#charge-limit-chwa)). Protocol v2. |
-| `setLowPowerMode(enabled)` | `(rc, message)`. Protocol 2. No session needed. See [Low Power Mode request](#low-power-mode-request). |
+| `setLowPowerMode(battery, ac)` | `(rc, message)`. Protocol 2. No session needed. See [Low Power Mode request](#low-power-mode-request). |
 
 Error codes: `0 ok`, `1 notSessionOwner`, `2 sessionNotOpen`, `3 invalidKey`,
 `4 keyNotAllowed`, `5 smcUnavailable`, `6 smcError`, `7 badRequest`,
@@ -425,45 +425,60 @@ fights macOS's own use of `CHTE`, so it is **not** implemented (needs a user dec
 
 <!-- F2: power profiles (DynamicNotchApp/docs/power-profiles.md). -->
 
-Protocol version **2** adds one dedicated request, `setLowPowerMode(_ enabled: Bool)`, used by
-power profiles. Changing Low Power Mode needs root; reading it does not. The request is not a
-generic command runner:
+Protocol version **2** adds one dedicated request, `setLowPowerMode(battery: Bool, ac: Bool)`
+(selector `setLowPowerModeWithBattery:ac:reply:`), used by power profiles. Changing Low Power
+Mode needs root; reading it does not. The request is not a generic command runner:
 
 - **Fixed argv, no shell.** The helper runs `/usr/bin/pmset` (absolute path, never looked up
   through `PATH`) through `Process` with an empty environment plus a fixed `PATH`. The only
-  client input is the `Bool`; no client string reaches the command line.
-- **Allowlist.** `LowPowerModeCommand.allowedInvocations` holds the only three argv the
-  handler may run: `-a lowpowermode 1`, `-a lowpowermode 0` and `-g`. Every invocation is checked
+  client input is the two `Bool`s; no client string reaches the command line.
+- **Allowlist.** `LowPowerModeCommand.allowedInvocations` holds the only seven argv the
+  handler may run: `-a|-b|-c lowpowermode 1|0` and `-g custom`. Every invocation is checked
   against it before it runs (`LowPowerModeCommand.isAllowed`).
-- **Read first, write only on change.** `pmset -g` is read first; if Low Power Mode already has
+- **Per power source.** Equal values are written with one `-a` (every source, like "Always" /
+  "Never" in System Settings ▸ Battery ▸ Low Power Mode); different values ("Only on Battery",
+  "Only on Power Adapter") with `-b` and / or `-c`, only for the sources that differ; on a Mac
+  without a "Battery Power:" section only `-c` is written (`LowPowerModeCommand.writes`).
+  This lets the app give a per-source choice back exactly.
+- **Read first, write only on change.** `pmset -g custom` is read first
+  (`LowPowerModeCommand.parseSettings`: `lowpowermode` in the "Battery Power:" and "AC Power:"
+  sections; `powermode` 1 on Macs that also have High Power Mode); if every source already has
   the requested value the reply is `ok` and nothing is written.
-- **Rate limit.** At most 6 writes per 60 s (shared by all connections); past that the reply is
-  `9 rateLimited` and nothing runs. A no-op request is still answered.
-- **Read-back.** After the write, `pmset -g` is read again and parsed
-  (`LowPowerModeCommand.parseLowPowerMode`: the `lowpowermode` line of the "Currently in use"
-  section; `powermode` 1 on Macs that also have High Power Mode). A mismatch is
+- **Rate limit.** At most 6 changes (requests that write) per 60 s (shared by all
+  connections); past that the reply is `9 rateLimited` and nothing runs. A no-op request is
+  still answered.
+- **Read-back.** After the writes, `pmset -g custom` is read again. A mismatch is
   `8 commandFailed`; an unreadable state is `ok` with "not confirmed" in the message.
-- **Failure.** A non-zero pmset exit (or a 10 s timeout) is `8 commandFailed`, with the first
-  line of pmset's stderr (at most 200 characters) in the message.
+- **Failure.** A non-zero pmset exit (or a 3 s timeout, `LowPowerModeCommand.commandTimeout`) is
+  `8 commandFailed`, with the first line of pmset's stderr (at most 200 characters) in the
+  message.
+- **Bounded duration.** A request runs at most 4 pmset commands (read, two writes, read-back),
+  so it takes at most 12 s (`LowPowerModeRequestHandler.worstCaseDuration`); requests are
+  serialized. The app sends it on its **own short-lived connection** with a 30 s reply timeout
+  (`LowPowerModeCommand.clientCallTimeout`, more than two worst-case requests), never on the
+  connection that holds the fan write session: NSXPC delivers one connection's messages
+  serially, so a slow pmset there would delay `writeKey`, and a client timeout invalidates the
+  connection it happened on, which releases (restores) the session.
 - **Logging.** Every request is logged with the caller's pid (`fancontrol-helper` category):
   the request, a skipped write, the refusal, the pmset failure and the read-back.
 - **No session.** The request changes a system setting, not a fan, so it does not need (or
   open) the fan write session; the connection itself has already passed the code-signing
   requirement. The helper does **not** restore Low Power Mode on exit: it is a persistent system
-  setting, and giving the user's value back is the app's job (`PowerProfileEngine`).
-- `-a` sets the value for every power source, like "Always" / "Never" in System Settings ▸
-  Battery ▸ Low Power Mode. A per-source choice ("Only on Battery") is replaced by the plain
-  value; giving the value back writes the plain value too.
+  setting, and giving the user's value back is the app's job (`PowerProfileEngine`, which
+  remembers both per-source values before its first change and writes them back).
+- A Mac whose `powermode` is 2 (High Power Mode) is read as "not low power"; giving back
+  `lowpowermode 0` then does not reinstate High Power Mode.
 
 Code: `Sources/FanControlXPC/LowPowerModeCommand.swift` (allowlist, parser, `ProcessCommandRunner`,
 `LowPowerModeRequestHandler`; unit-tested with a fake pmset in `LowPowerModeCommandTests`),
 `Sources/FanControlHelper/LowPowerModeService.swift` (XPC entry point). App side:
-`HelperClient.setLowPowerMode(_:)` and `FanControlManager.setLowPowerMode(_:)`, which never
+`HelperClient.setLowPowerMode(battery:ac:)` and `FanControlManager.setLowPowerMode(battery:ac:)`
+(separate connection, see above), which never
 registers the helper by itself and requires protocol ≥ `lowPowerModeProtocolVersion` (an older
 helper → "re-run install.sh"). End-to-end over a real `NSXPCConnection`:
 `LowPowerModeEndToEndTests`.
 
-Manual check (read-only): `pmset -g | grep lowpowermode`. The helper log:
+Manual check (read-only): `pmset -g custom | grep -E 'Power:|lowpowermode'`. The helper log:
 `/usr/bin/log stream --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'`.
 
 ## 5. Manual testing on a Mac

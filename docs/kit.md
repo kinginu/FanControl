@@ -573,13 +573,25 @@ automation (F3). Both go through one arbiter; neither calls `applyProfile` itsel
   (`SystemPowerContextProvider`: IOPS power source, `AppleClamshellState` of `IOPMrootDomain`,
   wake, `NSProcessInfoPowerStateDidChange`, a 30 s tick for time windows), chains evaluations
   (never concurrent), claims the matched rule's fan profile on `.power` and drives Low Power
-  Mode on **transitions** only. Low Power Mode is given back to the user's value once no rule
-  asks for one, unless the user changed it meanwhile (`LowPowerModeMemory`, persisted under
-  `fanControl.powerProfiles.lowPowerModeMemory` so a relaunch does not lose it).
-- **Low Power Mode**: `FanControlManager.setLowPowerMode(_:)` → `HelperClient.setLowPowerMode(_:)`
-  → the helper's dedicated request ([helper.md "Low Power Mode request"](helper.md#low-power-mode-request)).
-  It never registers the helper and needs no write session. Reads: `LowPowerModeReader`
-  (`ProcessInfo.isLowPowerModeEnabled`, `pmset -g`).
+  Mode on **transitions** only. Before its first change it remembers the user's settings per
+  power source (`pmset -g custom`, unprivileged: battery and AC, so "Only on Battery" survives;
+  the in-use value as fallback) and then sets every source (`-a`). Once no rule asks for a
+  value they are given back (`-b` / `-c`, or `-a` when equal), unless the user changed them
+  meanwhile (`LowPowerModeMemory`, persisted under `fanControl.powerProfiles.lowPowerModeMemory`
+  so a relaunch does not lose it; older memories without per-source values still decode). The
+  memory is dropped only after the restore succeeded (or is moot), and the first evaluation
+  after launch always syncs, so a persisted memory is restored even if no rule ever matches
+  again. A failed change or restore is retried on later evaluations, at most every
+  `lowPowerModeRetryInterval` (60 s).
+- **Low Power Mode**: `FanControlManager.setLowPowerMode(battery:ac:)` (and `setLowPowerMode(_:)`
+  for both) → `HelperClient.setLowPowerMode(battery:ac:)` → the helper's dedicated request
+  ([helper.md "Low Power Mode request"](helper.md#low-power-mode-request)). It never registers
+  the helper and needs no write session. The request goes over a **separate, short-lived
+  client** (`HelperClient.makeIndependentClient`, timeout `LowPowerModeCommand.clientCallTimeout`
+  = 30 s, invalidated afterwards): a slow pmset never queues the session connection's writes,
+  and its timeout cannot invalidate that connection (which would make the helper restore the
+  fans). A sticky rejection of the main client is reported without connecting. Reads:
+  `LowPowerModeReader` (`ProcessInfo.isLowPowerModeEnabled`, `pmset -g`, `pmset -g custom`).
 - UI (`FanControlUI/PowerProfiles/`): `FanControlPowerProfilesSettingsView` (rules editor),
   `FanControlPowerProfileStatusLine` (one line for a widget), `FanControlPowerProfiles.start()`
   (host start-up hook; gates fan switching on `FanControlSettingKey.general.isEnabled`).

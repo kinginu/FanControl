@@ -71,7 +71,7 @@ public enum FanControlHelperErrorCode: Int, CaseIterable, Sendable, CustomString
 /// | Version | Change |
 /// |---|---|
 /// | 1 | Initial contract: `version`, `openSession`, `writeKey`, `closeSession`, `readKeyInfo`; allowlist `F<n>Tg`, `F<n>Md` |
-/// | 2 | F1: `setChargeLimitEnabled(_:reply:)` (`CHWA` only, values 0/1, no session, never restored; `ChargeLimitPolicy`). F2: `setLowPowerMode(_:reply:)` (fixed-argv pmset, no session); codes `8 commandFailed`, `9 rateLimited` |
+/// | 2 | F1: `setChargeLimitEnabled(_:reply:)` (`CHWA` only, values 0/1, no session, never restored; `ChargeLimitPolicy`). F2: `setLowPowerMode(battery:ac:reply:)` (fixed-argv pmset `-a`/`-b`/`-c lowpowermode 0\|1`, no session); codes `8 commandFailed`, `9 rateLimited` |
 ///
 /// The ObjC selectors (`versionWithReply:`, `openSessionWithReply:`,
 /// `writeKey:bytes:reply:`, `closeSessionWithReply:`, `readKeyInfo:reply:`) are
@@ -101,11 +101,12 @@ public enum FanControlHelperErrorCode: Int, CaseIterable, Sendable, CustomString
     /// replies with (rc, read-back value 0/1 or -1, message).
     func setChargeLimitEnabled(_ enabled: Bool, reply: @escaping (Int, Int, String) -> Void)
 
-    // F2: Low Power Mode (protocol version 2). Runs `/usr/bin/pmset -a lowpowermode 0|1` with a
-    // fixed argv and reads the state back (`LowPowerModeRequestHandler`). No session required:
-    // it changes a system setting, not a fan; the connection is already code-signing checked.
-    /// Sets Low Power Mode on or off. Replies (rc, message).
-    func setLowPowerMode(_ enabled: Bool, reply: @escaping (Int, String) -> Void)
+    // F2: Low Power Mode (protocol version 2). Runs `/usr/bin/pmset -a lowpowermode 0|1` (both
+    // values equal) or `-b` / `-c lowpowermode 0|1` (per power source) with a fixed argv and
+    // reads the settings back (`LowPowerModeRequestHandler`). No session required: it changes
+    // a system setting, not a fan; the connection is already code-signing checked.
+    /// Sets Low Power Mode on battery power and on AC power. Replies (rc, message).
+    func setLowPowerMode(battery: Bool, ac: Bool, reply: @escaping (Int, String) -> Void)
 }
 
 /// Builds the `NSXPCInterface` used on both sides of the connection.

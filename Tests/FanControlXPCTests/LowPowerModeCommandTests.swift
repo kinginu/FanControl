@@ -34,10 +34,35 @@ func pmsetOutput(inUse: Int, battery: Int = 0, ac: Int = 0) -> String {
     """
 }
 
-/// Fake `/usr/bin/pmset`: `-g` prints the state, `-a lowpowermode 0|1` changes it.
+/// `pmset -g custom` as printed by Mac14,9 / macOS 26.5.2 (2026-10-21), with the per-source
+/// values substituted; `battery: nil` drops the "Battery Power:" section (a desktop Mac).
+func pmsetCustomOutput(battery: Int?, ac: Int) -> String {
+    let batterySection = battery.map { value in
+        """
+        Battery Power:
+         Sleep On Power Button 1
+         lowpowermode         \(value)
+         standby              1
+         displaysleep         5
+
+        """
+    } ?? ""
+    return batterySection + """
+        AC Power:
+         Sleep On Power Button 1
+         lowpowermode         \(ac)
+         standby              1
+         displaysleep         10
+        """
+}
+
+/// Fake `/usr/bin/pmset`: `-g custom` prints the per-source settings, `-a|-b|-c lowpowermode
+/// 0|1` changes them.
 final class FakePmset: CommandRunning {
     struct State {
-        var lowPowerMode = false
+        var battery = false
+        var ac = false
+        var hasBattery = true
         var calls: [[String]] = []
         var setStatus: Int32 = 0
         /// pmset "succeeds" but the value does not change (read-back mismatch).
@@ -49,21 +74,27 @@ final class FakePmset: CommandRunning {
     let state = Mutex(State())
 
     var calls: [[String]] { state.withLock { $0.calls } }
-    var lowPowerMode: Bool { state.withLock { $0.lowPowerMode } }
+    /// Both sources on (what `-a lowpowermode 1` leaves).
+    var lowPowerMode: Bool { state.withLock { $0.battery && $0.ac } }
+    var settings: (battery: Bool, ac: Bool) { state.withLock { ($0.battery, $0.ac) } }
     func update(_ change: (inout State) -> Void) { state.withLock { change(&$0) } }
 
     func run(executable: String, arguments: [String], timeout: TimeInterval) -> CommandResult {
         state.withLock { s in
             s.calls.append([executable] + arguments)
-            if arguments == ["-g"] {
+            if arguments == ["-g", "custom"] {
                 guard s.readStatus == 0 else { return CommandResult(status: s.readStatus) }
-                return CommandResult(status: 0, standardOutput: s.readOutput ?? pmsetOutput(inUse: s.lowPowerMode ? 1 : 0))
+                return CommandResult(status: 0, standardOutput: s.readOutput
+                                     ?? pmsetCustomOutput(battery: s.hasBattery ? (s.battery ? 1 : 0) : nil, ac: s.ac ? 1 : 0))
             }
-            if arguments.count == 3, arguments[0] == "-a", arguments[1] == "lowpowermode" {
+            if arguments.count == 3, ["-a", "-b", "-c"].contains(arguments[0]), arguments[1] == "lowpowermode" {
                 guard s.setStatus == 0 else {
                     return CommandResult(status: s.setStatus, standardError: "pmset: must be run as root\nmore")
                 }
-                if !s.ignoresSet { s.lowPowerMode = arguments[2] == "1" }
+                guard !s.ignoresSet else { return CommandResult(status: 0) }
+                let value = arguments[2] == "1"
+                if arguments[0] != "-c" { s.battery = value }
+                if arguments[0] != "-b" { s.ac = value }
                 return CommandResult(status: 0)
             }
             return CommandResult(status: 64, standardError: "unexpected")
@@ -84,14 +115,23 @@ struct LowPowerModeCommandTests {
         #expect(LowPowerModeCommand.pmsetPath == "/usr/bin/pmset")
         #expect(LowPowerModeCommand.setArguments(enabled: true) == ["-a", "lowpowermode", "1"])
         #expect(LowPowerModeCommand.setArguments(enabled: false) == ["-a", "lowpowermode", "0"])
+        #expect(LowPowerModeCommand.setArguments(.battery, enabled: true) == ["-b", "lowpowermode", "1"])
+        #expect(LowPowerModeCommand.setArguments(.ac, enabled: false) == ["-c", "lowpowermode", "0"])
         #expect(LowPowerModeCommand.readArguments == ["-g"])
+        #expect(LowPowerModeCommand.readCustomArguments == ["-g", "custom"])
     }
 
-    @Test func allowlistAcceptsOnlyTheThreeInvocations() {
+    @Test func allowlistAcceptsOnlyTheFixedInvocations() {
         let pmset = LowPowerModeCommand.pmsetPath
-        #expect(LowPowerModeCommand.isAllowed(executable: pmset, arguments: ["-a", "lowpowermode", "1"]))
-        #expect(LowPowerModeCommand.isAllowed(executable: pmset, arguments: ["-a", "lowpowermode", "0"]))
-        #expect(LowPowerModeCommand.isAllowed(executable: pmset, arguments: ["-g"]))
+        #expect(LowPowerModeCommand.allowedInvocations.count == 7)
+        for flag in ["-a", "-b", "-c"] {
+            #expect(LowPowerModeCommand.isAllowed(executable: pmset, arguments: [flag, "lowpowermode", "1"]))
+            #expect(LowPowerModeCommand.isAllowed(executable: pmset, arguments: [flag, "lowpowermode", "0"]))
+        }
+        #expect(LowPowerModeCommand.isAllowed(executable: pmset, arguments: ["-g", "custom"]))
+        #expect(!LowPowerModeCommand.isAllowed(executable: pmset, arguments: ["-g"]))  // the helper reads per source
+        #expect(!LowPowerModeCommand.isAllowed(executable: pmset, arguments: ["-u", "lowpowermode", "1"]))
+        #expect(!LowPowerModeCommand.isAllowed(executable: pmset, arguments: ["-b", "sleep", "0"]))
         #expect(!LowPowerModeCommand.isAllowed(executable: pmset, arguments: ["-a", "sleep", "0"]))
         #expect(!LowPowerModeCommand.isAllowed(executable: pmset, arguments: ["-a", "lowpowermode", "2"]))
         #expect(!LowPowerModeCommand.isAllowed(executable: pmset, arguments: ["-a", "lowpowermode", "1", "-b"]))
@@ -118,6 +158,60 @@ struct LowPowerModeCommandTests {
         #expect(LowPowerModeCommand.parseLowPowerMode(pmsetOutput: "") == nil)
     }
 
+    @Test func parsesThePerSourceSections() {
+        #expect(LowPowerModeCommand.parseSettings(pmsetCustomOutput: pmsetCustomOutput(battery: 1, ac: 0))
+                == LowPowerModeSettings(battery: true, ac: false))
+        #expect(LowPowerModeCommand.parseSettings(pmsetCustomOutput: pmsetCustomOutput(battery: 0, ac: 1))
+                == LowPowerModeSettings(battery: false, ac: true))
+        #expect(LowPowerModeCommand.parseSettings(pmsetCustomOutput: pmsetCustomOutput(battery: nil, ac: 1))
+                == LowPowerModeSettings(battery: nil, ac: true))
+        // `pmset -g` output also has the sections (after "Currently in use").
+        #expect(LowPowerModeCommand.parseSettings(pmsetCustomOutput: pmsetOutput(inUse: 0, battery: 1, ac: 0))
+                == LowPowerModeSettings(battery: true, ac: false))
+        // powermode (High Power Mode Macs): 1 = low power.
+        #expect(LowPowerModeCommand.parseSettings(pmsetCustomOutput: "Battery Power:\n powermode 1\nAC Power:\n powermode 2\n")
+                == LowPowerModeSettings(battery: true, ac: false))
+        #expect(LowPowerModeCommand.parseSettings(pmsetCustomOutput: "AC Power:\n sleep 1\n") == nil)
+        #expect(LowPowerModeCommand.parseSettings(pmsetCustomOutput: "") == nil)
+    }
+
+    @Test func writesUseAllSourcesWhenEqualAndPerSourceOtherwise() {
+        let both = LowPowerModeSettings(battery: false, ac: false)
+        #expect(LowPowerModeCommand.writes(battery: true, ac: true, current: both) == [["-a", "lowpowermode", "1"]])
+        #expect(LowPowerModeCommand.writes(battery: true, ac: false, current: both) == [["-b", "lowpowermode", "1"]])
+        #expect(LowPowerModeCommand.writes(battery: true, ac: false, current: nil)
+                == [["-b", "lowpowermode", "1"], ["-c", "lowpowermode", "0"]])
+        #expect(LowPowerModeCommand.writes(battery: false, ac: true, current: LowPowerModeSettings(battery: true, ac: true))
+                == [["-b", "lowpowermode", "0"]])
+        // No battery section: only the AC value is written.
+        #expect(LowPowerModeCommand.writes(battery: true, ac: false, current: LowPowerModeSettings(battery: nil, ac: true))
+                == [["-c", "lowpowermode", "0"]])
+        for writes in [LowPowerModeCommand.writes(battery: true, ac: false, current: nil)] {
+            for arguments in writes {
+                #expect(LowPowerModeCommand.isAllowed(executable: LowPowerModeCommand.pmsetPath, arguments: arguments))
+            }
+        }
+    }
+
+    @Test func worstCaseStaysInsideTheClientTimeout() {
+        // Even with one request queued ahead (the handler serializes requests).
+        #expect(LowPowerModeRequestHandler.worstCaseDuration == 12)
+        #expect(2 * LowPowerModeRequestHandler.worstCaseDuration < LowPowerModeCommand.clientCallTimeout)
+    }
+
+    @Test func handlerRestoresPerSourceSettings() {
+        let pmset = FakePmset()
+        pmset.update { $0.battery = true; $0.ac = true }
+        let handler = LowPowerModeRequestHandler(runner: pmset)
+        let result = handler.handle(battery: true, ac: false, requester: "pid 7")
+        #expect(result.code == .ok)
+        #expect(result.message == "Low Power Mode on on battery power, off on AC power.")
+        #expect(pmset.settings == (true, false))
+        #expect(pmset.calls == [["/usr/bin/pmset", "-g", "custom"],
+                                ["/usr/bin/pmset", "-c", "lowpowermode", "0"],
+                                ["/usr/bin/pmset", "-g", "custom"]])
+    }
+
     @Test func handlerSetsAndReadsBack() {
         let pmset = FakePmset()
         let logs = Mutex<[String]>([])
@@ -125,9 +219,9 @@ struct LowPowerModeCommandTests {
         let result = handler.handle(enabled: true, requester: "pid 42")
         #expect(result.code == .ok)
         #expect(pmset.lowPowerMode)
-        #expect(pmset.calls == [["/usr/bin/pmset", "-g"],
+        #expect(pmset.calls == [["/usr/bin/pmset", "-g", "custom"],
                                 ["/usr/bin/pmset", "-a", "lowpowermode", "1"],
-                                ["/usr/bin/pmset", "-g"]])
+                                ["/usr/bin/pmset", "-g", "custom"]])
         let lines = logs.withLock { $0 }
         #expect(lines.first == "pid 42 requests Low Power Mode on")
         #expect(lines.last == "Low Power Mode is now on (read back)")
@@ -139,7 +233,7 @@ struct LowPowerModeCommandTests {
         let result = handler.handle(enabled: false, requester: "test")
         #expect(result.code == .ok)
         #expect(result.message.contains("already off"))
-        #expect(pmset.calls == [["/usr/bin/pmset", "-g"]])
+        #expect(pmset.calls == [["/usr/bin/pmset", "-g", "custom"]])
     }
 
     @Test func handlerReportsPmsetFailure() {
@@ -162,7 +256,7 @@ struct LowPowerModeCommandTests {
 
     @Test func handlerAcceptsAnUnreadableState() {
         let pmset = FakePmset()
-        pmset.update { $0.readOutput = "System-wide power settings:\n" }
+        pmset.update { $0.readOutput = "System-wide power settings:\n" }   // no per-source sections
         let result = LowPowerModeRequestHandler(runner: pmset).handle(enabled: true, requester: "test")
         #expect(result.code == .ok)
         #expect(result.message.contains("not confirmed"))

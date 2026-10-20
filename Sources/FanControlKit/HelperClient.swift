@@ -484,11 +484,37 @@ public final class HelperClient: SMCWriter, @unchecked Sendable {
     }
 
     // F2: Low Power Mode (protocol version 2, docs/helper.md "Low Power Mode request").
-    /// Asks the helper to run `pmset -a lowpowermode 0|1` (fixed argv). Needs no session.
-    /// Throws `.helperRejected` with `FanControlHelperErrorCode.commandFailed` /
-    /// `.rateLimited` when the helper refuses or pmset fails.
+    /// Asks the helper to set Low Power Mode on battery and on AC power (`pmset -a` when
+    /// both are equal, else `-b` / `-c`; fixed argv). Needs no session. Throws
+    /// `.helperRejected` with `FanControlHelperErrorCode.commandFailed` / `.rateLimited`
+    /// when the helper refuses or pmset fails.
+    ///
+    /// Send it on a client that holds no fan write session (`makeIndependentClient`):
+    /// pmset can be slow, and a timeout invalidates the connection it ran on.
+    public func setLowPowerMode(battery: Bool, ac: Bool) async throws {
+        _ = try await callStatus { helper, reply in helper.setLowPowerMode(battery: battery, ac: ac, reply: reply) }
+    }
+
+    /// `setLowPowerMode(battery: enabled, ac: enabled)` (`pmset -a`).
     public func setLowPowerMode(_ enabled: Bool) async throws {
-        _ = try await callStatus { helper, reply in helper.setLowPowerMode(enabled, reply: reply) }
+        try await setLowPowerMode(battery: enabled, ac: enabled)
+    }
+
+    /// A new client for the same helper (same Mach service or test connection factory and
+    /// Team ID) with its own connection, gate and `callTimeout`. It never shares this
+    /// client's write session, so a slow request there (Low Power Mode) cannot hold up this
+    /// connection's writes or end its session by timing out. The caller invalidates it when
+    /// done.
+    public func makeIndependentClient(callTimeout: TimeInterval) -> HelperClient {
+        let client: HelperClient
+        if let connectionFactory {
+            client = HelperClient(connectionFactory: connectionFactory)
+        } else {
+            client = HelperClient(machServiceName: machServiceName)
+        }
+        client.clientTeamID = clientTeamID
+        client.callTimeout = callTimeout
+        return client
     }
 }
 

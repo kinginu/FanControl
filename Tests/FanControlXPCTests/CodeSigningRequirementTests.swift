@@ -207,7 +207,7 @@ struct HelperWireContractTests {
         let selectors = ["versionWithReply:", "openSessionWithReply:", "writeKey:bytes:reply:",
                          "closeSessionWithReply:", "readKeyInfo:reply:",
                          "setChargeLimitEnabled:reply:",  // F1 (protocol 2)
-                         "setLowPowerMode:reply:"]  // F2 (protocol 2)
+                         "setLowPowerModeWithBattery:ac:reply:"]  // F2 (protocol 2, per power source)
         for name in selectors {
             let method = protocol_getMethodDescription(proto, NSSelectorFromString(name), true, true)
             #expect(method.name != nil, Comment(rawValue: name))

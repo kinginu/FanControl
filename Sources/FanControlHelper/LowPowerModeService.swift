@@ -17,10 +17,13 @@ let lowPowerModeHandler = LowPowerModeRequestHandler(runner: ProcessCommandRunne
 })
 
 extension HelperService {
-    /// `FanControlHelperProtocol.setLowPowerMode`. The only input is a Bool; the argv is fixed.
-    func setLowPowerMode(_ enabled: Bool, reply: @escaping (Int, String) -> Void) {
+    /// `FanControlHelperProtocol.setLowPowerMode`. The only inputs are two Bools; the argv is
+    /// fixed. Runs on this connection's queue; the app sends it on its own short-lived,
+    /// session-less connection, so a slow pmset never delays (or, on a client timeout, ends)
+    /// the fan write session's connection.
+    func setLowPowerMode(battery: Bool, ac: Bool, reply: @escaping (Int, String) -> Void) {
         let pid = NSXPCConnection.current()?.processIdentifier ?? 0
-        let result = lowPowerModeHandler.handle(enabled: enabled, requester: "pid \(pid)")
+        let result = lowPowerModeHandler.handle(battery: battery, ac: ac, requester: "pid \(pid)")
         reply(result.code.rawValue, result.message)
     }
 }

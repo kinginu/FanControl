@@ -350,9 +350,9 @@ private final class FakeHelperService: NSObject, FanControlHelperProtocol, @unch
     }
 
     // F2: Low Power Mode request (mirrors Sources/FanControlHelper/LowPowerModeService.swift).
-    func setLowPowerMode(_ enabled: Bool, reply: @escaping (Int, String) -> Void) {
+    func setLowPowerMode(battery: Bool, ac: Bool, reply: @escaping (Int, String) -> Void) {
         guard admit("setLowPowerMode"), let helper else { return }
-        let (code, message) = helper.lowPowerMode.handle(enabled: enabled, requester: "pid \(owner.pid)")
+        let (code, message) = helper.lowPowerMode.handle(battery: battery, ac: ac, requester: "pid \(owner.pid)")
         reply(code.rawValue, message)
     }
 }

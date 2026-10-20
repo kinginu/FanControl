@@ -2,6 +2,7 @@
 import Foundation
 import Observation
 import FanControlCore
+import FanControlXPC
 
 // F2: Power profiles (DynamicNotchApp/docs/power-profiles.md). Evaluates the user's rules
 // against the live `PowerContext` (first match wins) and
@@ -17,10 +18,16 @@ import FanControlCore
 /// fought on every tick.
 ///
 /// Low Power Mode bookkeeping (`LowPowerModeMemory`, persisted so a relaunch does not lose
-/// it): before the engine changes it the first time, the current value is remembered; when
-/// the matching rule no longer asks for a value (no match, "Don't Change", or Power Profiles
-/// turned off), the remembered value is written back — unless the user changed Low Power
-/// Mode in the meantime (the state is no longer what the engine set), then theirs is kept.
+/// it): before the engine changes it the first time, the user's settings are remembered
+/// **per power source** (`pmset -g custom`: battery and AC, so "Only on Battery" survives);
+/// the engine itself sets every source (`-a`). When the matching rule no longer asks for a
+/// value (no match, "Don't Change", or Power Profiles turned off), the remembered values are
+/// written back (`-b` / `-c`, or `-a` when equal) — unless the user changed Low Power Mode
+/// in the meantime (the settings are no longer what the engine set), then theirs are kept.
+/// The memory is dropped only once the restore succeeded (or is moot), so a failed restore
+/// is retried, also after a relaunch: the first evaluation after launch always syncs. A
+/// failed change is retried too while its rule keeps matching, at most every
+/// `lowPowerModeRetryInterval`.
 @MainActor
 @Observable
 public final class PowerProfileEngine {
@@ -62,8 +69,14 @@ public final class PowerProfileEngine {
     @ObservationIgnored public let arbiter: FanProfileArbiter
     @ObservationIgnored private let calendar: Calendar
     /// The Low Power Mode value the current rule asks for (`nil` = none). Changes of this
-    /// value are the only Low Power Mode transitions.
+    /// value are the Low Power Mode transitions.
     @ObservationIgnored private var lowPowerModeTarget: Bool?
+    /// `true` once the work for `lowPowerModeTarget` is done (written, already as wanted,
+    /// restored, or moot). `false` at launch (persisted memory may need a restore) and after
+    /// a failed write, so the next evaluation tries again.
+    @ObservationIgnored private var lowPowerModeSettled = false
+    /// No retry of an unsettled target before this time (context clock).
+    @ObservationIgnored private var lowPowerModeRetryAfter: Date?
     @ObservationIgnored private var hasEvaluated = false
     @ObservationIgnored private var memory: LowPowerModeMemory? {
         didSet { persistMemory() }
@@ -160,49 +173,90 @@ public final class PowerProfileEngine {
         }
         await arbiter.setClaim(claim, for: .power)
 
-        await syncLowPowerMode(target: rule?.lowPowerMode.requestedState)
+        await syncLowPowerMode(target: rule?.lowPowerMode.requestedState, now: context.date)
     }
 
-    private func syncLowPowerMode(target: Bool?) async {
-        guard target != lowPowerModeTarget else { return }
+    /// Minimum time between retries of a failed Low Power Mode change or restore.
+    nonisolated static let lowPowerModeRetryInterval: TimeInterval = 60
+
+    private func syncLowPowerMode(target: Bool?, now: Date) async {
+        if target == lowPowerModeTarget {
+            guard !lowPowerModeSettled else { return }
+            if let retryAfter = lowPowerModeRetryAfter, now < retryAfter { return }
+        }
         lowPowerModeTarget = target
-        let current = lowPowerMode.isLowPowerModeEnabled
-
-        if let target {
-            guard current != target else { return }  // already as wanted: nothing to remember
-            let isFirstChange = memory == nil
-            if isFirstChange {
-                memory = LowPowerModeMemory(restoreValue: current ?? !target, valueSetByEngine: target)
-            }
-            if await setLowPowerMode(target) {
-                memory?.valueSetByEngine = target
-            } else if isFirstChange {
-                memory = nil  // nothing was changed, so there is nothing to give back
-            }
-            return
+        let settled = if let target {
+            await changeLowPowerMode(to: target)
+        } else {
+            await restoreLowPowerMode()
         }
-
-        // No rule asks for a value: give the user's value back, if the engine changed it.
-        guard let memory else { return }
-        self.memory = nil
-        if let current, current != memory.valueSetByEngine {
-            kitLog.notice("Low Power Mode was changed by the user; not restoring it")
-            return
-        }
-        guard current != memory.restoreValue else { return }
-        await setLowPowerMode(memory.restoreValue)
+        // The target may have moved on while awaiting the helper; only record this one.
+        guard lowPowerModeTarget == target else { return }
+        lowPowerModeSettled = settled
+        lowPowerModeRetryAfter = settled ? nil : now.addingTimeInterval(Self.lowPowerModeRetryInterval)
     }
 
-    @discardableResult
-    private func setLowPowerMode(_ enabled: Bool) async -> Bool {
+    /// A rule asks for `target`. Returns `false` if the write failed (retry later).
+    private func changeLowPowerMode(to target: Bool) async -> Bool {
+        let current = lowPowerMode.isLowPowerModeEnabled
+        guard current != target else { return true }  // already as wanted: nothing to remember
+        let isFirstChange = memory == nil
+        if isFirstChange {
+            let settings = await lowPowerMode.readLowPowerModeSettings()
+            memory = LowPowerModeMemory(restoreValue: current ?? !target,
+                                        restoreBattery: settings?.battery, restoreAC: settings?.ac,
+                                        valueSetByEngine: target)
+        }
+        if await setLowPowerMode(battery: target, ac: target) {
+            memory?.valueSetByEngine = target
+            return true
+        }
+        if isFirstChange { memory = nil }  // nothing was changed, so there is nothing to give back
+        return false
+    }
+
+    /// No rule asks for a value: give the user's settings back, if the engine changed them.
+    /// Returns `false` if the restore write failed (the memory is kept: retry later).
+    private func restoreLowPowerMode() async -> Bool {
+        guard let memory else { return true }
+        let current = lowPowerMode.isLowPowerModeEnabled
+        let settings = await lowPowerMode.readLowPowerModeSettings()
+        let set = memory.valueSetByEngine
+        let changedByUser = if let settings {
+            !settings.matches(battery: set, ac: set)
+        } else {
+            current.map { $0 != set } ?? false
+        }
+        if changedByUser {
+            kitLog.notice("Low Power Mode was changed by the user; not restoring it")
+            self.memory = nil
+            return true
+        }
+        let (battery, ac) = memory.restorePair
+        let alreadyRestored = if let settings {
+            settings.matches(battery: battery, ac: ac)
+        } else {
+            battery == ac && current == battery
+        }
+        guard !alreadyRestored else {
+            self.memory = nil
+            return true
+        }
+        guard await setLowPowerMode(battery: battery, ac: ac) else { return false }
+        self.memory = nil
+        return true
+    }
+
+    private func setLowPowerMode(battery: Bool, ac: Bool) async -> Bool {
         do {
-            try await lowPowerMode.setLowPowerMode(enabled)
+            try await lowPowerMode.setLowPowerMode(battery: battery, ac: ac)
             lowPowerModeError = nil
-            isLowPowerModeEnabled = lowPowerMode.isLowPowerModeEnabled ?? enabled
+            isLowPowerModeEnabled = lowPowerMode.isLowPowerModeEnabled ?? (battery == ac ? battery : nil)
             return true
         } catch {
             lowPowerModeError = error.localizedDescription
-            kitLog.error("Low Power Mode \(enabled ? "on" : "off", privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            let wanted = LowPowerModeCommand.describe(battery: battery, ac: ac)
+            kitLog.error("Low Power Mode \(wanted, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
             return false
         }
     }
@@ -240,14 +294,28 @@ public final class PowerProfileEngine {
 
     /// Test hook: the remembered Low Power Mode value to restore (`nil` = nothing to restore).
     var lowPowerModeRestoreValue: Bool? { memory?.restoreValue }
+    /// Test hook: the remembered per-source values `[battery, AC]` to restore.
+    var lowPowerModeRestorePair: [Bool]? { memory.map { [$0.restorePair.battery, $0.restorePair.ac] } }
 }
 
-/// Low Power Mode value to give back once no rule asks for one.
+/// Low Power Mode settings to give back once no rule asks for a value.
 struct LowPowerModeMemory: Codable, Hashable, Sendable {
-    /// The value before the engine changed it.
+    /// The in-use value before the engine changed it (fallback when the per-source values
+    /// could not be read; also what a memory persisted by an older build holds).
     var restoreValue: Bool
-    /// What the engine set last (if the state differs, the user changed it: keep theirs).
+    /// The battery / AC values before the engine changed them (`pmset -g custom`); `nil` =
+    /// unknown (no battery, unreadable, or persisted by an older build).
+    var restoreBattery: Bool?
+    var restoreAC: Bool?
+    /// What the engine set last, for every source (if the settings differ, the user changed
+    /// them: keep theirs).
     var valueSetByEngine: Bool
+
+    /// The (battery, AC) values to write back. A source without a remembered value takes the
+    /// other one's (a Mac without a battery), else `restoreValue`.
+    var restorePair: (battery: Bool, ac: Bool) {
+        (restoreBattery ?? restoreAC ?? restoreValue, restoreAC ?? restoreBattery ?? restoreValue)
+    }
 }
 
 /// Snapshot for the Fan widget's status line and the settings pane.

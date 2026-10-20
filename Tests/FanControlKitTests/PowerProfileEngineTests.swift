@@ -2,6 +2,7 @@
 import Foundation
 import Testing
 import FanControlCore
+import FanControlXPC
 @testable import FanControlKit
 
 // F2: `PowerProfileEngine` + `FanProfileArbiter` with an injected context, a fake Low Power
@@ -34,18 +35,39 @@ private struct FakeFailure: LocalizedError {
     var errorDescription: String? { "helper not installed" }
 }
 
+/// Low Power Mode per power source (like `pmset -b` / `-c`); `state` is the in-use value.
 @MainActor
 private final class FakeLowPowerMode: LowPowerModeControlling {
-    var state: Bool? = false
+    var battery = false
+    var ac = false
+    var onBattery = false
+    var settingsReadable = true
+    /// Every `-a`-style set (both values equal) as one Bool; per-source writes in `pairs`.
     private(set) var sets: [Bool] = []
+    private(set) var pairs: [(battery: Bool, ac: Bool)] = []
     var fails = false
+
+    /// The in-use value; setting it sets both sources (the user's "Always" / "Never").
+    var state: Bool? {
+        get { onBattery ? battery : ac }
+        set {
+            battery = newValue ?? false
+            ac = newValue ?? false
+        }
+    }
 
     var isLowPowerModeEnabled: Bool? { state }
 
-    func setLowPowerMode(_ enabled: Bool) async throws {
-        sets.append(enabled)
+    func readLowPowerModeSettings() async -> LowPowerModeSettings? {
+        settingsReadable ? LowPowerModeSettings(battery: battery, ac: ac) : nil
+    }
+
+    func setLowPowerMode(battery: Bool, ac: Bool) async throws {
+        if battery == ac { sets.append(battery) }
+        pairs.append((battery, ac))
         if fails { throw FakeFailure() }
-        state = enabled
+        self.battery = battery
+        self.ac = ac
     }
 }
 
@@ -88,7 +110,10 @@ private struct Rig {
 
     /// Changes the context and evaluates.
     func set(_ source: PowerSourceKind? = nil, lid: Bool?? = nil, at date: Date? = nil) async {
-        if let source { context.context.powerSource = source }
+        if let source {
+            context.context.powerSource = source
+            lowPower.onBattery = source == .battery
+        }
         if let lid { context.context.isLidClosed = lid }
         if let date { context.context.date = date }
         await engine.evaluate()
@@ -245,9 +270,106 @@ struct PowerProfileEngineTests {
         #expect(rig.engine.status?.error == "helper not installed")
         #expect(rig.engine.lowPowerModeRestoreValue == nil)
         await rig.engine.evaluate()
-        #expect(rig.lowPower.sets == [true])  // no retry loop while the rule holds
+        #expect(rig.lowPower.sets == [true])  // no hot retry loop while the rule holds
         await rig.set(.ac)
         #expect(rig.lowPower.sets == [true])  // nothing to give back
+    }
+
+    @Test func failedChangeIsRetriedWhileTheRuleHolds() async {
+        let rig = Rig("lpmRetry", rules: [batteryRule])
+        rig.lowPower.fails = true
+        rig.engine.start()
+        await rig.set(.battery, at: time(12))
+        #expect(rig.lowPower.sets == [true])
+        rig.lowPower.fails = false   // the helper is back (install.sh re-run)
+        await rig.set(at: time(12, 0) + 30)
+        #expect(rig.lowPower.sets == [true])  // within the retry interval
+        await rig.set(at: time(12, 1) + 1)
+        #expect(rig.lowPower.sets == [true, true])
+        #expect(rig.lowPower.state == true)
+        #expect(rig.engine.lowPowerModeError == nil)
+        #expect(rig.engine.lowPowerModeRestoreValue == false)
+        await rig.set(at: time(12, 5))
+        #expect(rig.lowPower.sets == [true, true])  // settled: not rewritten
+    }
+
+    @Test func failedRestoreKeepsTheMemoryAndRetries() async {
+        let rig = Rig("lpmRestoreFail", rules: [batteryRule])
+        rig.engine.start()
+        await rig.set(.battery, at: time(12))
+        rig.lowPower.fails = true
+        await rig.set(.ac, at: time(12, 1))
+        #expect(rig.lowPower.sets == [true, false])
+        #expect(rig.engine.lowPowerModeRestoreValue == false)  // kept (and persisted)
+        #expect(rig.defaults.data(forKey: PowerProfileEngine.lowPowerModeMemoryKey) != nil)
+        rig.lowPower.fails = false
+        await rig.set(at: time(12, 3))
+        #expect(rig.lowPower.sets == [true, false, false])
+        #expect(rig.lowPower.state == false)
+        #expect(rig.engine.lowPowerModeRestoreValue == nil)
+        #expect(rig.defaults.data(forKey: PowerProfileEngine.lowPowerModeMemoryKey) == nil)
+    }
+
+    @Test func persistedMemoryIsRestoredAfterARelaunchWithoutAMatchingRule() async {
+        do {
+            let rig = Rig("relaunchRestore", rules: [batteryRule])
+            rig.engine.start()
+            await rig.set(.battery)
+            #expect(rig.lowPower.sets == [true])
+        }
+        let relaunched = Rig("relaunchRestore", fresh: false)
+        relaunched.lowPower.state = true   // still on from before the relaunch
+        relaunched.context.context.powerSource = .ac   // plugged in while the app was not running
+        relaunched.engine.start()
+        await relaunched.engine.evaluate()
+        #expect(relaunched.lowPower.sets == [false])
+        #expect(relaunched.engine.lowPowerModeRestoreValue == nil)
+    }
+
+    @Test func perSourceSettingsAreRememberedAndRestored() async {
+        // The user's "Only on Battery" (battery 1, AC 0), on AC; a rule turns LPM on for every source.
+        let lpmOnAC = PowerProfileRule(name: "Clamshell", powerSource: .ac, lid: .closed, lowPowerMode: .on)
+        let rig = Rig("lpmPerSource", rules: [lpmOnAC])
+        rig.lowPower.battery = true
+        rig.lowPower.ac = false
+        rig.engine.start()
+        await rig.set(.ac, lid: true)
+        #expect(rig.lowPower.sets == [true])
+        #expect(rig.engine.lowPowerModeRestorePair == [true, false])
+        await rig.set(.battery, lid: false)   // unplugged: the rule ends
+        #expect(rig.lowPower.pairs.last.map { [$0.battery, $0.ac] } == [true, false])
+        #expect(rig.lowPower.battery == true)
+        #expect(rig.lowPower.ac == false)
+        #expect(rig.engine.lowPowerModeRestorePair == nil)
+    }
+
+    @Test func aPerSourceChangeByTheUserIsKept() async {
+        let rig = Rig("lpmPerSourceUser", rules: [batteryRule])
+        rig.engine.start()
+        await rig.set(.battery)
+        #expect(rig.lowPower.sets == [true])
+        rig.lowPower.ac = false   // the user picked "Only on Battery" meanwhile (in-use still on)
+        await rig.set(.ac)
+        #expect(rig.lowPower.pairs.count == 1)  // not "restored" over it
+        #expect(rig.lowPower.battery == true)
+        #expect(rig.engine.lowPowerModeRestoreValue == nil)
+    }
+
+    @Test func unreadablePerSourceSettingsFallBackToTheInUseValue() async {
+        let rig = Rig("lpmNoCustom", rules: [batteryRule])
+        rig.lowPower.settingsReadable = false
+        rig.engine.start()
+        await rig.set(.battery)
+        #expect(rig.engine.lowPowerModeRestorePair == [false, false])
+        await rig.set(.ac)
+        #expect(rig.lowPower.sets == [true, false])
+    }
+
+    @Test func memoryPersistedByAnOlderBuildStillDecodes() throws {
+        let old = Data(#"{"restoreValue":true,"valueSetByEngine":false}"#.utf8)
+        let memory = try JSONDecoder().decode(LowPowerModeMemory.self, from: old)
+        #expect(memory.restoreBattery == nil && memory.restoreAC == nil)
+        #expect(memory.restorePair == (true, true))
     }
 
     @Test func manualPickWinsUntilTheNextTransition() async {
