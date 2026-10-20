@@ -231,3 +231,34 @@
 "Show Alert Threshold" = "Show Alert Threshold";
 "The dashed line is the high-temperature alert threshold (%@), set in Settings ▸ Fan Control ▸ General. CPU and GPU values turn orange within 10° below it and red at or above it." = "The dashed line is the high-temperature alert threshold (%@), set in Settings ▸ Fan Control ▸ General. CPU and GPU values turn orange within 10° below it and red at or above it.";
 "CPU, GPU and SSD temperatures are shown by the Temperature widget." = "CPU, GPU and SSD temperatures are shown by the Temperature widget.";
+
+/* F2: Power Profiles (FanControlUI/PowerProfiles) */
+"Let the power profile rules choose the fan profile again" = "Let the power profile rules choose the fan profile again";
+"Use Power Profiles" = "Use Power Profiles";
+"Rules are checked from top to bottom and the first one that matches decides. A fan profile you choose by hand stays until the situation changes. Low Power Mode is changed through the fan control helper and given back to your own setting when no rule asks for it." = "Rules are checked from top to bottom and the first one that matches decides. A fan profile you choose by hand stays until the situation changes. Low Power Mode is changed through the fan control helper and given back to your own setting when no rule asks for it.";
+"Power Source" = "Power Source";
+"Lid" = "Lid";
+"Low Power Mode" = "Low Power Mode";
+"Check pmset" = "Check pmset";
+"Matching Rule" = "Matching Rule";
+"Fan Profile" = "Fan Profile";
+"Chosen manually" = "Chosen manually";
+"Resume Rules" = "Resume Rules";
+"No rules yet. Add one below, or start from a template." = "No rules yet. Add one below, or start from a template.";
+"Add Rule" = "Add Rule";
+"Empty Rule" = "Empty Rule";
+"Rules" = "Rules";
+"Precedence: a profile you choose by hand, then emergency and workload rules, then power profiles, then your own profile. The all-fans-maximum safety override always applies." = "Precedence: a profile you choose by hand, then emergency and workload rules, then power profiles, then your own profile. The all-fans-maximum safety override always applies.";
+"Never used: an earlier rule matches everything." = "Never used: an earlier rule matches everything.";
+"Delete Rule" = "Delete Rule";
+"When" = "When";
+"Any" = "Any";
+"Power Adapter" = "Power Adapter";
+"Closed (Clamshell)" = "Closed (Clamshell)";
+"Only at Certain Times" = "Only at Certain Times";
+"From" = "From";
+"To" = "To";
+"Times wrap past midnight (22:00 to 07:00 is overnight). Same start and end means all day. No day selected means every day." = "Times wrap past midnight (22:00 to 07:00 is overnight). Same start and end means all day. No day selected means every day.";
+"Then" = "Then";
+"Don’t Change" = "Don’t Change";
+"Needs the fan control helper (install.sh). Sets Low Power Mode for all power sources, like “Always” or “Never” in System Settings." = "Needs the fan control helper (install.sh). Sets Low Power Mode for all power sources, like “Always” or “Never” in System Settings.";

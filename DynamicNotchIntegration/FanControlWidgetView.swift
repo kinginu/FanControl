@@ -132,7 +132,15 @@ struct FanControlWidgetView: View {
 
     // MARK: Header
 
+    // F2: Power Profiles status line under the header row (hidden while Power Profiles are off).
     private var header: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            headerRow
+            if !isPreview { FanControlPowerProfileStatusLine(isCompact: isCompact) }
+        }
+    }
+
+    private var headerRow: some View {
         HStack(spacing: 4) {
             Image(systemName: "fan")
                 .symbolRenderingMode(.hierarchical)
