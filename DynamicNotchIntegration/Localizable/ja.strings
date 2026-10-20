@@ -154,3 +154,6 @@
 /* MARK: Widget settings — fixed profiles (FanControlWidgetSettingsView) */
 "Show Key Temperatures" = "主要な温度を表示";
 "Show Fan Curve (Double Wide)" = "ファンカーブを表示（ダブルワイド）";
+
+/* MARK: Widget apply error */
+"Helper refused this build — see Settings" = "ヘルパーがこのビルドを拒否 — 設定を確認";

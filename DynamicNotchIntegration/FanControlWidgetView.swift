@@ -29,6 +29,11 @@ struct FanControlWidgetView: View {
     /// Preview / debug rendering only: layout size instead of the setting.
     var previewGridSize: FanControlWidgetSettings.GridSizeChoice? = nil
 
+    /// Transient apply failure shown in the widget (cleared after ~6 s or by the next successful apply).
+    @State private var applyError: String? = nil
+    @State private var isApplying = false
+    @State private var errorClearTask: Task<Void, Never>? = nil
+
     private var manager: FanControlManager { FanControlManager.shared }
 
     private var gridSize: FanControlWidgetSettings.GridSizeChoice { previewGridSize ?? settings.gridSize }
@@ -66,7 +71,7 @@ struct FanControlWidgetView: View {
             VStack(alignment: .leading, spacing: 4) {
                 header
                 fanList
-                sensorList
+                if let applyError { errorLine(applyError) } else { sensorList }
                 if settings.showProfilePicker { profileMenu }
             }
         } else {
@@ -90,6 +95,7 @@ struct FanControlWidgetView: View {
                     }
                     Spacer(minLength: 0)
                     if settings.showProfilePicker { profileMenu }
+                    if let applyError { errorLine(applyError) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -150,7 +156,7 @@ struct FanControlWidgetView: View {
             ForEach(profiles) { profile in
                 if profile.id == FanProfile.BuiltInID.custom1 { Divider() }
                 Button {
-                    Task { try? await FanControlProfiles.apply(profile) }
+                    applyFromMenu(profile)
                 } label: {
                     if profile.id == activeID {
                         Label(FanControlFormatting.profileName(profile), systemImage: "checkmark")
@@ -170,10 +176,57 @@ struct FanControlWidgetView: View {
             }
         }
         .menuStyle(.borderlessButton)
+        .disabled(isApplying)
         .font(isCompact ? .caption2 : .caption)
         .fixedSize(horizontal: !isCompact, vertical: true)
         .frame(maxWidth: isCompact ? gridSize.widthInPoints : nil, alignment: .leading)
         .help(Text("Profile"))
+        .overlay(alignment: .trailing) {
+            if isApplying { ProgressView().controlSize(.mini) }
+        }
+    }
+
+    /// Applies `profile`; a failure is shown as a short transient line instead of being swallowed.
+    private func applyFromMenu(_ profile: FanProfile) {
+        guard !isApplying else { return }
+        isApplying = true
+        Task { @MainActor in
+            defer { isApplying = false }
+            do {
+                try await FanControlProfiles.apply(profile)
+                showApplyError(nil)
+            } catch {
+                showApplyError(shortMessage(for: error))
+            }
+        }
+    }
+
+    private func shortMessage(for error: Error) -> String {
+        if let fanError = error as? FanControlError, case .helperConnectionRejected = fanError {
+            return String(localized: "Helper refused this build — see Settings")
+        }
+        return error.localizedDescription
+    }
+
+    private func showApplyError(_ message: String?) {
+        errorClearTask?.cancel()
+        applyError = message
+        guard message != nil else { return }
+        errorClearTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            if !Task.isCancelled { applyError = nil }
+        }
+    }
+
+    private func errorLine(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 3) {
+            Image(systemName: "exclamationmark.triangle")
+            Text(verbatim: message)
+                .lineLimit(isCompact ? 2 : 3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.caption2)
+        .foregroundStyle(.red)
     }
 }
 
