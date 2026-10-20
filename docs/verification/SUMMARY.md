@@ -5,6 +5,10 @@ macOS 26.5.2, Xcode 26.6, Swift 6.3.3.
 **Dates:** 2026-10-19 (reads) and 2026-10-20 (writes).
 **No other model has been tested.**
 
+> Results as of 2026-10-20. The code has moved on since; the tests still describe the current
+> write, restore and sleep/wake design, which is documented in [kit.md](../kit.md) and
+> [helper.md](../helper.md).
+
 **Setup for every write test:**
 
 - `Tools/HelperSmokeApp`, ad-hoc signed, Debug build with `ENABLE_DEBUG_DYLIB = NO`.
@@ -56,7 +60,7 @@ stepping in) is unknown.
 - SIGKILL of the helper followed by "Restore automatic" recovering the orphaned manual fans.
 - Alerts (90 °C, fan anomaly), power-aware polling on battery, and the warning for other
   controllers.
-- Other models, fanless Macs, and Intel (unsupported).
+- Other models and fanless Macs. (Intel Macs are not supported.)
 - `Md = 1` with `Tg < Mn`, which the helper refuses, so it should not occur. Whether the SMC
   enforces `Mn` in manual mode.
 

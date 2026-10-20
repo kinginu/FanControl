@@ -1,16 +1,20 @@
-# Project name candidates
+# Project name
 
-The package needs a neutral public name. It must not be **FanFi** (an existing fan-control app)
-or **DynamicNotch** (the private host). The working name **FanControl** is also a poor choice:
-it collides with the widely used Windows app "FanControl" (Rem0o) and with several GitHub repos
-of the same name. The module prefix (`FanControlCore`, …), the probe name (`fanfi-probe`) and
-the helper label should change together with the project name.
-<!-- TODO: verify after refactor — renaming touches Package.swift, module names, the helper label and the scripts; do it in one commit after the identifier refactor. -->
+**Decision (2026-10-20): the project keeps the name FanControl.** It collides with the widely used
+Windows app "FanControl" (Rem0o) and with several GitHub repos of the same name; that collision
+was accepted. The module prefix (`FanControlCore`, `FanControlKit`, …), the probe name
+(`fanfi-probe`) and the helper label stay as they are. Helper and client identifiers are
+Info.plist keys ([helper.md](helper.md) "Configuring identifiers"), so a host can choose its own
+label without renaming anything in the package.
+
+The rest of this page records the alternatives that were considered, in case the name is revisited.
+Any name must avoid **FanFi** (an existing fan-control app) and **DynamicNotch** (the private host).
 
 The collision check was run on 2026-10-20 as quick web searches (GitHub, the App Store, general
 web). It is **not** exhaustive and is **not** a trademark search. Before you pick a name, run an
 exact-name search on github.com, on the Mac App Store, on the Swift Package Index, and in a
 trademark database (USPTO / EUIPO / JPO).
+The same applies to FanControl itself before a public release.
 
 ## Candidates
 
@@ -34,9 +38,9 @@ trademark database (USPTO / EUIPO / JPO).
 - **Breezeway**: an existing hospitality software company.
 - **FanFi**: an existing fan-control app.
 
-## Recommendation
+## Recommendation at the time
 
-**Airwarden** or **Ventwise**, in that order. Both are short, neither contains "Mac" or "Apple",
+**Airwarden** or **Ventwise**, in that order (not adopted). Both are short, neither contains "Mac" or "Apple",
 both work as a package name (`AirwardenCore`, `AirwardenKit`, a `airwarden-probe` CLI, a
 `dev.<owner>.airwarden.helper` label) and as an app name, and neither showed a collision in the
 quick check.

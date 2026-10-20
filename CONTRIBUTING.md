@@ -26,8 +26,9 @@ swift run fanfi-probe --watch 2  # read-only check against real hardware
 - To check the helper embedding, use the sample host: `cd Tools/HelperSmokeApp && xcodegen generate`
   and then `xcodebuild … CODE_SIGN_IDENTITY=-` (see its README).
 
-A change is ready when `swift build` produces **zero warnings** and the whole test suite passes.
-<!-- TODO: verify after refactor — CI is planned; once it exists, describe the required checks here. -->
+A change is ready when `swift build` produces **zero warnings** and the whole test suite passes
+(436 tests at the time of writing). There is no CI yet, so run both locally before you send a
+change.
 
 ## Swift 6 rules
 
@@ -47,14 +48,16 @@ A change is ready when `swift build` produces **zero warnings** and the whole te
 
 - The helper is the safety authority. **Do not widen the write allowlist** (`F<n>Md`, `F<n>Tg`)
   or relax value validation without a hardware log that shows why the change is needed and that
-  it is safe. Adding an unlock key such as `Ftst` falls under this rule.
+  it is safe. Adding a model-specific unlock key falls under this rule.
 - Restore must keep ending in `F<n>Md ← 0`. Never write an idle snapshot `Tg` back while a fan is
   manual.
 - Any change to the write path, restore or sleep/wake needs tests for the pure policy **and** a
   note in `docs/verification/`, saying how it was checked on hardware or that it was not.
-- Keep `docs/kit.md`, `docs/helper.md`, `docs/integration.md` and the manual-install scripts
-  consistent with the code. `ManualInstallScriptConsistencyTests` checks that the scripts match
-  the Swift constants.
+- Keep `docs/kit.md`, `docs/helper.md`, `docs/integration.md`, `docs/architecture.md` and the
+  manual-install scripts consistent with the code. Refer to code by type and member names, not by
+  line numbers. `ManualInstallScriptConsistencyTests` checks that the scripts
+  (`Support/identifiers.sh`, `Support/manual-install/`) match the Swift constants and
+  `FanControlIdentifiers`.
 - When testing writes on hardware, follow the procedure in
   [docs/verification/SUMMARY.md](docs/verification/SUMMARY.md#first-write-procedure).
 
@@ -73,7 +76,7 @@ A change is ready when `swift build` produces **zero warnings** and the whole te
 ## Commits and pull requests
 
 - Keep commits small and focused, and write the message in the imperative mood.
-- Write documentation in English. The Japanese files under `docs/ja/` are historical and are
-  not kept up to date.
+- Write documentation in English. The dated logs under `docs/verification/` (other than
+  `SUMMARY.md`) are historical records in Japanese and are not updated.
 - In a PR, state what you verified on which Mac model and macOS version, and what you could not
   verify.

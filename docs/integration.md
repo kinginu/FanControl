@@ -185,9 +185,13 @@ helper itself is never sandboxed.
 
 ## 5. UI and app wiring
 
-<!-- TODO: verify after refactor — the SwiftUI layer is planned as a separate `FanControlUI` product; until then the host supplies its own UI. -->
-A SwiftUI module, `FanControlUI`, with settings tabs, the curve editor and temperature charts is
-planned. Until it exists, your app provides the UI. What the app has to wire up:
+The core libraries contain no views. Host-independent SwiftUI lives in the separate product
+`FanControlUI` (`Sources/FanControlUI/`: the settings pane and its General / Profiles / Sensors
+tabs, the curve view and editor, temperature charts, the alert coordinator and the settings
+storage; kit.md, "UI layer"). Link it alongside `FanControlCore` / `FanControlKit`. DynamicNotch
+adds only its host glue from `DynamicNotchIntegration/` (widgets, widget settings, the live
+activity view and the Nook hooks; PATCHES.md). Whatever draws the UI, the app has to wire up the
+following:
 
 1. At launch: copy your settings into the manager (`pollingInterval`, `slowPollingOnBattery`,
    `reapplyProfileAfterWake`, `keepAlertsWhilePaused`, thresholds through
@@ -223,12 +227,18 @@ Japanese.
 swift run fanfi-probe            # model, key count, fans, temperatures, aggregates
 swift run fanfi-probe --dump     # every key: type, size, attributes, raw bytes
 swift run fanfi-probe --watch 2  # refresh fans and temperatures every 2 s
+swift run fanfi-probe --json     # the same snapshot as JSON, for scripts
 ```
+
+`fanfi-probe` is read-only and needs no `sudo`. Its exit status is meant for scripts: `0` success
+(for `--fan-stats`, every fan PASS), `1` a `--fan-stats` FAIL or no fans, `2` an invalid command
+line, `3` the SMC could not be opened. `--dump` cannot be combined with `--watch`, `--fan-stats`
+or `--json`; `fanfi-probe --help` prints the full usage.
 
 - [x] An unprivileged process can open `AppleSMC`; `#KEY` = 2299, and all keys can be enumerated.
 - [x] Fan discovery: `FNum` = 2, both fans `Mn` 2317 / `Mx` 6800 RPM (`flt `). At idle,
       `Ac` = `Tg` = 0 (stopped) and `Md` = 0, which is automatic. There is no `F<n>ID` (names fall
-      back to "Fan 1/2") and no `FS! `.
+      back to "Fan 1/2").
 - [x] Temperatures: 259 `T*` keys (250 `flt `, 9 `ioft`), all inside −20…130 °C. `ioft` is
       **little-endian**; before that was fixed, all 9 were dropped as out of range.
 - [x] Codec: the fan and temperature paths use only `flt ` (LE Float32) and `ui8 `. `si64` was
@@ -238,15 +248,17 @@ swift run fanfi-probe --watch 2  # refresh fans and temperatures every 2 s
 - [x] Ranking exclusions: `Tf*` and the constant keys no longer win the automatic "hottest"
       selection (unit-tested; re-check in your UI).
 - [ ] Sensor names on other models; many keys stay "Sensor XXXX".
+- [ ] `fanfi-probe --json` (snapshot, and JSON Lines with `--watch`) parses with a JSON tool, for
+      example `swift run fanfi-probe --json | python3 -m json.tool`.
 - [ ] Fanless Macs, and environments where the SMC is unavailable.
 
-**Mac14,9 findings from the dump:**
+**Mac14,9 findings from the dump (2026-10-19):**
 
 - Attribute bits: every one of the 2170 readable keys has `0x80`, and all 54 keys without `0x80`
   fail to read, so `0x80` is the *read* bit. `F<n>Tg` = `0xd4` and `F<n>Md` = `0xd0` have the
   write bit `0x40`; `F<n>Mn` = `0x84`, `F<n>Mx` = `0x85` and `FNum` = `0x80` do not.
-- `Ftst` does not exist. Other fan keys of unknown meaning: `F<n>Dc`, `Fb`, `Fc`, `St`, `Sf`,
-  `FOff`, `FRmp`, `FOFC`, `FBAD`.
+- No unlock key is present or needed. Other fan keys of unknown meaning: `F<n>Dc`, `Fb`, `Fc`,
+  `St`, `Sf`, `FOff`, `FRmp`, `FOFC`, `FBAD`.
 - Integer endianness varies by key: `#KEY`, `FOFC` and `F<n>Fc` look big-endian, while the
   battery keys and `ui64`/`si64` look little-endian. `SMCCodec` integers stay big-endian; check on
   hardware before relying on any new integer key.
@@ -354,8 +366,9 @@ Manual-install mode:
 
 ## 7. Open questions
 
-- **`Ftst` on newer Apple Silicon.** Reportedly needed on some models; it is not on the
-  allowlist, and on Mac14,9 it does not exist. Decide after testing on hardware.
+- **Other Apple Silicon models.** Community reports say some newer models need an extra unlock
+  key before `F<n>Tg` takes effect. No such key is on the allowlist, and Mac14,9 needs none.
+  Decide after testing on such a model.
 - **Thresholds.** 90 / 95 / 5 °C are provisional defaults and are user-adjustable (alert 70–100,
   emergency alert+1…105, hysteresis 1–10). Open: whether these defaults suit each model, whether
   the alert and the emergency need separate hysteresis values, and how the steppers should behave

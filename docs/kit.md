@@ -31,6 +31,7 @@ arm64, the manager logs an error at init, and every SMC open fails with
 | `ConflictingControllerDetector.swift` | Detects other fan-control apps and their helpers |
 | `TemperatureHistory.swift` | Per-key ring buffers of recent temperatures |
 | `FanControlPlatform.swift` | arm64 check (`isSupported` / `requireSupported()`), `defaultSafetyPolicy`, `sensorAggregateDefinitions` |
+| `FanControlKit.swift` | Module overview and `FanControlKitInfo.version` |
 
 ## Architecture
 
@@ -91,13 +92,14 @@ which is lock-protected and documented.
   `clearLastError`, `refreshHelperStatus`) and `await` its async ones. Code off the main actor
   must `await` both kinds. The `nonisolated` members are the static constants
   (`profileStoreDefaultsKey`, `customProfileID`, `writeThresholdRPM`, `wakeReapplyDelays`,
-  `helperApprovalInstructions`), `clientTeamID`, `sensorAggregateDefinitions` and both
-  `exportSMCDump()` overloads.
+  `conflictCheckInterval`, `helperApprovalInstructions`), `clientTeamID`,
+  `sensorAggregateDefinitions` and both `exportSMCDump()` overloads.
 - Async methods run on the main actor between their awaits. The SMC work they need is awaited
   on the poll queue, and `SMAppService.register()` runs off the main actor.
 - **`FanControlPoller`** (internal actor) owns all poll state: the `SMCClient`, the discovered
-  fans, the cached temperature key list (discovered once; later polls call
-  `readTemperatures(keys:)`), `AlertEvaluator`, `TemperatureSampleFilter`,
+  fans, the temperature keys (discovered once as `TemperatureSensorKey`s with the key and name
+  resolved; later polls call `SensorCatalog.readTemperatures(_:using:)` through
+  `readSensors(using:)`, which also filters and aggregates), `AlertEvaluator`, `TemperatureSampleFilter`,
   `TemperatureSmoother`, `FanTargetStabilizer`, `FanWriteStrategy`, the write-throttle baseline,
   the unsettled set, the apply generation, and its own copies of the monitoring and sleep flags.
   Its executor is a private serial `DispatchSerialQueue` with QoS utility, so SMC I/O never runs
@@ -385,7 +387,10 @@ A substitute is always hotter than the rejected sample, so the emergency maximum
 and a sensor-linked fan never runs slower than it would without the filter. Values that are not
 finite pass through, which fails hot. Sudden drops above the floor are kept, because real cores
 can fall 10–20 °C in one poll. The keys substituted in the latest poll are published as
-`substitutedSensorKeys`. The filter resets when the sensors are rediscovered.
+`substitutedSensorKeys`. The filter resets when the sensors are rediscovered. Its per-key memory
+is one `KeyState` (last accepted value, current rejection run) in `states`; the rule for one
+sample is the pure `decide(_:state:groupMaximum:)`, which returns a `Decision` (`accepted`,
+`substitutedLastAccepted`, `substitutedGroupMaximum`, `rejectedUnreplaced`, `ignored`).
 
 ### Aggregate sensors
 
@@ -438,6 +443,15 @@ pulls the alert down. `FanControlManager.applySafetyThresholds(_:)` copies clamp
 emergency latch.
 
 ### Sensor names
+
+Names, groups and ranking exclusions come from one table, `SensorCatalog.entries`
+(`SensorCatalogEntry`: exact key or prefix → label → `SensorGroup` → excluded). Per key, the name
+is the most specific labelled row (exact, then the longest prefix; prefix rows never overlap), the
+group the most specific grouped row, and the key is excluded if any matching row says so (`TH1a`
+is excluded by an exact row and still named "Storage 1a" by the `TH` row). `knownNames`,
+`labelKeys`, `rankingExcludedPrefixes` / `rankingExcludedKeys`, the sample filter's default
+prefixes (the die groups) and the aggregate members (`SensorAggregateDefinition(groups:)`) are
+derived from it.
 
 `SensorCatalog.nameComponents(for:)` returns `SensorNameComponents` (`labelKey`, `suffix`,
 `isFallback`), so a UI can localise the label and append the suffix verbatim. Examples: `TB1T` →
@@ -514,10 +528,33 @@ main-actor properties at launch, before `startMonitoring()`, and again on every 
 | `keepAlertsWhilePaused` | `true` | Keep a slow poll while paused without a session |
 | `safetyPolicy` | `FanControlPlatform.defaultSafetyPolicy` | Read on every poll; set thresholds with `applySafetyThresholds(_:)` |
 | `tuning` | `.default` | Control-loop parameters |
-| `clientTeamID` | `teamIdentifierPlaceholder` | Team ID required of the helper (SMAppService mode; ignored in manual mode) <!-- TODO: verify after refactor --> |
+| `clientTeamID` | `FanControlClientTeamID` from the app's Info.plist, else `teamIdentifierPlaceholder` (`TEAMID0000`) | Team ID required of the helper (SMAppService mode; ignored in manual mode). `nonisolated`; set it before the first helper call |
 
 `HelperClient.callTimeout` (8 s; a value ≤ 0 disables it) is set on the `HelperClient` passed to
 `FanControlManager.init`.
+
+## UI layer (`FanControlUI`)
+
+`FanControlUI` (depends on `FanControlCore` + `FanControlKit`) is the SwiftUI layer on top of the
+manager, for hosts that want the stock settings and editors:
+
+| Area | Public API |
+|---|---|
+| Settings pane | `FanControlSettingsView` (fixed `contentSize` 740×600; General / Profiles / Sensors as a segmented control), and each tab on its own: `FanControlGeneralTabView(actionError:)`, `FanControlProfilesTabView(actionError:initialSelection:)`, `FanControlSensorsTabView()` |
+| Curves and charts | `FanCurveView` (read-only curve of a profile, live operating point), `FanCurveEditorView` (multi-point editor, `hasErrors` / `messages` validation), `FanCurveLegend`, `FanControlTemperatureChart` + `FanControlTemperatureSeries` (history chart), `FanControlKeyTemperaturesView`, `FanControlSelectionPill` |
+| Alerts | `FanControlAlertCoordinator.shared` (`currentAlert`, `onAlertChange`, `transientNotificationName`); it also mirrors the stored general settings and thresholds into the manager ("Settings owned by the app") |
+| Errors | `FanControlErrorFooter`, `fanControlPerform`, `fanControlErrorMessage`, `fanControlRejectionHelp` |
+| Formatting | `FanControlFormatting`, `FanControlSensorNames`, `FanControlProfiles` (the seven fixed profiles, `apply`) |
+| Stored settings | `FanControlWidgetSettings`, `FanControlGeneralSettings`, `FanControlThresholdSettings`, `FanControlTemperatureWidgetSettings`; keys `FanControlSettingKey` (`.widget`, `.general`, `.thresholds`, `.temperatureWidget`: `value`, `updates()`, `name`) and the property wrapper `@FanControlSetting(.widget)` |
+
+Settings live in `UserDefaults.standard` under the former sindresorhus/Defaults key names, as
+sorted-key JSON strings (byte-compatible with Defaults 8.2; `Tests/FanControlUITests`). The store
+(`SettingsStore`, `StoredKey`, `@StoredSetting`; `Sources/FanControlUI/Storage/SettingsStore.swift`)
+is internal; a host may compile the same file into its own module for its own settings
+(DynamicNotchApp does, by symlink) — both copies observe the same keys by KVO. Labels are looked up
+in the host's `Localizable.strings` (`Bundle.main`); some strings still name DynamicNotch and the
+Nook. Host-specific glue (DynamicNotch's Nook widgets, Live Activity view, Nook visibility hook)
+stays in `DynamicNotchIntegration/` (`PATCHES.md`).
 
 ## Helper requirement and install status
 
@@ -672,5 +709,6 @@ are the production code.
   real Team ID signing.
 - Whether 8 s is a good XPC timeout on a loaded machine, and whether 2 s is enough for the
   termination restore.
-- Other Apple Silicon models: `Ftst`, the meaning of `TG*` / `TC*`, and the default thresholds.
+- Other Apple Silicon models: whether `F<i>Md` + `F<i>Tg` is enough to control the fans, the
+  meaning of `TG*` / `TC*`, and the default thresholds.
 - The battery cost of the 2 s default interval.

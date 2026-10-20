@@ -1,5 +1,7 @@
 # 初回 SMC 書込の記録（2026-10-20、Mac14,9 / macOS 26.5.2）
 
+> **Historical record (2026-10-20, in Japanese).** It describes the code as it was on that date; the implementation has moved on since (file names, line numbers and some behaviour differ). Current behaviour: [kit.md](../kit.md), [helper.md](../helper.md). Summary of all hardware results: [SUMMARY.md](SUMMARY.md).
+
 構成: HelperSmokeApp（ad-hoc 署名、Debug）+ 手動インストールモードのヘルパー（`Support/manual-install/install.sh`）。
 監視: `fanfi-probe --watch 1`（読み取り専用）と `/usr/bin/log stream`（`category == "fancontrol-helper"`）。
 各ステップはユーザーがボタンを押し、Claude がログと probe で確認した。

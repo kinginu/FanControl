@@ -13,7 +13,9 @@ itself (`FanControlSMC.SMCClient`, without privileges); only writes go to the he
   `SessionRegistry` is a checked `Sendable` that keeps all of its state in a
   `Synchronization.Mutex`; every XPC call and power notification is serialised under that
   mutex, and the SMC I/O happens inside it. `PowerObserver` is an actor whose executor is the
-  power-notification queue. The helper uses no `@unchecked Sendable`.
+  power-notification queue. `HelperListenerDelegate` and `HelperService` are immutable
+  `Sendable` classes (the connection counter is an `Atomic`). The helper uses no
+  `@unchecked Sendable` and no force unwraps.
 
 Identifiers used below are configurable per host ("Configuring identifiers" below). The
 examples use the defaults, which are DynamicNotch's:
@@ -31,12 +33,13 @@ Source map:
 |---|---|
 | `Sources/FanControlXPC/FanControlIdentifiers.swift` | Parses the identifier keys from `Bundle.main.infoDictionary` (fallbacks, validation) |
 | `Sources/FanControlXPC/FanControlHelperConstants.swift` | Accessors for the identifiers (Mach service name, plist name, …), Team ID placeholder, write allowlist, requirement builders |
-| `Sources/FanControlXPC/FanControlHelperProtocol.swift` | `@objc` XPC protocol, error codes, `makeHelperInterface()` |
+| `Sources/FanControlXPC/FanControlHelperProtocol.swift` | `@objc` XPC protocol (wire contract and version history), error codes, `makeHelperInterface()` |
 | `Sources/FanControlXPC/HelperWritePolicy.swift` | Pure validation and restore planning (unit-tested) |
 | `Sources/FanControlXPC/PowerTransitionPolicy.swift` | Pure sleep/wake decisions (unit-tested) |
 | `Sources/FanControlXPC/ManualInstallMode.swift` | Constants, requirement builders and validation for manual-install mode (§6) |
+| `Sources/FanControlXPC/CodeSigningRequirement.swift` | `SigningPin` (Team ID vs cdhash) and the validated requirement builders / strict parser both paths share; invalid input fails closed (`never`) |
 | `Sources/FanControlSMC/` | IOKit AppleSMC access (`SMCConnection`, `SMCClient`) |
-| `Sources/FanControlHelper/` | The daemon: `main.swift`, `HelperListenerDelegate`, `HelperService`, `SessionRegistry`, `PowerObserver`, `HelperConfiguration`, `HelperLog` |
+| `Sources/FanControlHelper/` | The daemon: `main.swift` (one call), `HelperDaemon` (bootstrap, command line, exit statuses, signals), `HelperListenerDelegate`, `HelperService`, `SessionRegistry` (session state machine), `PowerObserver`, `HelperConfiguration`, `HelperLog` |
 | `Support/LaunchDaemons/<label>.plist` | launchd plist for SMAppService with the default identifiers (DynamicNotch copies it as-is) |
 | `Support/Helper-Info.plist` | Info.plist template embedded in the helper Mach-O; the single source of the identifiers |
 | `Support/embed-helper-config.sh` | Run Script for the app target: copies the identifiers into the app's Info.plist and generates `Contents/Library/LaunchDaemons/<label>.plist` |
@@ -165,6 +168,9 @@ Xcode setup (full recipe in [integration.md](integration.md) §2–§4):
   to `FanControlClientTeamID` from the **app's** Info.plist (`FanControlHelperConstants.clientTeamID`,
   copied there by `embed-helper-config.sh`), else the placeholder. You can also set
   `FanControlManager.shared.clientTeamID` at launch, before the first helper call.
+- Every identifier, Team ID and cdhash is validated before it is put into a requirement
+  (`CodeSigningRequirement`); a malformed value yields the requirement `never`, which rejects
+  every peer, never a widened requirement.
 - **App Sandbox:** the helper must **not** be sandboxed, because it needs AppleSMC writes and an
   XPC listener. The host app is expected to be unsandboxed as well. If you do sandbox the app,
   it needs two temporary exceptions: `com.apple.security.temporary-exception.iokit-user-client-class`
@@ -234,6 +240,8 @@ Error codes: `0 ok`, `1 notSessionOwner`, `2 sessionNotOpen`, `3 invalidKey`,
   timeout dropped the old connection), the old session is ended and restored first, and then
   the new connection gets it.
 - Invalidation or interruption of the connection (app quit or crash) releases the session.
+  As a backstop, a watchdog checks every 5 s (`SessionRegistry.ownerLivenessInterval`) that the
+  owner's pid still exists and releases the session if it does not.
 - Just before the first write to each key in a session, the helper records the key's current
   value. If that read fails, the write is refused with `6 smcError`.
 - The helper opens AppleSMC only while a session is open. At session open it reads `FNum` and
@@ -256,6 +264,44 @@ Error codes: `0 ok`, `1 notSessionOwner`, `2 sessionNotOpen`, `3 invalidKey`,
    `Md = 0` failed, the fan would stay in manual mode at 0 RPM. A fan whose mode restore failed
    also keeps its last validated target, which lies inside `Mn…Mx`, and the failure is logged.
 4. Restore writes bypass value validation. The session is released whether or not they succeed.
+   A failed restore is logged as a fault (`restore FAILED for F0Md …`); on SIGTERM the helper
+   then exits with 74 instead of 0.
+
+**Session state machine** (`Sources/FanControlHelper/SessionRegistry.swift`):
+
+```
+idle ──openSession──▶ open ──close / invalidation / reclaim / watchdog──▶ idle
+  │                     │
+  └─────SIGTERM/SIGINT──┴──SIGTERM/SIGINT (restore first)──▶ terminated (final)
+```
+
+Every way out of `open` goes through one function that leaves `open` first, stops the watchdog
+and then runs the restore once (`WriteSession.finish()` is idempotent), so a restore can never run
+twice or be skipped. `terminated` answers `openSession` with `5 smcUnavailable` ("the helper is
+shutting down"), so nothing can be forced between the shutdown restore and process exit.
+
+**Process lifecycle and exit statuses** (`HelperDaemon`). Start-up order: refuse unsupported
+hardware or an invalid client requirement → SIGTERM/SIGINT handlers → power notifications → XPC
+listener last, so no session can open before every restore path exists.
+
+| Status | Meaning |
+|---|---|
+| 0 | `--print-configuration` / `--help`, or SIGTERM/SIGINT with every fan handed back (or no session) |
+| 64 (`EX_USAGE`) | Unknown command-line argument (launchd passes none) |
+| 74 (`EX_IOERR`) | SIGTERM/SIGINT, but a restore write failed; a fan may stay forced (see the fault log) |
+| 78 (`EX_CONFIG`) | Not Apple Silicon, or invalid `FANCONTROL_CLIENT_REQUIREMENT`; exited without listening |
+
+SIGKILL, a crash or a power cut cannot be handled; the SMC then keeps the last forced target until
+the app's "Return to automatic", a reboot, or an SMC reset.
+
+**Logging.** One subsystem (the client bundle id) and one category (`fancontrol-helper`); each
+message starts with an area prefix — `Startup:`, `Config:`, `XPC:`, `Session:`, `Power:`,
+`Shutdown:` — for example `eventMessage BEGINSWITH "Session:"`. Levels: `fault` = cannot serve or
+a restore failed; `error` = SMC failure; `warning` = refused request or suspicious configuration;
+`notice` = state transitions (persisted); `info` = connection lifecycle; `debug` = each SMC write
+(`Session: wrote F0Tg=3000`, visible with `log stream --level debug`). Every interpolation is
+annotated `.public`: the helper logs only pids, connection ids, key names and values, requirements
+and identifiers.
 
 The hardware test confirmed that `Md = 0` alone returns a fan to SMC control: the target jumps to
 the SMC's own value immediately (see [verification/SUMMARY.md](verification/SUMMARY.md)).
@@ -267,8 +313,8 @@ the SMC's own value immediately (see [verification/SUMMARY.md](verification/SUMM
 | `^F[0-9]Tg$` | Target RPM |
 | `^F[0-9]Md$` | Fan mode (1 = manual, 0 = automatic) |
 
-`FS! ` (Intel), `F<n>Mn` (the Intel "minimum = target" trick; read-only `0x84` on Apple Silicon)
-and unlock keys such as `Ftst` are **not** allowed. `HelperWritePolicy.validate` also rejects any
+Every other key is refused with `4 keyNotAllowed`, including `F<n>Mn` (read-only, attribute
+`0x84`, on Apple Silicon) and any model-specific unlock key. `HelperWritePolicy.validate` also rejects any
 key other than `F<n>Md` and `F<n>Tg` with `7 badRequest`, as defence in depth behind the
 allowlist. A key must also be 4 ASCII characters, the payload must be 1–32 bytes **and** equal to
 the SMC's `dataSize`, and the SMC attributes must include the write bit `0x40`
@@ -293,12 +339,12 @@ target changed by ≤ 25 RPM ([kit.md](kit.md)).
 - Write `F<n>Md ← 1` first and then `F<n>Tg`, because a `Tg` written in automatic mode may be
   overwritten or rejected by the SMC. `F<n>Md ← 0` returns the fan to automatic control.
 - A fan without `F<n>Md` is not controlled: the client throws `fanModeKeyMissing` and does not
-  fall back to `FS! ` or to writing only `Tg`.
+  fall back to writing only `Tg`.
 - If a write fails between `Md = 1` and `Tg`, the client rolls the fan back with `Md ← 0`
   (kit.md, "Partial failure").
-- Some newer models are reported to need an extra `Ftst` unlock. It is not on the allowlist. On
-  Mac14,9 with macOS 26, `Ftst` does not exist, and the attributes are `F<n>Md` = `0xd0` (`ui8 `),
-  `F<n>Tg` = `0xd4` (`flt `), both with `0x40`, and `F<n>Mn` = `0x84`, without `0x40`.
+- On Mac14,9 with macOS 26, `F<n>Md` and `F<n>Tg` are enough; no unlock key is needed. The
+  attributes are `F<n>Md` = `0xd0` (`ui8 `) and `F<n>Tg` = `0xd4` (`flt `), both with `0x40`,
+  and `F<n>Mn` = `0x84`, without `0x40`. Other models are untested.
 - Encoding (`flt `, little-endian Float32) is done by the client (`FanControlCore.SMCCodec`). The
   helper writes the validated bytes as they are.
 
