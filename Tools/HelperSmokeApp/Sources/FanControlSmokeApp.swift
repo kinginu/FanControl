@@ -36,6 +36,45 @@ struct SmokeView: View {
     @State private var installerStatus: HelperInstallStatus = HelperInstaller().status()
     @State private var message = ""
     @State private var confirmFirstWrite = false
+    @State private var confirmSensorLinked = false
+    @State private var confirmLowThreshold = false
+    @State private var tick = Date()
+    private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    /// Fixed id so repeated applies replace one stored profile (applyProfile persists user profiles).
+    static let smokeProfileID = UUID(uuidString: "6F1A0000-0000-4000-8000-000000005AFE")!
+    static let aggKey = "agg:cpu"
+
+    static func sensorLinkedProfile(fans: [FanDevice]) -> FanProfile {
+        var modes: [Int: FanControlMode] = [:]
+        for fan in fans { modes[fan.id] = .sensor(sensorKey: aggKey, startTemperature: 45, maxTemperature: 75) }
+        return FanProfile(id: smokeProfileID, name: "Smoke sensor-linked", modes: modes)
+    }
+
+    static func modeText(_ mode: FanControlMode?) -> String {
+        switch mode {
+        case nil, .automatic?: return "automatic"
+        case .constant(let rpm)?: return "constant \(rpm)"
+        case .sensor(let key, let lo, let hi)?: return "sensor \(key) \(Int(lo))→\(Int(hi)) °C"
+        }
+    }
+
+    var liveStatus: String {
+        _ = tick
+        var lines: [String] = []
+        lines.append("monitoring: \(manager.isMonitoring) (paused: \(manager.isMonitoringPaused)) · SMC: \(manager.isSMCConnected) · helper: \(String(describing: manager.helperConnectionState)) · write session: \(manager.isSMCWriteSessionOpen ? "open" : "closed")")
+        for fan in manager.fans {
+            lines.append("\(fan.name): current \(manager.currentRPMs[fan.id] ?? -1) / target \(manager.targetRPMs[fan.id].map(String.init) ?? "-") RPM · mode \(Self.modeText(manager.fanControlModes[fan.id]))")
+        }
+        let agg = manager.sensorReadings.first { $0.id == Self.aggKey }
+        lines.append("agg:cpu: \(agg.map { String(format: "%.1f °C", $0.temperature) } ?? "n/a") · active profile: \(manager.activeProfile?.name ?? "-")")
+        let hot = manager.hottestSensor
+        lines.append("hottest emergency sensor: \(hot.map { String(format: "%@ %.1f °C", $0.id, $0.temperature) } ?? "n/a")")
+        let p = manager.safetyPolicy
+        lines.append("policy: emergency \(p.emergencyTemperature) / alert \(p.highTemperatureAlert) (hyst \(p.alertHysteresis)) · emergencyOverrideActive: \(manager.emergencyOverrideActive) · highTempAlertActive: \(manager.highTempAlertActive)")
+        lines.append("lastError: \(manager.lastError.map { "\($0)" } ?? "none")")
+        return lines.joined(separator: "\n")
+    }
     @State private var requirementSummary = Self.describeRequirementMode()
 
     /// Which requirement `HelperClient` will put on the helper connection (manual-install mode:
@@ -63,6 +102,9 @@ struct SmokeView: View {
             ForEach(manager.fans) { fan in
                 Text("\(fan.name): \(manager.currentRPMs[fan.id] ?? 0) RPM (\(fan.minRPM)–\(fan.maxRPM))")
             }
+            Text(liveStatus)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
             List(manager.sensorReadings) { reading in
                 Text(String(format: "%@  %@  %.1f °C", reading.id, reading.name, reading.temperature))
                     .font(.system(.caption, design: .monospaced))
@@ -97,6 +139,35 @@ struct SmokeView: View {
                     } message: {
                         Text("Only after fanfi-probe --watch 1 and the helper log are running and \"Restore automatic\" was checked (pre-write-review「初回書込の手順」).")
                     }
+                Button("Apply sensor-linked (agg:cpu 45→75 °C)…") { confirmSensorLinked = true }
+                    .confirmationDialog("Write to the SMC?", isPresented: $confirmSensorLinked) {
+                        Button("Apply \"Smoke sensor-linked\" to every fan", role: .destructive) {
+                            Task {
+                                await run {
+                                    manager.startMonitoring()
+                                    try await manager.applyProfile(Self.sensorLinkedProfile(fans: manager.fans))
+                                }
+                            }
+                        }
+                    } message: {
+                        Text("All fans follow agg:cpu 45→75 °C (polling keeps updating the target). Stores a temporary user profile \"Smoke sensor-linked\"; removed by \"Restore automatic\".")
+                    }
+                Button("Emergency test: set threshold to 55 °C…") { confirmLowThreshold = true }
+                    .confirmationDialog("Lower the emergency threshold?", isPresented: $confirmLowThreshold) {
+                        Button("emergency 55 °C, alert 50 °C", role: .destructive) {
+                            manager.safetyPolicy.emergencyTemperature = 55
+                            manager.safetyPolicy.highTemperatureAlert = 50
+                            message = "thresholds lowered (in memory only); with an open session all fans go to max"
+                        }
+                    } message: {
+                        Text("If a write session is open and a CPU/GPU sensor is above 55 °C, all fans are forced to maximum. Use \"restore default thresholds\" afterwards.")
+                    }
+                Button("Emergency test: restore default thresholds") {
+                    manager.safetyPolicy.emergencyTemperature = FanControlPlatform.defaultSafetyPolicy.emergencyTemperature
+                    manager.safetyPolicy.highTemperatureAlert = FanControlPlatform.defaultSafetyPolicy.highTemperatureAlert
+                    manager.safetyPolicy.alertHysteresis = FanControlPlatform.defaultSafetyPolicy.alertHysteresis
+                    message = "thresholds restored"
+                }
                 Button("Apply first profile") {
                     Task {
                         guard let profile = manager.availableProfiles.first else { return }
@@ -104,7 +175,14 @@ struct SmokeView: View {
                     }
                 }
                 Button("Restore automatic") {
-                    Task { await run { try await manager.restoreDefaultControl() } }
+                    Task {
+                        await run {
+                            try await manager.restoreDefaultControl()
+                            if manager.profileStore.profiles.contains(where: { $0.id == Self.smokeProfileID }) {
+                                manager.deleteProfile(FanProfile(id: Self.smokeProfileID, name: "Smoke sensor-linked"))
+                            }
+                        }
+                    }
                 }
             }
             if !message.isEmpty { Text(message).foregroundStyle(.secondary) }
@@ -112,6 +190,7 @@ struct SmokeView: View {
         .padding()
         .frame(minWidth: 480, minHeight: 360)
         .onAppear { manager.startMonitoring() }
+        .onReceive(ticker) { tick = $0 }
     }
 
     @MainActor

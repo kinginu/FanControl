@@ -5,7 +5,7 @@
 
 | ターゲット | 種類 | 内容 |
 |---|---|---|
-| `FanControlSmoke` | macOS アプリ（`LSUIElement`、メニューバー） | ローカルパッケージ `../..` の `FanControlCore` / `FanControlKit` をリンク。ウィンドウに `HelperInstaller.status()`（手動インストール時は `installedManually`）、ヘルパー要件のモード（Team ID / manual (cdhash)、アプリの Team ID、固定するヘルパー cdhash）と `FanControlManager` のファン・センサー値（読取のみ）を表示。ボタン: 「Helper version」（XPC の `version` のみ、書込なし）、「Install helper」（`SMAppService.register`。手動インストール時は何もしない）、「Fan 1 → 3000 RPM…」（確認ダイアログの後に SMC 書込）、「Apply first profile」（Automatic）/「Restore automatic」。実 API につながっている |
+| `FanControlSmoke` | macOS アプリ（`LSUIElement`、メニューバー） | ローカルパッケージ `../..` の `FanControlCore` / `FanControlKit` をリンク。ウィンドウに `HelperInstaller.status()`（手動インストール時は `installedManually`）、ヘルパー要件のモード（Team ID / manual (cdhash)、アプリの Team ID、固定するヘルパー cdhash）と `FanControlManager` のファン・センサー値（読取のみ）を表示。ボタン（この順）: 「Helper version」（XPC の `version` のみ、書込なし）、「Install helper」（`SMAppService.register`。手動インストール時は何もしない）、「Fan 1 → 3000 RPM…」（確認ダイアログの後に SMC 書込）、「Apply sensor-linked (agg:cpu 45→75 °C)…」、「Emergency test: set threshold to 55 °C…」/「restore default thresholds」（メモリ上の `safetyPolicy` のみ変更）、「Apply first profile」（Automatic）/「Restore automatic」。毎秒更新のライブ状態（ファンごとの current/target/mode、セッション・接続、`agg:cpu`、緊急/警告フラグ、`lastError`）も表示。実 API につながっている |
 | `FanControlHelper` | Command Line Tool | `../../Sources/FanControlHelper/*.swift` を直接コンパイルし、`FanControlCore` / `FanControlSMC` / `FanControlXPC` をリンク。`-sectcreate` で `../../Support/Helper-Info.plist` を埋め込む |
 
 アプリは Copy Files でヘルパーを `Contents/MacOS/`、`../../Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` を
@@ -131,5 +131,23 @@ codesign --verify --deep --strict -v "$APP"
       期待: ログに `F0Md` → `F0Tg`、`fanfi-probe` で `F0Md`=1・`F0Tg`=3000・`F0Ac` が数秒で 3000 付近、`F1Md`=0 のまま。
       **中止条件**（`F0Tg` が 0 のまま、`F0Ac` が 10 秒以上 0、ログに `badRequest` / `smcError` など）→ すぐ「Restore automatic」。
    4. 「Restore automatic」→ `F0Md`=0、`F0Ac` がアイドルなら数十秒で 0 へ。ログに `Failed to restore` が無いこと。
-   5. 以降（Mn/Mx、2 ファン、`kill -9` など）は integration.md §6 Phase 4 の順に。結果は `docs/verification/` に保存する。
+   5. 以降（Mn/Mx、2 ファンなど）は integration.md §6 Phase 4 の順に。結果は `docs/verification/` に保存する。
+   6. **ヘルパー停止時の復元**（Phase 4）: 「Fan 1 → 3000 RPM…」で固定した状態から、別ターミナルで
+      `sudo launchctl kill SIGTERM system/com.example.dynamicnotch.DynamicNotch.fanfi`。
+      期待: ヘルパーのログに復元処理、`fanfi-probe --watch 1` で `F0Md`=0（`F0Tg` は元の値）、ファンが自動制御へ戻る。launchd が KeepAlive で再起動する場合は再起動を確認。
+      続けて同じ手順で `sudo launchctl kill SIGKILL …`（`kill -9` 相当）を試す。期待: ヘルパーが再起動したとき（または XPC 切断の検出時）に `F0Md`=0 へ戻る。
+      戻らない場合は直ちに「Restore automatic」、それでも駄目なら再起動。
+   7. **センサー連動**: 「Apply sensor-linked (agg:cpu 45→75 °C)…」→ 確認ダイアログ。全ファンを `.sensor("agg:cpu", 45, 75)` で動かす
+      （一時プロファイル "Smoke sensor-linked" を保存。「Restore automatic」で削除）。ウィンドウ上部のライブ表示（毎秒更新）に
+      ファンごとの current / target / mode と `agg:cpu` の温度が出る。
+      期待: 45 °C 以下では target が min（2317 付近）、75 °C 以上で max（6800）、その間は温度に比例。`fanfi-probe --watch 1` の `F0Tg`/`F1Tg` と
+      ライブ表示の target が一致し、`F*Md`=1、`F*Ac` が追従。負荷（`yes > /dev/null` を数本）で target が上がり、止めると下がる。終了は「Restore automatic」→ `F*Md`=0。
+   8. **緊急オーバーライド**: 先にセンサー連動か 3000 RPM 固定でセッションを開く。次に「Emergency test: set threshold to 55 °C…」。
+      期待: 現在の CPU 温度が 55 °C 超なら数秒内に `emergencyOverrideActive: true` と `highTempAlertActive: true`、全ファンの target が各 `F*Mx`（6800）、
+      `fanfi-probe` で `F*Tg`=Mx。ホットセンサー表示は `Tp*`/`Tg*` など。温度が 55 °C 未満なら負荷をかけてから確認。
+      「Emergency test: restore default thresholds」→ ヒステリシス後に `emergencyOverrideActive: false`、target がプロファイルどおりに戻る。
+      閾値は保存されない（アプリ再起動で既定へ）。終了は「Restore automatic」。
+   9. **スリープ／ウェイク**: ファンを固定またはセンサー連動にした状態でスリープ（`pmset sleepnow`）→ 復帰。
+      期待: 復帰 5 秒後にプロファイルが再適用され（`reapplyProfileAfterWake` が既定 true）、`fanfi-probe` で `F*Md`=1 と `F*Tg` がライブ表示の target に一致。
+      スリープ中に SMC が自動へ戻った場合も再適用で戻る。確認後「Restore automatic」で `F*Md`=0。
 9. **後片付け**: アプリを終了 → `sudo ../../Support/manual-install/uninstall.sh` → `status.sh` で 2 ファイルが missing、`launchctl print` でサービスが消えたこと。
