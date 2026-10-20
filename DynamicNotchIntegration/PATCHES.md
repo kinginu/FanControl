@@ -261,7 +261,6 @@ AppKit 側からは `WindowsManager.shared.showSettings(pane: .fanControl)` で�
 ```swift
 func applicationDidFinishLaunching(_ notification: Notification) {
     setupMenu()
-    _ = VolumeAndBrightnessListener.shared
 
     // Fan Control
     // コーディネータを先に生成する。生成時に一般設定の pollingInterval / reapplyProfileAfterWake を
