@@ -1,234 +1,312 @@
-# FanControlHelper（特権ヘルパー）
+# FanControlHelper (privileged helper)
 
-DynamicNotch のファン制御で SMC に書き込むための root 権限 launchd デーモン。
-`SMAppService`（macOS 13+）で登録する（Team ID 付き署名が前提。Team ID が無い個人利用では §6 の手動インストールを使う）。
-**Apple Silicon 専用（Intel 対応は 2026-10-20 に廃止）**: 書込は `F<n>Md` + `F<n>Tg` のみ。Intel の `FS! ` 強制ビット経路は削除した。
-arm64 でないハードウェア（`sysctl hw.optional.arm64` ≠ 1、`FanControlHost.isAppleSilicon`）では、ヘルパーは起動直後に `fault` ログ
-`Refusing to start: this Mac is not Apple silicon …` を出し、リスナーを開かずに終了する（終了コード 78 = `EX_CONFIG`）。読み取り（温度・RPM）はアプリ本体が `FanControlSMC.SMCClient` で直接行い、**書き込みだけ**このヘルパーを XPC 経由で使う（設計書 §3.3 の Step 7）。
+The root launchd daemon that performs SMC **writes**. Temperatures and RPMs are read in the app
+itself (`FanControlSMC.SMCClient`, without privileges); only writes go to the helper over XPC.
 
-関連ソース:
+- **Apple Silicon only.** Writes use `F<n>Md` and `F<n>Tg`, nothing else. On hardware that is
+  not arm64 (`sysctl hw.optional.arm64` ≠ 1, `FanControlHost.isAppleSilicon`), the helper logs a
+  fault, `Refusing to start: this Mac is not Apple silicon …`, and exits with code 78
+  (`EX_CONFIG`) without opening its listener.
+- There are two installation modes. **`SMAppService`** (§1–§3) is the default and needs Team ID
+  signing. **Manual install** (§6) is for developers and personal use.
+- Build: Swift 6 language mode (complete strict concurrency), deployment target macOS 26.
+  `SessionRegistry` is a checked `Sendable` that keeps all of its state in a
+  `Synchronization.Mutex`; every XPC call and power notification is serialised under that
+  mutex, and the SMC I/O happens inside it. `PowerObserver` is an actor whose executor is the
+  power-notification queue. The helper uses no `@unchecked Sendable`.
 
-| パス | 内容 |
+<!-- TODO: verify after refactor — identifiers below are the current placeholder constants; they are moving to Info.plist keys. -->
+Identifiers used below (current placeholders):
+
+| Role | Value |
 |---|---|
-| `Sources/FanControlXPC/FanControlHelperConstants.swift` | Mach サービス名、plist 名、Team ID プレースホルダ、書込許可リスト |
-| `Sources/FanControlXPC/FanControlHelperProtocol.swift` | `@objc` XPC プロトコル、エラーコード、`makeHelperInterface()` |
-| `Sources/FanControlSMC/` | IOKit AppleSMC アクセス（`SMCConnection`, `SMCClient`） |
-| `Sources/FanControlHelper/` | デーモン本体（`main.swift`, `HelperListenerDelegate`, `HelperService`, `SessionRegistry`, `PowerObserver`） |
-| `Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` | launchd plist（唯一の正本） |
-| `Support/Helper-Info.plist` | ヘルパー実行ファイルに埋め込む Info.plist テンプレート |
-| `Sources/FanControlXPC/ManualInstallMode.swift` | 手動インストール（個人利用）モードの定数・要件文字列ビルダー・検証（§6） |
-| `Support/manual-install/` | 手動インストール用スクリプト `install.sh` / `uninstall.sh` / `status.sh` と LaunchDaemon plist テンプレート（§6） |
+| App bundle id / signing identifier | `com.example.dynamicnotch.DynamicNotch` |
+| Helper label = Mach service = helper signing identifier | `com.example.dynamicnotch.DynamicNotch.fanfi` |
+| Log subsystem / category | `com.example.dynamicnotch.DynamicNotch` / `fancontrol-helper` |
 
-ビルド設定（2026-10-20）: `swift-tools-version: 6.0`、Swift 6 言語モード（strict concurrency complete）、デプロイメントターゲット macOS 26。
-並行性: `SessionRegistry` は全状態を `Synchronization.Mutex` に入れた checked `Sendable`（XPC の各呼出しと電源通知はミューテックスで直列化され、SMC I/O もその中で行う）、
-`PowerObserver` は電源通知キューを executor とする actor（§5「スリープ／復帰」）。`@unchecked Sendable` はヘルパー側に残っていない。
+Source map:
 
-## 1. バンドル配置
+| Path | Contents |
+|---|---|
+| `Sources/FanControlXPC/FanControlHelperConstants.swift` | Mach service name, plist name, Team ID placeholder, write allowlist, requirement builders |
+| `Sources/FanControlXPC/FanControlHelperProtocol.swift` | `@objc` XPC protocol, error codes, `makeHelperInterface()` |
+| `Sources/FanControlXPC/HelperWritePolicy.swift` | Pure validation and restore planning (unit-tested) |
+| `Sources/FanControlXPC/PowerTransitionPolicy.swift` | Pure sleep/wake decisions (unit-tested) |
+| `Sources/FanControlXPC/ManualInstallMode.swift` | Constants, requirement builders and validation for manual-install mode (§6) |
+| `Sources/FanControlSMC/` | IOKit AppleSMC access (`SMCConnection`, `SMCClient`) |
+| `Sources/FanControlHelper/` | The daemon: `main.swift`, `HelperListenerDelegate`, `HelperService`, `SessionRegistry`, `PowerObserver`, `HelperConfiguration`, `HelperLog` |
+| `Support/LaunchDaemons/<label>.plist` | launchd plist for SMAppService (the only copy) |
+| `Support/Helper-Info.plist` | Info.plist template embedded in the helper Mach-O |
+| `Support/manual-install/` | `install.sh` / `uninstall.sh` / `status.sh` and the LaunchDaemon plist template (§6) |
+
+## 1. Bundle layout
 
 ```
-DynamicNotch.app/Contents/
-  MacOS/DynamicNotch
-  MacOS/FanControlHelper                                  ← ヘルパー実行ファイル
-  Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist
+YourApp.app/Contents/
+  MacOS/YourApp
+  MacOS/FanControlHelper                                 ← helper executable
+  Library/LaunchDaemons/<label>.plist
 ```
 
-Xcode での設定:
+Xcode setup (full recipe in [integration.md](integration.md) §2–§4):
 
-1. **Xcode の Command Line Tool ターゲット** `FanControlHelper` を追加し（**必須**）、`Sources/FanControlHelper/*.swift` をソースに含め、依存モジュール（Core / SMC / XPC）は SwiftPM パッケージをローカル依存として追加してライブラリ product をリンクする。
-   **SwiftPM の executable product `FanControlHelper` をそのまま同梱してはいけない。** SwiftPM のビルドは `Helper-Info.plist` を Mach-O に埋め込まない（`Package.swift` に `unsafeFlags` は入れない方針）ため、`Bundle.main.infoDictionary` に `FanControlClientTeamID` が無く、`HelperConfiguration.teamID` がプレースホルダ `TEAMID0000` にフォールバックして**すべてのクライアントを拒否する**。SwiftPM の executable product は Linux/CI での構文・ビルド確認用にすぎない。
-2. ヘルパーの Other Linker Flags:
-   `$(inherited) -sectcreate __TEXT __info_plist "$(SRCROOT)/FanControl/Support/Helper-Info.plist"`
-   （素の実行ファイルなので Info.plist を Mach-O に埋め込む。`Bundle.main.infoDictionary` から `FanControlClientTeamID` と `CFBundleVersion` を読む。）
-   この手動方式に統一し、`GENERATE_INFOPLIST_FILE = NO`、`CREATE_INFOPLIST_SECTION_IN_BINARY = NO`、`INFOPLIST_FILE` は空にする
-   （Xcode 側でもセクションを作ると `-sectcreate __TEXT __info_plist` が二重に渡る。Xcode 26.6 ではエラーにならないがどちらが残るか保証が無い）。
-   設定値の全体と実ビルドでの確認結果は integration.md §2〜§4 と `docs/verification/helper-bundle-smoke-2026-10-20.md`（最小アプリ `Tools/HelperSmokeApp`）。`PRODUCT_BUNDLE_IDENTIFIER = com.example.dynamicnotch.DynamicNotch.fanfi`
-   （署名 identifier。アプリはヘルパーにこの identifier を要求する。§2）。
-3. DynamicNotch アプリターゲットに **Copy Files** フェーズを 2 つ追加:
-   - Destination `Executables`（= `Contents/MacOS`）: `FanControlHelper`
-   - Destination `Wrapper`, Subpath `Contents/Library/LaunchDaemons`: `com.example.dynamicnotch.DynamicNotch.fanfi.plist`
-   launchd plist の正本は `Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` のみ（SwiftPM ターゲット内にはコピーを置かない）。plist の配置は Xcode の Copy Files が担う。
-4. アプリターゲットの Target Dependencies に `FanControlHelper` を追加。
+1. Add an **Xcode Command Line Tool target** `FanControlHelper` (this is required). Compile
+   `Sources/FanControlHelper/*.swift` in it, and link the package's `FanControlCore`,
+   `FanControlSMC` and `FanControlXPC` library products.
+   **Do not ship the SwiftPM executable product `FanControlHelper`.** SwiftPM does not embed
+   `Helper-Info.plist` (the package deliberately has no `unsafeFlags`). Without it,
+   `Bundle.main.infoDictionary` has no `FanControlClientTeamID`, `HelperConfiguration.teamID`
+   falls back to the placeholder `TEAMID0000`, and **every client is rejected**. The SwiftPM
+   product exists only for Linux/CI build checks.
+2. Linker flags:
+   `OTHER_LDFLAGS = $(inherited) -sectcreate __TEXT __info_plist "$(SRCROOT)/FanControl/Support/Helper-Info.plist"`.
+   Also set `GENERATE_INFOPLIST_FILE = NO`, `CREATE_INFOPLIST_SECTION_IN_BINARY = NO`, and leave
+   `INFOPLIST_FILE` empty. If Xcode also creates the section, it passes a second
+   `-sectcreate __TEXT __info_plist`. Xcode 26.6 does not report an error for this, but nothing
+   guarantees which copy wins. Set `PRODUCT_BUNDLE_IDENTIFIER` to the helper label, because the
+   app requires this signing identifier from the helper.
+3. In the app target, add two **Copy Files** phases. Destination `Executables` gets
+   `FanControlHelper`. Destination `Wrapper` with subpath `Contents/Library/LaunchDaemons` gets
+   the launchd plist.
+4. Add `FanControlHelper` to the app's Target Dependencies.
 
-## 2. 署名
+## 2. Signing (SMAppService mode)
 
-- アプリとヘルパーは **同じ Team ID（DynamicNotch の Developer ID）** で署名し、両方とも **Hardened Runtime** を有効にする。公証（notarization）もアプリ全体で行う。
-- ヘルパーは接続ごとに `NSXPCConnection.setCodeSigningRequirement(_:)`（macOS 13+）で次の要件を課す。満たさないクライアントの接続はシステムが無効化する:
+- Sign the app and the helper with the **same Team ID**, with **Hardened Runtime** on both.
+  Notarize the whole app when you distribute it.
+- On every connection, the helper sets
+  `NSXPCConnection.setCodeSigningRequirement(_:)`:
   ```
-  anchor apple generic and identifier "com.example.dynamicnotch.DynamicNotch" and certificate leaf[subject.OU] = "<TeamID>"
+  anchor apple generic and identifier "<app bundle id>" and certificate leaf[subject.OU] = "<TeamID>"
   ```
-- `<TeamID>` は `Helper-Info.plist` の `FanControlClientTeamID`。未設定時は `FanControlHelperConstants.teamIdentifierPlaceholder`（`TEAMID0000`）にフォールバックし警告ログを出す（＝実質すべてのクライアントを拒否）。**出荷前に `Support/Helper-Info.plist` と `teamIdentifierPlaceholder` の 2 か所を実 Team ID に置換**（設計書 §5.1）。
-- 逆方向にアプリもヘルパーを検証する: `HelperClient` は新しい接続ごとに `setCodeSigningRequirement` で
+  `<TeamID>` is `FanControlClientTeamID` from the embedded Info.plist. If it is missing, the
+  helper falls back to `FanControlHelperConstants.teamIdentifierPlaceholder` (`TEAMID0000`) and
+  logs a warning, which in effect rejects every client.
+- In the other direction, `HelperClient` requires this of the helper on every new connection:
   ```
-  anchor apple generic and identifier "com.example.dynamicnotch.DynamicNotch.fanfi" and certificate leaf[subject.OU] = "<TeamID>"
+  anchor apple generic and identifier "<helper label>" and certificate leaf[subject.OU] = "<TeamID>"
   ```
-  （`FanControlHelperConstants.helperCodeSigningRequirement(teamID:)`）を課す。`<TeamID>` は `FanControlManager.shared.clientTeamID`
-  （既定値 `teamIdentifierPlaceholder`）。定数を実 Team ID に置換するか、起動時に `clientTeamID` を設定する。
-- **App Sandbox:** ヘルパーは root の launchd デーモンで、**サンドボックス化しない**（App Sandbox entitlement を付けない。
-  IOKit の AppleSMC 書込と XPC リスナーに必要）。DynamicNotch 本体も非サンドボックスが前提。サンドボックス化する場合は
-  アプリに `com.apple.security.temporary-exception.iokit-user-client-class` = `AppleSMCClient`（アプリ内での SMC 読み取り用）と
-  `com.apple.security.temporary-exception.mach-lookup.global-name` = `com.example.dynamicnotch.DynamicNotch.fanfi`（ヘルパーへの接続用）が必須
-  （docs/integration.md §4）。
-- 開発中（Apple Development 署名）は `anchor apple generic` を満たすので、Team ID を開発チームのものにすれば動作する。
+  This is `FanControlHelperConstants.helperCodeSigningRequirement(teamID:)`, and `<TeamID>`
+  defaults to the placeholder constant. Either replace the constant, or set
+  `FanControlManager.shared.clientTeamID` at launch, before the first helper call.
+  <!-- TODO: verify after refactor -->
+- **App Sandbox:** the helper must **not** be sandboxed, because it needs AppleSMC writes and an
+  XPC listener. The host app is expected to be unsandboxed as well. If you do sandbox the app,
+  it needs two temporary exceptions: `com.apple.security.temporary-exception.iokit-user-client-class`
+  = `AppleSMCClient` and `com.apple.security.temporary-exception.mach-lookup.global-name` = the
+  helper label. See integration.md §4.
+- Apple Development signing satisfies `anchor apple generic`, so a development Team ID works
+  during development.
 
-## 3. 登録（アプリ側）
+## 3. Registration (app side, SMAppService mode)
 
 ```swift
 import ServiceManagement
 
 let service = SMAppService.daemon(plistName: FanControlHelperConstants.plistName)
 switch service.status {
-case .notRegistered: try service.register()          // 初回書込時に呼ぶ（設計書 §3.3）
-case .requiresApproval: SMAppService.openSystemSettingsLoginItems() // ユーザー承認待ち
-case .enabled: break                                  // 接続可能
-case .notFound: /* plist がバンドルに無い・配置ミス */ break
-@unknown default: break
+case .notRegistered:    try service.register()                      // on the first write
+case .requiresApproval: SMAppService.openSystemSettingsLoginItems() // user must approve
+case .enabled:          break                                       // ready
+case .notFound:         break                                       // plist missing or misnamed in the bundle
+@unknown default:       break
 }
 ```
 
-- `register()` 直後は通常 `.requiresApproval` になり、ユーザーが「システム設定 > 一般 > ログイン項目と機能拡張」で許可するまで起動しない。`openSystemSettingsLoginItems()` で該当画面を開ける。`AssociatedBundleIdentifiers` により設定画面には DynamicNotch として表示される。
-- 承認後はオンデマンド起動（`RunAtLoad` = false、`MachServices` で接続時に launchd が起動）。
-- 接続: `NSXPCConnection(machServiceName: FanControlHelperConstants.machServiceName, options: .privileged)`、`remoteObjectInterface = makeHelperInterface()`。
-- アプリ側の各呼び出しは `HelperClient.callTimeout`（既定 8 秒）で打ち切られる。タイムアウト時は
-  `helperConnectionFailed("timeout")` となり接続を invalidate する（＝ヘルパー側ではセッション解放・値の復元が走る）。
-- 接続後に `version(reply:)` を呼び、`protocolVersion` が一致しなければ `unregister()` → `register()` で更新する。
-- アンインストール: `try await service.unregister()`。
+- Right after `register()`, the status is normally `.requiresApproval`. The helper does not run
+  until the user allows it in System Settings ▸ General ▸ Login Items & Extensions. Because of
+  `AssociatedBundleIdentifiers`, the entry appears under the app's name.
+- After approval, launchd starts the helper on demand (`RunAtLoad` = false, started on a
+  `MachServices` connection).
+- The app connects with
+  `NSXPCConnection(machServiceName: FanControlHelperConstants.machServiceName, options: .privileged)`
+  and `remoteObjectInterface = makeHelperInterface()`.
+- Each call is bounded by `HelperClient.callTimeout`, 8 s by default. On timeout the call throws
+  `helperConnectionFailed("timeout")` and invalidates the connection, so the helper releases the
+  session and restores the fans.
+- After connecting, the app calls `version(reply:)`. If `protocolVersion` differs, it runs
+  `unregister()` and then `register()` once.
+- To uninstall, call `try await service.unregister()`.
 
-### SMJobBless / `SMAuthorizedClients` を使わない理由
+**Why not `SMJobBless` / `SMAuthorizedClients`:** `SMJobBless` has been deprecated since
+macOS 13. It copies the helper to `/Library/PrivilegedHelperTools`, which makes updates and
+removal messy. `SMAppService` keeps the helper inside the app bundle, removes it together with
+the app, and uses the standard OS approval UI. The helper's Mach service name is also distinct
+from other fan-control helpers (for example FanFi's `com.fanfi.fanfi.smcwrite`), so they do not
+collide at the launchd level.
 
-従来の `SMJobBless` + Info.plist の `SMAuthorizedClients` / `SMPrivilegedExecutables` 方式は:
+## 4. XPC protocol and session
 
-- macOS 13 で非推奨。ヘルパーを `/Library/PrivilegedHelperTools` にコピーするためアプリ更新時の差し替え・削除が煩雑。
-- `SMAppService` はヘルパーをアプリバンドル内に置いたまま登録でき、アプリ削除で一緒に消え、承認 UI も OS 標準。
-- DynamicNotch の最小 OS は 14.6 なので `SMAppService` で十分。
-- Mach サービス名は他のファン制御アプリのヘルパーと競合しない名前にする（§5.2）。
+`FanControlHelperProtocol` (the first `Int` of every reply is a `FanControlHelperErrorCode`):
 
-## 4. XPC プロトコルとセッション
-
-`FanControlHelperProtocol`（すべて reply の先頭 `Int` が `FanControlHelperErrorCode`）:
-
-| メソッド | 説明 |
+| Method | Description |
 |---|---|
-| `version` | `(protocolVersion, ビルド文字列)` |
-| `openSession` | 排他書込セッションを開く |
-| `writeKey(key, bytes)` | 許可キーへ生バイト（big-endian）を書く。要セッション |
-| `closeSession` | セッションを閉じる |
-| `readKeyInfo(key)` | `(rc, dataSize, typeFourCC, attributes, message)`。セッション不要 |
+| `version` | `(protocolVersion, build string)` |
+| `openSession` | Opens the exclusive write session |
+| `writeKey(key, bytes)` | Writes raw bytes to an allowed key. Requires the session. |
+| `closeSession` | Closes the session |
+| `readKeyInfo(key)` | `(rc, dataSize, typeFourCC, attributes, message)`. No session needed. |
 
-エラーコード: `0 ok / 1 notSessionOwner / 2 sessionNotOpen / 3 invalidKey / 4 keyNotAllowed / 5 smcUnavailable / 6 smcError / 7 badRequest`。
+Error codes: `0 ok`, `1 notSessionOwner`, `2 sessionNotOpen`, `3 invalidKey`,
+`4 keyNotAllowed`, `5 smcUnavailable`, `6 smcError`, `7 badRequest`.
 
-**単一オーナーセッション（設計書 §5.3 (a)）**
+**Single-owner session**
 
-- セッションは開いた XPC 接続（pid + 接続 ID）に属する。他の接続からの `openSession` / `writeKey` / `closeSession` は `notSessionOwner`。
-- オーナー pid のプロセスが既に存在しない場合は次の `openSession` で自動回収。同じ pid の**別の接続**から `openSession` が来た場合（クライアント側タイムアウトで旧接続を捨てた直後など）も、旧セッションを終了（復元）してから新しい接続に渡す。
-- 接続の invalidation / interruption（アプリ終了・クラッシュ）でセッションを解放。
-- セッション中に書いた各キーの **書込前の値** を初回書込の直前に記録する。記録（読み取り）に失敗した場合は書込自体を `6 smcError` で拒否する。
-- close / 解放 / ヘルパーの SIGTERM 時の復元（`HelperWritePolicy.restore`、書込前レビュー 2026-10-20 で順序を変更。`docs/verification/pre-write-review-2026-10-20.md`）:
-  1. `F<n>Md` を**固定の自動値** 0 に戻す（記録値そのものには戻さない。前のセッションの手動状態を再現しないため）。失敗したら 1 回だけ再試行する。
-  2. `F<n>Tg` は、このセッションで `F<n>Md` を書いて**いない**ファン（`Tg` だけを書いたクライアント。`FanWriteStrategy` はそうしない）だけ記録値に戻す。値はハードウェア `Mn`〜`Mx` にクランプする。
-  （Intel 廃止前の「`F<n>Mn` を記録値に戻す」段と `FS! ` のビット処理は削除した。）
-  モードを自動に戻したファンの `F<n>Tg` は書かない（自動制御中は SMC が目標値を持つ）。Apple Silicon ではアイドル時の記録値が `Tg` = 0（`Mn` 未満）で、
-  旧実装のように `F<n>Md` = 1 のまま書き戻すとファン停止を指令することになり、続く `Md` = 0 が失敗すると手動 0 RPM のまま残る恐れがあった。
-  モードの復元に失敗したファンの `F<n>Tg` も書き戻さず、最後に検証済みの目標値（`Mn`〜`Mx` 内）のまま残す（ログに記録）。
-  復元の書込は値の検証（下表）を通さない。成否にかかわらずセッションは解放する。これによりクライアントがクラッシュしてもファンが手動固定のまま残らない。
-- AppleSMC 接続はセッション中のみ保持。セッション開始時に `FNum` と各ファンのハードウェア `F<n>Mn` / `F<n>Mx` を読み、書込値の検証に使う。
-- クライアントの成功した書込はキーごとに最後の値（`lastWritten` = クライアントの意図）として保持し、スリープ／復帰時の再適用に使う（§5「スリープ／復帰」）。ヘルパー自身の電源処理の書込はここに記録しない。
+- A session belongs to the XPC connection that opened it (pid + connection id). `openSession`,
+  `writeKey` or `closeSession` from any other connection returns `notSessionOwner`.
+- If the owner pid no longer exists, the next `openSession` reclaims the session. If
+  `openSession` comes from **another connection of the same pid** (for example after a client
+  timeout dropped the old connection), the old session is ended and restored first, and then
+  the new connection gets it.
+- Invalidation or interruption of the connection (app quit or crash) releases the session.
+- Just before the first write to each key in a session, the helper records the key's current
+  value. If that read fails, the write is refused with `6 smcError`.
+- The helper opens AppleSMC only while a session is open. At session open it reads `FNum` and
+  each fan's hardware `F<n>Mn` and `F<n>Mx`, which are used for validation.
+- Each successful client write is remembered per key as `lastWritten`, the client's intent.
+  Sleep/wake recovery uses it (§5). The helper's own power-handling writes are not recorded.
 
-**書込許可リスト**（`FanControlHelperConstants.allowedWriteKeyPatterns`）:
+**Restore**, used on close, release, reclaim and helper SIGTERM, and implemented by
+`HelperWritePolicy.restore`:
 
-| パターン | 用途 |
+1. Each mode key is set to the **fixed automatic value** `F<n>Md ← 0`, not to its recorded
+   value, so the state of a previous manual session is never reproduced. A failed write is
+   retried once.
+2. `F<n>Tg` is written back **only** for fans whose `F<n>Md` this session never wrote (a client
+   that wrote only `Tg`, which `FanWriteStrategy` never does). The value is clamped to
+   `Mn…Mx`.
+3. `F<n>Tg` is never written for a fan handed back with `Md = 0`, because the SMC owns the
+   target in automatic mode. On Apple Silicon the idle snapshot is `Tg = 0`, which is below
+   `Mn`. Writing it back while `Md = 1` would command the fan to stop, and if the following
+   `Md = 0` failed, the fan would stay in manual mode at 0 RPM. A fan whose mode restore failed
+   also keeps its last validated target, which lies inside `Mn…Mx`, and the failure is logged.
+4. Restore writes bypass value validation. The session is released whether or not they succeed.
+
+The hardware test confirmed that `Md = 0` alone returns a fan to SMC control: the target jumps to
+the SMC's own value immediately (see [verification/SUMMARY.md](verification/SUMMARY.md)).
+
+**Write allowlist** (`FanControlHelperConstants.allowedWriteKeyPatterns`):
+
+| Pattern | Purpose |
 |---|---|
-| `^F[0-9]Tg$` | 目標回転数 |
-| `^F[0-9]Md$` | ファンモード（1 = 手動、0 = 自動） |
+| `^F[0-9]Tg$` | Target RPM |
+| `^F[0-9]Md$` | Fan mode (1 = manual, 0 = automatic) |
 
-`^FS! $`（Intel の強制モードビットマスク）は Intel 廃止（2026-10-20）で許可リストから外した。`F<n>Mn`（Intel の「最小値＝目標値」手法）も
-同日のレビューで外した（アプリは書かない。Apple Silicon では読取専用 `0x84`）。`Ftst` などのアンロックキーも許可しない。
-`HelperWritePolicy.validate` も `F<n>Md` / `F<n>Tg` 以外のキーを `7 badRequest` で拒否する（許可リストの背後の多重防御）。
+`FS! ` (Intel), `F<n>Mn` (the Intel "minimum = target" trick; read-only `0x84` on Apple Silicon)
+and unlock keys such as `Ftst` are **not** allowed. `HelperWritePolicy.validate` also rejects any
+key other than `F<n>Md` and `F<n>Tg` with `7 badRequest`, as defence in depth behind the
+allowlist. A key must also be 4 ASCII characters, the payload must be 1–32 bytes **and** equal to
+the SMC's `dataSize`, and the SMC attributes must include the write bit `0x40`
+(`SMCKeyInfo.isWritable`); otherwise the write fails with `7 badRequest`.
 
-加えて、キーは 4 文字 ASCII、ペイロードは 1〜32 バイト、かつ SMC が返す `dataSize` と一致しなければ拒否する。
-さらに SMC が返す属性に書込ビット `0x40`（`SMCKeyInfo.isWritable`）が無いキーは `7 badRequest` で拒否する。
+**Value validation.** The payload is decoded with `SMCCodec.decode` according to the key's type
+(`HelperWritePolicy.validate`):
 
-**値の検証**（ヘルパーが安全性の最終責任を持つ。ペイロードはキーの型で `SMCCodec.decode` して判定。実装は `FanControlXPC.HelperWritePolicy.validate` で単体テスト済み）:
-
-| キー | 条件 | 違反時 |
+| Key | Condition | On violation |
 |---|---|---|
-| `F<n>Md` | 0 または 1 | `7 badRequest` |
-| `F<n>Tg` | セッション開始時に読んだハードウェア `F<n>Mn`〜`F<n>Mx`（丸め誤差として ±1 RPM 許容） | `7 badRequest`（Mn/Mx が読めなかったファンは `6 smcError`） |
-| それ以外（`FS! `、`F<n>Mn` など） | 常に拒否 | `7 badRequest` |
+| `F<n>Md` | 0 or 1 | `7 badRequest` |
+| `F<n>Tg` | Within the hardware `F<n>Mn…F<n>Mx` read at session open, ±1 RPM | `7 badRequest` (`6 smcError` if Mn/Mx could not be read) |
+| anything else | always | `7 badRequest` |
 
-アプリ側の `SafetyPolicy.enforceHardwareMinimum = false` はクライアント側の計画にしか効かず、最小値未満の目標値はヘルパーが拒否する
-（アプリ側でも `FanWriteStrategy.writes(for:)` が書込列を作る前に `rpmOutOfRange` で拒否するので、`F<n>Md` = 1 だけ書かれて `F<n>Tg` で失敗する状態にはならない）。
-ヘルパー自身は書込頻度を制限しない。アプリ側（`FanControlManager`）がポーリング由来の書込を、目標値の変化が 25 RPM（`writeThresholdRPM`）以下なら省略する（docs/kit.md）。
+A client-side `SafetyPolicy.enforceHardwareMinimum = false` only affects planning. A target below
+the minimum is refused by `FanWriteStrategy` before any write (`.rpmOutOfRange`) and again by the
+helper. The helper does not rate-limit writes. Instead, the client skips poll-driven writes whose
+target changed by ≤ 25 RPM ([kit.md](kit.md)).
 
-### 書込手順（Apple Silicon のみ）
+### Write sequence (Apple Silicon)
 
-- `F<n>Md` を `1` にしてから `F<n>Tg` を書く（自動モード中の `F<n>Tg` 書込は SMC に上書き／拒否される可能性があるため）。`F<n>Md` = `0` で自動制御に戻る（初回書込で実機確認済み）。
-  `F<n>Md` が無いファンは制御しない（アプリ側 `FanWriteStrategy` が `FanControlError.fanModeKeyMissing` で拒否し、`FS! ` や `Tg` だけの書込へフォールバックしない）。
-  `F<n>Md` = 1 と `F<n>Tg` の間に失敗した場合はアプリが `F<n>Md` = 0 に戻す（kit.md「部分的な失敗」）。
-  （一部の新しい機種では追加のアンロックキー `Ftst` が必要との報告があるが、現状は許可リスト外。実機で確認後に追加を検討。
-  Mac14,9 / macOS 26 では `Ftst` は存在しない。同機種の属性は `F<n>Md` = `0xd0`（`ui8 `）、`F<n>Tg` = `0xd4`（`flt `）で書込ビット `0x40` あり、
-  `F<n>Mn` = `0x84` は `0x40` なし（integration.md §6 Phase 1）。）
-- **Intel**: 対応を廃止（2026-10-20）。`FS! ` は許可リスト外で、`F<n>Mn` を目標値に設定する手法も使わない。
-- 値のエンコード（`flt ` など）はアプリ側（`FanControlCore.SMCCodec`）の責務。ヘルパーは上記の検証を通ったバイト列をそのまま書く。
+- Write `F<n>Md ← 1` first and then `F<n>Tg`, because a `Tg` written in automatic mode may be
+  overwritten or rejected by the SMC. `F<n>Md ← 0` returns the fan to automatic control.
+- A fan without `F<n>Md` is not controlled: the client throws `fanModeKeyMissing` and does not
+  fall back to `FS! ` or to writing only `Tg`.
+- If a write fails between `Md = 1` and `Tg`, the client rolls the fan back with `Md ← 0`
+  (kit.md, "Partial failure").
+- Some newer models are reported to need an extra `Ftst` unlock. It is not on the allowlist. On
+  Mac14,9 with macOS 26, `Ftst` does not exist, and the attributes are `F<n>Md` = `0xd0` (`ui8 `),
+  `F<n>Tg` = `0xd4` (`flt `), both with `0x40`, and `F<n>Mn` = `0x84`, without `0x40`.
+- Encoding (`flt `, little-endian Float32) is done by the client (`FanControlCore.SMCCodec`). The
+  helper writes the validated bytes as they are.
 
-## 5. Mac での手動テスト
+## 5. Manual testing on a Mac
 
 ```sh
-# 1. ビルド・署名済みの DynamicNotch.app を /Applications に置き、アプリから register() → 設定で承認
-# 2. launchd の状態
-sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi
-# 3. ログ
-log stream --level debug --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'
-# 4. 埋め込み Info.plist / 署名の確認
-launchctl plist __TEXT,__info_plist DynamicNotch.app/Contents/MacOS/FanControlHelper
-codesign -dvvv --entitlements - DynamicNotch.app/Contents/MacOS/FanControlHelper
-codesign -d -r- DynamicNotch.app
+sudo launchctl print system/<label>
+/usr/bin/log stream --level debug --predicate 'subsystem == "<subsystem>" AND category == "fancontrol-helper"'
+launchctl plist __TEXT,__info_plist YourApp.app/Contents/MacOS/FanControlHelper   # embedded Info.plist
+codesign -dvvv --entitlements - YourApp.app/Contents/MacOS/FanControlHelper
+codesign -d -r- YourApp.app
 ```
 
-確認項目:
+In zsh, use `/usr/bin/log`, because the plain name `log` is a shell builtin.
 
-1. アプリから `version` → `(1, "1.0 (1)")` が返る。
-2. `openSession` → `writeKey("F0Md", [1])` → `writeKey("F0Tg", <flt エンコード値>)` で回転数が変わる（`F0Ac` を読んで確認）。
-3. 許可外キー（例 `TC0P`）は `4 keyNotAllowed`、サイズ不一致は `7 badRequest`。
-4. 別プロセス（署名済み 2 つ目のビルド）から `openSession` → `1 notSessionOwner`。
-5. （スリープ／復帰）手動制御中にスリープ → 復帰。ログに `Power: system will sleep; … handed back to the SMC: F0Md=0 …` と `Power: wake recovery 1/3 … wrote …` が出て、`fanfi-probe --watch 1` で復帰後に `manual(0)` のサンプルが出ないこと（下の「スリープ／復帰」）。
-6. 手動制御中にアプリを `kill -9` → ログに "went away; releasing session"、ファンが自動制御に戻る。
-   ヘルパーを `sudo launchctl kill SIGTERM system/com.example.dynamicnotch.DynamicNotch.fanfi` で止めても同様に自動制御に戻る（ログに "SIGTERM received"）。
-   範囲外の目標値（`F0Mn` 未満など）や `F0Md` = 2、`F0Mn` への書込（Apple Silicon は `0x40` なし、かつ許可リスト外）は `7 badRequest` / `4 keyNotAllowed`。
-   復元後、`fanfi-probe` で `F0Md` = 0 であること、および `F0Tg` が記録値（アイドル時 0）に**書き戻されていない**（SMC が自分で決めた値になる）ことをログ（"Failed to restore" が出ていないこと）と合わせて確認する。
-7. 未署名・別 Team ID のクライアントは接続が即座に無効化される。
-8. `SMAppService.daemon(plistName:).unregister()` 後、`launchctl print` でサービスが消える。
+Checklist:
 
-### スリープ／復帰（2026-10-20 実装、同日 11:22–11:26 の実機再テストで合格）
+1. `version` returns `(1, "1.0 (1)")`.
+2. `openSession` → `writeKey("F0Md", [1])` → `writeKey("F0Tg", <flt>)` changes the speed (read
+   `F0Ac` to confirm).
+3. A key outside the allowlist (for example `TC0P`) returns `4 keyNotAllowed`, and a size
+   mismatch returns `7 badRequest`.
+4. `openSession` from a second signed process returns `1 notSessionOwner`.
+5. Sleep and wake with a session open. The log shows the hand-back and the wake recovery, and
+   `fanfi-probe --watch 1` shows no persistent `manual(0)` after wake (see the next subsection).
+6. `kill -9` the app during manual control. The log shows "went away; releasing session" and
+   the fans return to automatic. `sudo launchctl kill SIGTERM system/<label>` does the same
+   ("SIGTERM received"). An out-of-range `Tg`, `F0Md = 2`, or a write to `F0Mn` returns
+   `7 badRequest` / `4 keyNotAllowed`. After the restore, `F0Md` is 0 and `F0Tg` is **not**
+   written back.
+7. An unsigned client, or one with another Team ID, is invalidated immediately.
+8. After `SMAppService.daemon(plistName:).unregister()`, `launchctl print` no longer shows the
+   service.
 
-背景（`docs/verification/first-write-2026-10-20.md` テスト 4）: スリープをまたぐと SMC は `F<n>Tg` を 0 にリセットし `F<n>Md` = 1 を保持する（スリープ前に automatic だったファンも）。
-復帰直後はファンが「手動・目標 0」= 停止状態になり、アプリの復帰通知が遅れればそのまま残る。ヘルパーは安全性の最終責任者なので、アプリに頼らず自分で処理する。
+### Sleep / wake
 
-再テスト（同ファイル「テスト 4 再テスト」）で分かった実際の仕組み: スリープ前にヘルパーが `Md` = 0 で返していても、SMC は復帰直後に**全ファンを `F<n>Md` = 3 / `Tg` = 0**（1 でも 0 でもない過渡状態）で起こし、1〜2 秒後に自分で `Md` = 0 に戻す。この過渡中に書いた `F<n>Tg` は SMC が `Md` = 0 に戻す時点で捨てられる（定着しない）。復帰直後の「手動・目標 0」は SMC 側の過渡状態で、こちらの書込由来ではない。合格基準（復帰後 `manual(0)` が 2 サンプル連続しない）を満たし、プロファイルは約 2 秒で復元、回転数は約 6 秒で追随した（対策前は約 5 秒）。
+**Background.** Across sleep, the SMC resets `F<n>Tg` to 0 and keeps `F<n>Md = 1`, including on
+fans that were automatic before the sleep. Without countermeasures, fans wake "manual, target 0",
+which means stopped. The helper is the safety authority, so it handles this itself and does not
+rely on the app.
 
-実装: `PowerObserver`（`Sources/FanControlHelper/PowerObserver.swift`、IOKit の薄い糊）が `IORegisterForSystemPower` を登録する。
-ヘルパーは `dispatchMain()` で動き main の CFRunLoop を回さないため、通知ポートは run loop source ではなく `IONotificationPortSetDispatchQueue` で専用キューに載せる。
-`PowerObserver` はこの専用シリアルキュー（`DispatchSerialQueue`）を executor とする actor で、IOKit コールバックはそのキュー上で `assumeIsolated` して処理する（`start()` は `queue.sync` で同期的に登録）。
-判断はすべて `FanControlXPC.PowerTransitionPolicy`（純粋関数、`PowerTransitionPolicyTests`）にあり、`SessionRegistry` がロック下で実行する。書込は通常のクライアント書込と同じ検証経路（許可リスト、`HelperWritePolicy.validate`、初回書込前の記録）を通る。
+**Observed mechanism (hardware retest).** Even when the helper handed a fan back with `Md = 0`
+before sleep, the SMC wakes **every fan at `F<n>Md = 3`, `Tg = 0`**, a transient that is neither
+manual nor automatic. One to two seconds later the SMC returns the fans to `Md = 0` itself. A `Tg`
+written during the transient is discarded at that point. So the brief "manual, target 0" right
+after wake comes from the SMC, not from our writes. In the retest, `manual(0)` appeared in only
+one sample, the profile was restored after about 2 s, and the RPM caught up after about 6 s.
+Before the fix, restoring took about 5 s.
 
-| 通知 | 動作 |
+**Implementation.** `PowerObserver` (`Sources/FanControlHelper/PowerObserver.swift`) registers
+with `IORegisterForSystemPower`. The helper runs under `dispatchMain()` and has no main CFRunLoop,
+so the notification port is attached to a dedicated serial queue with
+`IONotificationPortSetDispatchQueue`. The actor's executor is that queue, and the IOKit callbacks
+use `assumeIsolated` on it. All decisions are made in `FanControlXPC.PowerTransitionPolicy`, which
+is pure and tested. `SessionRegistry` executes them under its lock. These writes go through the
+same validation as client writes.
+
+| Notification | Action |
 |---|---|
-| `kIOMessageCanSystemSleep` | 常に許可（`IOAllowPowerChange`）。スリープを拒否しない |
-| `kIOMessageSystemWillSleep` | セッションが開いていれば、セッションが強制中のファン（最後の `F<n>Md` 書込が非 0）を SMC に返す: `F<n>Md` = 0。`F<n>Tg` は書かない。セッションとクライアントの意図は保持。書込の成否にかかわらず直後に `IOAllowPowerChange`（30 秒制限に対し数回の SMC 呼出のみ） |
-| `kIOMessageSystemHasPoweredOn` | 0 s / 1 s / 3 s（`PowerTransitionPolicy.wakeRetryDelays`。復帰直後の `Md` = 3 過渡中の書込は SMC が 1〜2 秒後に `Md` = 0 へ戻す際に捨てるため、過渡が終わった後の試行で書き直す）に復旧を試みる。各回でファンを読み直すので冪等（揃っていれば何も書かない）。新たなスリープで残りの試行は破棄 |
+| `kIOMessageCanSystemSleep` | Always allowed (`IOAllowPowerChange`); the helper never vetoes sleep |
+| `kIOMessageSystemWillSleep` | With a session open, each fan the session is forcing (last `Md` write ≠ 0) is handed back with `F<n>Md ← 0`. `Tg` is not written, and the session and the client's intent are kept. Then `IOAllowPowerChange` is called regardless of the result. |
+| `kIOMessageSystemHasPoweredOn` | Recovery attempts at 0, 1 and 3 s (`PowerTransitionPolicy.wakeRetryDelays`). The later attempts run after the `Md = 3` transient has ended. Each attempt re-reads the fans, so it is idempotent. A new sleep cancels the remaining attempts. |
 
-復帰時の各試行（セッションあり、`PowerTransitionPolicy.wakeRecovery`）:
+Each wake attempt with a session open (`PowerTransitionPolicy.wakeRecovery`) works like this:
 
-- `Md` は非 0 なら手動扱い（`Md` = 3 の過渡状態も含む）。そのため 1 回目の試行は `Md` = 3 を手動と見て `F<n>Tg` だけを書き、これは定着しない。SMC が `Md` = 0 に戻した後の 2 回目の試行が `F<n>Md` = 1 → `F<n>Tg` を書き直して定着する（再テストで確認した想定動作。下のログ例）。
-- 記憶したファン（強制中で目標値の記録あり）: 手動でなければ `F<n>Md` = 最後に書かれた値 → `F<n>Tg` = 最後の目標値の順で書く。手動だが `F<n>Tg` が記憶値から 5 RPM を超えてずれていれば `F<n>Tg` だけ書く。
-- それ以外で手動モードのファン（目標の記録が無い `F<n>Md` = 1。テスト 4 の Fan 2 のように SMC が手動で起こしたもの、`Md`=1 だけ成功して `Tg` が失敗したもの）: `F<n>Md` = 0 で SMC に返す。
-- 書込順は `F<n>Md`（ファン番号順）→ `F<n>Tg`。記憶はクライアントの最新の書込なので、復帰後にアプリが目標を変えれば以降の試行はそれに従う。
+- Any non-zero `Md` counts as manual, including the transient 3. Attempt 1 therefore sees
+  `Md = 3`, writes only `Tg`, and that write does not stick. Attempt 2 sees `Md = 0` and writes
+  `Md ← 1` and then `Tg`, which sticks. This is the expected pattern.
+- For a remembered fan (forced, with a recorded target), the helper writes `Md` (the last value)
+  and then `Tg` (the last target) if the fan is not manual. If the fan is manual but `Tg` is more
+  than 5 RPM off, only `Tg` is written.
+- Any other fan in manual mode (no recorded target, for example one the SMC woke as manual, or one
+  where only `Md = 1` succeeded) is handed back with `Md ← 0`.
+- Write order: `Md` writes in fan order, then `Tg` writes. Because the memory holds the client's
+  latest writes, an app that changes the target after wake is followed by the later attempts.
 
-セッションなしで復帰した場合は 1 回目の試行でファンを読み、手動モードのファンがあれば警告ログだけ出す（別のツールの可能性があるので書かない）。
+If the Mac wakes without a session, attempt 1 reads the fans and only **logs a warning** for
+manual fans; another tool may own them.
 
-ログ（すべて notice 以上なので永続化される。`log show --last 10m --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'` で後から確認可能）:
+Log lines (notice level or above, so they are persisted; use `log show --last 10m --predicate …`):
 
 ```
-Power: registered for system sleep/wake notifications                       (info、起動時)
+Power: registered for system sleep/wake notifications
 Power: system will sleep; session of pid 1234 open, handed back to the SMC: F0Md=0; remembered targets: F0 3000
 Power: system will sleep; no session open, nothing to hand back
 Power: system has powered on; wake recovery at 0.0s, 1.0s, 3.0s
@@ -236,181 +314,217 @@ Power: wake recovery 1/3 (session of pid 1234): observed F0 Md=3 Tg=0, F1 Md=3 T
 Power: wake recovery 2/3 (session of pid 1234): observed F0 Md=0 Tg=0, F1 Md=0 Tg=0; wrote F0Md=1, F0Tg=3000
 Power: wake recovery 3/3 (session of pid 1234): fans already match (F0 Md=1 Tg=3000, F1 Md=0 Tg=0)
 Power: system has powered on; no session open but fan(s) 0,1 are in manual mode - not writing (another tool may own them)
-Power: IORegisterForSystemPower failed; sleep/wake fan handling is disabled   (error。この場合は従来どおりアプリ側の処理だけ)
+Power: IORegisterForSystemPower failed; sleep/wake fan handling is disabled
 ```
 
-上の 1/3〜3/3 は再テスト（Fan 1 固定 3000 RPM、Fan 2 automatic）で実際に出た並び。1/3 の `F0Tg=3000` は `Md` = 3 の過渡中なので効かず、2/3 で `Md` = 0 を観測して書き直すのが正常（失敗ではない）。
-失敗した書込は `F0Tg=3000 FAILED (<理由>)` のように同じ行に出る。アプリ側（`FanControlManager`）も復帰時に即座・2 s・5 s で再適用し、ポーリングで「手動かつ `Tg` < `Mn`」などを検出して書き直す（kit.md「Sleep/wake」「State drift」）。
-既知の制約: DarkWake でも `HasPoweredOn` が届くため、セッション中は DarkWake の間も記憶した目標で回る（次の `WillSleep` で再び返す）。ヘルパーの SIGKILL / クラッシュ中のスリープは対象外。
+Failed writes appear on the same line, for example `F0Tg=3000 FAILED (<reason>)`. The app side
+also re-applies the active profile at 0, 2 and 5 s after wake, and its polls detect fans that are
+manual with `Tg < Mn` (kit.md, "Sleep/wake" and "State drift").
 
-## 6. 手動インストール（個人利用モード）
+Known limits: `HasPoweredOn` also arrives on DarkWake, so during a DarkWake a session keeps
+running at its remembered targets until the next `WillSleep`. Sleep while the helper is killed or
+crashed is not covered.
 
-Apple Developer Program の Team ID が無い個人利用向けに、`SMAppService` を使わずヘルパーを **素の LaunchDaemon として手動で入れる** モード。
-アプリとヘルパーはアドホック署名（`CODE_SIGN_IDENTITY = -`）でよい。§1〜§5 の SMAppService 方式（Team ID 付きビルド）はそのまま残っており、
-環境変数が無ければヘルパーの動作は従来と同じ。
+## 6. Manual install (developer / personal-use mode)
 
-### 仕組み
+This mode is for people **without an Apple Developer Program Team ID**. Instead of using
+`SMAppService`, the helper is installed by hand as a plain LaunchDaemon, and the app and helper
+can be **ad-hoc signed** (`CODE_SIGN_IDENTITY = -`). If the environment variable described below
+is absent, the helper behaves exactly as in SMAppService mode. A usage guide is in
+[`Support/manual-install/README.md`](../Support/manual-install/README.md).
 
-| 項目 | SMAppService 方式（§1〜§3） | 手動インストール方式 |
+### How it compares
+
+| | SMAppService (§1–§3) | Manual install |
 |---|---|---|
-| 登録 | アプリが `SMAppService.daemon(plistName:).register()`、ユーザーが設定で承認 | ユーザーが `sudo FanControl/Support/manual-install/install.sh <App.app>` |
-| ヘルパーの場所 | `App.app/Contents/MacOS/FanControlHelper`（`BundleProgram`） | `/Library/PrivilegedHelperTools/com.example.dynamicnotch.DynamicNotch.fanfi`（root:wheel 0755、`Program`） |
-| plist | `App.app/Contents/Library/LaunchDaemons/…fanfi.plist` | `/Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist`（root:wheel 0644） |
-| ヘルパー → アプリの検証 | `anchor apple generic and identifier "…DynamicNotch" and certificate leaf[subject.OU] = "<TeamID>"` | `identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<アプリの cdhash>"`（plist の `EnvironmentVariables` → `FANCONTROL_CLIENT_REQUIREMENT`） |
-| アプリ → ヘルパーの検証 | `anchor apple generic and identifier "…fanfi" and certificate leaf[subject.OU] = "<TeamID>"` | `identifier "com.example.dynamicnotch.DynamicNotch.fanfi" and cdhash H"<インストール済みヘルパーの cdhash>"` |
-| アプリの状態表示 | `HelperInstallStatus.enabled` など | `.installedManually`（「手動インストール済み（個人利用モード）」） |
-| 削除 | アプリから `unregister()` / 設定でオフ | `sudo …/uninstall.sh` |
+| Registration | App calls `register()`, user approves | User runs `sudo Support/manual-install/install.sh <App.app>` |
+| Helper location | `App.app/Contents/MacOS/FanControlHelper` (`BundleProgram`) | `/Library/PrivilegedHelperTools/<label>` (root:wheel 0755, `Program`) |
+| plist | `App.app/Contents/Library/LaunchDaemons/<label>.plist` | `/Library/LaunchDaemons/<label>.plist` (root:wheel 0644) |
+| Helper checks app | `anchor apple generic and identifier "<app>" and certificate leaf[subject.OU] = "<TeamID>"` | `identifier "<app>" and cdhash H"<app cdhash>"` (from the plist's `EnvironmentVariables` → `FANCONTROL_CLIENT_REQUIREMENT`) |
+| App checks helper | `anchor apple generic and identifier "<label>" and certificate leaf[subject.OU] = "<TeamID>"` | `identifier "<label>" and cdhash H"<installed helper cdhash>"` |
+| Status in the app | `HelperInstallStatus.enabled` etc. | `.installedManually` |
+| Removal | `unregister()` / System Settings | `sudo …/uninstall.sh` |
 
-Label / Mach サービス名は両方式で同じ（`com.example.dynamicnotch.DynamicNotch.fanfi`）。**両方式を同時に入れてはいけない**:
-`install.sh` は SMAppService 由来のジョブ（`launchctl print` の `path` が手動 plist 以外）が読み込まれていれば中止する。
-アプリ側も手動インストールのファイルがあれば `SMAppService` を呼ばない（kit.md「Helper install status」）。
+Both modes use the same label and Mach service name. **Never install both at once.**
+`install.sh` aborts if a job from SMAppService is loaded (its `launchctl print` path is not the
+manual plist). The app never calls `SMAppService` while the manual files exist.
 
-テンプレート `Support/manual-install/com.example.dynamicnotch.DynamicNotch.fanfi.manual.plist`（`install.sh` が値を埋めて配置する）:
+The template `Support/manual-install/<label>.manual.plist` is filled in by `install.sh`:
 
 ```xml
-<key>Label</key>              <string>com.example.dynamicnotch.DynamicNotch.fanfi</string>
-<key>Program</key>            <string>/Library/PrivilegedHelperTools/com.example.dynamicnotch.DynamicNotch.fanfi</string>
-<key>MachServices</key>       <dict><key>com.example.dynamicnotch.DynamicNotch.fanfi</key><true/></dict>
+<key>Label</key>        <string><label></string>
+<key>Program</key>      <string>/Library/PrivilegedHelperTools/<label></string>
+<key>MachServices</key> <dict><key><label></key><true/></dict>
 <key>EnvironmentVariables</key>
 <dict>
     <key>FANCONTROL_CLIENT_REQUIREMENT</key>
-    <string>identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<40 桁の 16 進>"</string>
+    <string>identifier "<app bundle id>" and cdhash H"<40 hex digits>"</string>
 </dict>
-<key>RunAtLoad</key>          <false/>      <!-- Mach サービスへの接続時にオンデマンド起動 -->
-<key>ProcessType</key>        <string>Adaptive</string>
+<key>RunAtLoad</key>    <false/>      <!-- on demand, via the Mach service -->
+<key>ProcessType</key>  <string>Adaptive</string>
 ```
 
-テンプレートのままの値（`__FILLED_IN_BY_INSTALL_SH__`）は検証を通らないため、誤ってそのまま入れてもヘルパーは起動を拒否する。
-`AssociatedBundleIdentifiers` は入れていない（SMAppService / ログイン項目表示用。手動方式では不要）。
+The template's placeholder value (`__FILLED_IN_BY_INSTALL_SH__`) fails validation, so a template
+installed by mistake makes the helper refuse to start. `AssociatedBundleIdentifiers` is not
+needed in this mode.
 
-### ヘルパー側: `FANCONTROL_CLIENT_REQUIREMENT`
+### Helper side: `FANCONTROL_CLIENT_REQUIREMENT`
 
-起動時に `HelperConfiguration.resolveClientRequirement()`（純粋ロジックは `FanControlHelperConstants.resolveClientRequirement(environment:teamID:)`）が決める:
+At launch, `HelperConfiguration.resolveClientRequirement()` decides the client requirement. The
+pure logic is `FanControlHelperConstants.resolveClientRequirement(environment:teamID:)`.
 
-- 環境変数が **無い** → 従来どおり Team ID 要件（`clientCodeSigningRequirement(teamID:)`）。ログ `Client requirement mode: Team ID (SMAppService)`。
-- 環境変数が **あり、形式が正しい** → その要件。ログ `Client requirement mode: MANUAL INSTALL (personal use), client cdhash pinned to <cdhash>`。
-  この場合 Team ID（`FanControlClientTeamID`）は参照しない（プレースホルダ警告も出ない）。
-- 環境変数が **あるが不正**（空、bundle ID だけ、cdhash なし、`or` 付きなど）→ `fault` ログ `Refusing to start: invalid FANCONTROL_CLIENT_REQUIREMENT …` を出し、
-  **リスナーを開かずに終了**（終了コード 78 = `EX_CONFIG`）。Team ID 要件や弱い要件へのフォールバックはしない。
+- **Variable absent:** the Team ID requirement is used, and the helper logs
+  `Client requirement mode: Team ID (SMAppService)`.
+- **Present and well-formed:** that requirement is used, and the helper logs
+  `Client requirement mode: MANUAL INSTALL (personal use), client cdhash pinned to <cdhash>`.
+  The Team ID is ignored.
+- **Present but invalid** (empty, bundle id only, no cdhash, an `or` clause, …): the helper logs a
+  fault, `Refusing to start: invalid FANCONTROL_CLIENT_REQUIREMENT …`, and **exits with code 78
+  without opening the listener**. It never falls back to a weaker requirement.
 
-受け付ける形式は `FanControlHelperConstants.manualModeClientRequirement(cdhash:)` が作る文字列と **完全一致**（前後の空白のみ許容、16 進は大小文字可）:
+The value must **exactly** equal the string that
+`FanControlHelperConstants.manualModeClientRequirement(cdhash:)` builds. Surrounding whitespace is
+allowed, and the hex digits may be upper or lower case:
 
 ```
-identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<40 桁の 16 進>"
+identifier "<app bundle id>" and cdhash H"<40 hex digits>"
 ```
 
-「`identifier "…"` と `cdhash H"` を含む」という部分一致にしなかったのは、`… and cdhash H"…" or anchor apple` のように `or` で緩めた要件まで通ってしまうため。
-さらに `SecRequirementCreateWithString` でコンパイルできることも起動時に確かめる。`install.sh` も同じ書式（`common.sh` の `client_requirement`）で書き、
-テスト（`ManualInstallScriptConsistencyTests`）が Swift 側の定数・書式とスクリプト・テンプレートの一致を確認する。
+A substring match would also accept a loosened requirement such as
+`… and cdhash H"…" or anchor apple`, which is why the match is exact. The string must also compile
+with `SecRequirementCreateWithString`. `install.sh` writes the same format (`client_requirement`
+in `common.sh`), and `ManualInstallScriptConsistencyTests` checks that the scripts, the template
+and the Swift constants agree.
 
-### 脅威モデル（なぜ cdhash 固定なら個人利用で許容できるか）
+### Threat model
 
-- **損害の上限を決めるのはヘルパー自身の書込検証**（許可リスト + `HelperWritePolicy.validate` のハードウェア値域検証、§4）。クライアント検証を通ったプロセスが依頼できるのは
-  「許可されたファンキーに、そのファンの `Mn`〜`Mx` の範囲で、モードは 0/1 で書く」ことだけで、ヘルパーは切断・終了時に自動制御へ戻す（§5）。最悪でも「アプリ自身ができること」
-  （ファンを最大で回し続ける、最低回転数に固定する）に限られ、任意の SMC キーや範囲外の値は書けない。
-- **手動インストール方式では、ログイン中ユーザーと同じ uid で動くプロセスは信頼境界の内側**にある。クライアント検証（cdhash 固定）が防ぐのは
-  「**別のビルド**（別バイナリ）が接続すること」であり、同じユーザーの悪意あるプロセスがヘルパーを使うことまでは防がない:
-  - cdhash 要件が見るのは**メイン実行ファイルのコードディレクトリ**だけ（`NSXPCConnection.setCodeSigningRequirement` は接続相手の動的コードを検査し、バンドル全体の封印は見ない）。
-  - アプリが `com.apple.security.get-task-allow` を持つと（Xcode が Debug ビルドに自動注入する）、同じユーザーは `task_for_pid` / `lldb -p` で実行中のアプリにコードを注入でき、
-    そのプロセスは固定 cdhash を満たしたままヘルパーに依頼できる。
-  - アプリが `com.apple.security.cs.disable-library-validation` を持つと、ユーザーが書き換えられるバンドル内の framework（`Lottie.framework`、`Sparkle.framework` など）を
-    差し替えたものがそのまま読み込まれ、やはり cdhash は変わらない。
-  - したがって cdhash 固定は「同じユーザーのマルウェア」に対する境界ではない。Team ID 方式（§1〜§3）でもアプリ側の entitlement が同じなら事情は同じ。
-- **`install.sh` の警告**: 固定するアプリが上の 2 つの entitlement を持つと警告を出す（ヘルパーの `com.apple.application-identifier` 警告と同様。中止はしない）。
-  - **`get-task-allow` を外す**: 固定するビルドは Release でビルドするか、Debug なら `CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO` を付ける
-    （例: `xcodebuild … -configuration Release build CODE_SIGN_IDENTITY=-` または `… -configuration Debug build CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO`）。
-    `codesign -d --entitlements - --xml <App.app>` に `get-task-allow` が無いことを確認してから `install.sh` する。
-  - **`disable-library-validation` は残す**: アドホック署名には Team ID が無く、Hardened Runtime のライブラリ検証は「同じ Team ID か Apple 署名」のライブラリしか読み込まないため、
-    外すと埋め込み framework（Lottie / Sparkle）の読込が拒否されアプリが起動しない（Debug dylib で同じ症状を確認済み。下記「注意」）。
-    代わりにアプリのバンドルを自分のユーザーだけが書ける場所に置く（`/Applications` に置くなら所有者・権限を確認する）。
-- **bundle ID だけの要件（`identifier "com.example.dynamicnotch.DynamicNotch"`）は偽装できる**。アドホック署名は誰でも任意の identifier で作れるため、
-  同じユーザー権限で動く任意のプロセスが `codesign -s - -i com.example.dynamicnotch.DynamicNotch` で自分を署名すれば、注入も差し替えも不要で通ってしまう。だから環境変数が cdhash を含まない場合は起動を拒否する。
-- **cdhash はコードディレクトリのハッシュ**で、メイン実行ファイルの内容（と、署名時に封印された Info.plist・リソースのハッシュ）に結び付く。別のバイナリが同じ cdhash を持つことはできないので、
-  再ビルドしたアプリ・別のアプリ・スモークアプリは接続できない（「固定 cdhash が一致しないとき」）。Team ID 方式の「Apple の証明書チェーン + Team ID」の代わりに「このビルド」を信頼する。
-- 要件文字列は root 所有の `/Library/LaunchDaemons/…plist`（0644）にあり、書き換えられるのは root だけ。root を持つ攻撃者はヘルパーを使わずとも SMC に書けるので、ここは新たな攻撃面にならない。
-- **アプリ → ヘルパーの検証**: `HelperClient` は接続時に root 所有の `/Library/PrivilegedHelperTools/<label>` から cdhash を読み（ファイルとその親ディレクトリが uid 0 かつ group/other 書込不可で、
-  署名が `SecStaticCodeCheckValidity` を通ることを確認）、それを要件に固定する。そこに置けるのは root（＝ `sudo install.sh` したユーザー）だけなので、信頼の起点は「root が入れたもの」で、
-  そもそも system ドメインの Mach サービス名を登録できるのも root だけ。これは主に「別のバイナリが同じ Mach 名で応答している」取り違えを防ぐためのもので、SMC 書込の安全性はヘルパー側の検証が担う。
-- 弱点・前提: (1) アプリを再ビルド・置換するたびに cdhash が変わり、`install.sh` の再実行が必要（しないとヘルパーが接続を拒否する。アプリ側のエラー文に再実行の案内を付けている）。
-  (2) Gatekeeper / 公証は効かない（自分でビルドしたものを自分で入れる前提）。(3) 配布には使わない（他人の Mac では Team ID 方式を使う）。
-  (4) 同じユーザーのプロセスは上記のとおりヘルパーを使えるので、個人利用の Mac で、自分のユーザーで動くものを信頼できることが前提。
+- **What limits the damage is the helper's own write validation** (the allowlist plus the
+  hardware range checks, §4). A client that passes the identity check can only ask for "allowed
+  fan keys, within that fan's `Mn…Mx`, mode 0/1". The helper restores automatic control on
+  disconnect and exit. At worst a client can do what the app itself can do: run the fans at max
+  or pin them at minimum. It cannot write arbitrary SMC keys or values out of range.
+- **In manual mode, any process running as the logged-in user's uid is inside the trust
+  boundary.** Pinning the cdhash stops a *different build* from connecting. It does not stop a
+  malicious process of the same user from using the helper through the pinned app:
+  - The requirement checks only the **main executable's code directory**:
+    `setCodeSigningRequirement` validates the peer's dynamic code, not the bundle seal.
+  - If the app has `com.apple.security.get-task-allow` (which Xcode injects into Debug builds),
+    the same user can attach with `task_for_pid` / `lldb -p` and inject code that still satisfies
+    the pinned cdhash.
+  - If the app has `com.apple.security.cs.disable-library-validation`, a framework replaced
+    inside the user-writable bundle loads without changing the cdhash.
+  - The same holds in Team ID mode if the app has the same entitlements.
+- **`install.sh` warns** when the app to be pinned has either entitlement. It does not abort.
+  - **Remove `get-task-allow`.** Pin a Release build, or a Debug build with
+    `CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO`, and check with
+    `codesign -d --entitlements - --xml <App.app>`.
+  - **Keep `disable-library-validation` if you embed frameworks.** Ad-hoc signatures have no Team
+    ID, and with Hardened Runtime, library validation only loads libraries with the same Team ID
+    or signed by Apple, so the app would not launch without it. Keep the app bundle writable only
+    by you.
+- **A requirement with only the bundle id can be spoofed.** Anyone can ad-hoc sign a binary with
+  any identifier (`codesign -s - -i <app bundle id>`). The helper therefore refuses to start
+  without a cdhash.
+- **A cdhash is the hash of the code directory**, which binds the main executable's contents and
+  the sealed Info.plist and resources. No other binary can have the same cdhash, so a rebuilt
+  app, a different app, or the sample app cannot connect.
+- The requirement string is stored in a root-owned plist (0644). Only root can change it, and
+  root could write to the SMC without the helper anyway, so this adds no attack surface.
+- **App → helper check.** At connect time, `HelperClient` reads the cdhash of the root-owned
+  `/Library/PrivilegedHelperTools/<label>`. It first checks that the file and its directory are
+  owned by uid 0 and are not group- or other-writable, and that the code passes
+  `SecStaticCodeCheckValidity`. The client then pins that cdhash. Only root can place that file,
+  and only root can register a system-domain Mach name. This check mainly prevents a different
+  binary from answering on the same name; SMC safety comes from the helper's validation.
+- **Weaknesses:** (1) every rebuild changes the cdhash, so `install.sh` must be re-run (the app's
+  error messages say so); (2) there is no Gatekeeper or notarization; (3) this mode is not for
+  distribution; (4) you must trust everything that runs as your user.
 
-### アプリ側
+### App side
 
-- 要件の選択（`FanControlHelperConstants.helperRequirementMode(appTeamID:manualInstallDetected:)`）: 実行中のアプリ自身の署名に Team ID が無い
-  （`SecCodeCopySelf` → `SecCodeCopySigningInformation` の `kSecCodeInfoTeamIdentifier` が nil）**または** 手動インストールのファイルがある → cdhash 固定、
-  それ以外 → Team ID 要件（従来どおり）。詳細は kit.md。
-- `HelperInstaller.status()` は `/Library/LaunchDaemons/<label>.plist` と `/Library/PrivilegedHelperTools/<label>` の **両方** があれば `.installedManually`。
-  片方だけなら `.unknown("manual installation incomplete …")`。手動インストール時の `register()` は何もせず `.installedManually` を返し、`unregister()` は
-  「`sudo uninstall.sh` で削除する」旨のエラーを投げる。
-- 手動インストールされたヘルパーのプロトコル版がアプリと違う場合、`openSMCSession()` は再登録を試みずに「`install.sh` を再実行」のエラーを出す。
+- Requirement selection uses
+  `FanControlHelperConstants.helperRequirementMode(appTeamID:manualInstallDetected:)`. If the
+  running app's own signature has no Team ID (`kSecCodeInfoTeamIdentifier` is nil) **or** the
+  manual files exist, the app pins the cdhash; otherwise it uses the Team ID requirement.
+- `HelperInstaller.status()` returns `.installedManually` when **both** files exist, and
+  `.unknown("manual installation incomplete …")` when only one does. `register()` is a no-op in
+  manual mode, and `unregister()` throws "use sudo uninstall.sh".
+- If a manually installed helper reports a different protocol version, the app asks you to re-run
+  `install.sh` instead of re-registering.
 
-### 固定 cdhash が一致しないとき（アプリ側の表示、2026-10-20）
+### When the pinned cdhash does not match
 
-アプリを再ビルド・置換したのに `install.sh` を再実行していない、または別のアプリ（スモークアプリなど）を指定して入れた場合、
-plist の `FANCONTROL_CLIENT_REQUIREMENT` は別ビルドの cdhash を固定しているため、ヘルパーはこのアプリの要求をすべて拒否する。
-ヘルパー側のログは `Accepted connection N from pid …` の直後に `Connection N from pid … invalidated`（最初のメッセージで要件検査に落ちる）。
-アプリ側は次のように振る舞う（kit.md "Helper connection lifecycle"）:
+If you rebuild or replace the app without re-running `install.sh`, or if you installed the helper
+for a different app, the helper rejects every request from this app. The helper log shows
+`Accepted connection N from pid …`, immediately followed by `Connection N … invalidated`.
 
-- **接続しない**: `HelperClient` は接続前に root 所有の plist（0644、root 不要で読める）の固定 cdhash と自分の cdhash を比べ、
-  違えば接続せずに拒否状態にする。plist を読めないなど判定できない場合は接続し、「返信の無いまま切断」が 2 回続いたら拒否とみなす。
-  ヘルパーの署名がアプリの要件に合わない場合（`NSXPCConnectionCodeSigningRequirementFailure`）は 1 回で拒否。
-- **自動で再試行しない**: 拒否は「再確認」ボタン、アプリの再起動、または `install.sh` の再実行（plist とヘルパーの更新日時・サイズが変わる）で解除されるまで続き、
-  その間の操作（プロファイル選択、自動制御に戻す）は接続せずに即エラーになる。拒否以外の失敗は 2 秒から倍々、最大 5 分の間隔を空ける。
-- **表示**: 設定 ▸ Fan Control ▸ 一般 ▸ ヘルパーで、状態が「手動インストール済み（別のビルドに固定）」、接続が「拒否（別のビルドに固定）」
-  （実行時に検出した場合は「ヘルパーが拒否」/「拒否（ヘルパーの署名が不一致）」）になり、
-  「インストール済みのヘルパーは別のビルドの DynamicNotch に固定されているため、このアプリからの接続を拒否します。このアプリを指定して sudo install.sh を再実行し（FanControl/Support/manual-install/）、「再確認」をクリックしてください。」
-  と「再確認」ボタンが出る。エラー欄にも同じ案内。スモークアプリは `HelperInstaller.status()` に `installedManuallyMismatch(...)`、要件の行に
-  `plist pins ANOTHER app build …`、拒否中は赤字で `Helper REJECTED this app (no automatic retry): …` を出し、「Check again」で再試行できる。
-- **直し方**: `sudo ./install.sh <このアプリ>` を再実行 →「再確認」。`./status.sh <App.app>` でも一致を確認できる。
+The app then behaves as follows (kit.md, "Helper connection lifecycle"):
 
-### 手順
+- **It does not connect.** Before connecting, `HelperClient` compares the cdhash pinned in the
+  root-owned plist (0644, readable without root) with its own. On a mismatch it enters a rejected
+  state and never connects. If the check cannot decide (for example, the plist is unreadable),
+  the client connects, and two consecutive drops without a reply count as a rejection. A helper
+  signature that fails the app's requirement (`NSXPCConnectionCodeSigningRequirementFailure`) is
+  rejected at once.
+- **It does not retry automatically.** The rejection lasts until the user clicks "Check Again",
+  the app is relaunched, or `install.sh` is re-run, which changes the size and mtime of the plist
+  and the helper binary. Meanwhile, every action fails immediately without connecting. Other
+  failures back off from 2 s, doubling up to 5 min.
+- **The fix:** run `sudo ./install.sh <this app>`, then click "Check Again".
+  `./status.sh <App.app>` also checks the match.
+
+### Procedure
 
 ```sh
-# 0. アプリ（ヘルパー込み）をアドホック署名でビルドする。Hardened Runtime を付けるなら Debug でも
-#    ENABLE_DEBUG_DYLIB = NO にする（下記「注意」）。例: スモークアプリ
+# 0. Build ad-hoc. With Hardened Runtime, set ENABLE_DEBUG_DYLIB = NO for Debug (see Notes).
 cd FanControl/Tools/HelperSmokeApp && xcodegen generate && \
   xcodebuild -project FanControlSmoke.xcodeproj -scheme FanControlSmoke -configuration Debug \
   -derivedDataPath .derivedData build CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES
 APP="$PWD/.derivedData/Build/Products/Debug/FanControlSmoke.app"
 cd ../../Support/manual-install
 
-# 1. 予行（root 不要・何も変更しない）: 署名検証、cdhash、生成される plist、実行するコマンドを表示
-./install.sh --dry-run "$APP"
-# 2. インストール（ユーザーが実行）
-sudo ./install.sh "$APP"
-# 3. 状態（root 不要・読み取りのみ）。アプリを渡すと固定 cdhash との一致も確認
-./status.sh "$APP"
-sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi
-log stream --level debug --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'
-# 4. アプリを再ビルド・置換したら（cdhash が変わる）
-sudo ./install.sh "$APP"
-# 5. 削除（bootout で SIGTERM → ヘルパーはファンを自動制御に戻してから終了）
-sudo ./uninstall.sh
+./install.sh --dry-run "$APP"   # 1. preview: no root needed, changes nothing
+sudo ./install.sh "$APP"        # 2. install
+./status.sh "$APP"              # 3. read-only status and pin check
+sudo ./install.sh "$APP"        # 4. after every rebuild
+sudo ./uninstall.sh             # 5. remove (bootout → SIGTERM → helper restores fans)
 ```
 
-`install.sh` が行うこと（`set -euo pipefail`、何度実行してもよい）:
+What `install.sh` does (with `set -euo pipefail`; it is idempotent):
 
-1. `<App>/Contents/MacOS/FanControlHelper` の存在、アプリの `CFBundleIdentifier`、両方の `codesign --verify --strict`、署名 identifier（アプリ `…DynamicNotch`、ヘルパー `…fanfi`）を確認。
-2. アプリのメイン実行ファイルの cdhash を `codesign -dvvv` の `CDHash=` 行から取得（1 行だけであること・40 桁 16 進であることを確認）。
-   ユニバーサルバイナリはホストのアーキテクチャ（`uname -m`、Apple Silicon なら arm64）のスライスを `--arch` で選ぶ。そのスライスが無い・単一アーキテクチャがホストと違う場合は中止。
-3. ヘルパーに `com.apple.application-identifier` entitlement（Xcode が自動注入）が付いていれば警告を出す（下記「注意」）。
-   アプリに `com.apple.security.get-task-allow` または `com.apple.security.cs.disable-library-validation` が付いていれば警告を出す（「脅威モデル」。中止はしない）。
-4. SMAppService 由来の同名ジョブが読み込まれていれば中止。
-5. テンプレートから plist を生成（`plutil -replace` で `Program` と `FANCONTROL_CLIENT_REQUIREMENT`、`plutil -lint`）。
-6. 読み込み済みなら `launchctl bootout system/<label>`（終了を待つ）→ `install -o root -g wheel -m 0755` でヘルパーを配置し、配置後の署名と cdhash を再確認 →
-   `install -o root -g wheel -m 0644` で plist を配置 → `launchctl enable system/<label>` → `launchctl bootstrap system <plist>` → `launchctl print` の要約。
+1. Checks that `<App>/Contents/MacOS/FanControlHelper` exists, checks the app's
+   `CFBundleIdentifier`, runs `codesign --verify --strict` on both, and checks both signing
+   identifiers.
+2. Gets the app's cdhash from the `CDHash=` line of `codesign -dvvv`, and checks that there is
+   exactly one line with 40 hex digits. For a universal binary, it picks the host slice
+   (`uname -m`) with `--arch`. If that slice is missing, or a thin binary has a different
+   architecture, it aborts.
+3. Warns if the helper has `com.apple.application-identifier` (Xcode injects it), and if the app
+   has `get-task-allow` or `disable-library-validation`.
+4. Aborts if a job with the same label from SMAppService is loaded.
+5. Generates the plist from the template with `plutil -replace` and runs `plutil -lint`.
+6. Boots out the old job if one is loaded and waits for it. It then installs the helper as
+   root:wheel 0755 and re-verifies its signature and cdhash, installs the plist as root:wheel
+   0644, and runs `launchctl enable` and `launchctl bootstrap system <plist>`, followed by a
+   summary from `launchctl print`.
 
-`--dry-run` は root 不要で、検証と plist 生成までは実際に行い、生成した plist を表示し、変更系コマンド（`install`、`launchctl`）は `[dry-run] …` と表示するだけ。
+`--dry-run` needs no root. It runs the verification and generates the plist, prints the plist,
+and only prints the commands that would change anything.
 
-### 注意
+### Notes
 
-- **Debug ビルドのデバッグ dylib**: Xcode 26 の Debug ビルドは既定（`ENABLE_DEBUG_DYLIB`）でアプリを薄いスタブ + `<App>.debug.dylib` に分ける。
-  アドホック署名 + Hardened Runtime ではライブラリ検証がこの dylib の読込を拒否し（`mapping process and mapped file (non-platform) have different Team IDs`）、
-  **アプリが起動しない**（2026-10-20 にスモークアプリで確認）。`ENABLE_DEBUG_DYLIB = NO` にするか Release でビルドする（`Tools/HelperSmokeApp/project.yml` は NO に設定済み）。
-- **`com.apple.application-identifier`**: Xcode は Command Line Tool のヘルパーにこの entitlement を自動注入する（helper-bundle-smoke 検証記録）。
-  同じ entitlement・アドホック署名・Hardened Runtime の小さな実行ファイルはユーザープロセスとしては起動できた（2026-10-20）が、launchd から root で起動したときに
-  AMFI が拒否しないかは未確認。拒否された場合は `log show --last 5m --predicate 'process == "amfid" OR sender == "AppleMobileFileIntegrity"'` に出る。
-- macOS 13 以降、`/Library/LaunchDaemons` に入れたジョブは「ログイン項目と機能拡張 ▸ バックグラウンドでの実行を許可」に現れ、
-  追加時に通知が出ることがある。ここでオフにされると起動しない。
-- 手動インストール中は Team ID 方式（SMAppService）を登録しない。切り替えるときは先に `sudo uninstall.sh`。
+- **Debug dylib.** By default, Xcode 26 Debug builds split the app into a stub plus
+  `<App>.debug.dylib`. With ad-hoc signing and Hardened Runtime, library validation refuses that
+  dylib (`mapping process and mapped file (non-platform) have different Team IDs`), and **the app
+  does not launch**. Set `ENABLE_DEBUG_DYLIB = NO`, or build Release.
+- **`com.apple.application-identifier`.** Xcode injects this entitlement into Command Line Tool
+  targets, and `CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO` does not remove it. In manual mode with
+  ad-hoc signing, AMFI logs "restricted entitlements failed to validate (-67688)", but
+  AppleSystemPolicy allows the launch, and the helper ran as root. For Developer ID signing
+  without a provisioning profile, this has not been verified. Check it with
+  `codesign -d --entitlements -`.
+- Since macOS 13, a job in `/Library/LaunchDaemons` appears under Login Items & Extensions ▸
+  Allow in the Background, and adding one may show a notification. If the user turns it off there,
+  the job does not start.
+- Do not register through SMAppService while the manual install is present. Run
+  `sudo uninstall.sh` first.

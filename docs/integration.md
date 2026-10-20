@@ -1,475 +1,346 @@
-# DynamicNotch への Fan Control 統合手順
+# Integrating FanControl into an app
 
-対象: DynamicNotch の実 Xcode プロジェクト（バンドル ID `com.example.dynamicnotch.DynamicNotch`）。
-FanControl パッケージは `swift-tools-version: 6.0`・Swift 6 言語モード・**デプロイメントターゲット macOS 26**（2026-10-20）。アプリターゲットも macOS 26 以上にする。
-設計: `docs/integration-design.md`（§4 UI/ウィジェット/Live Activity/設定、§6 段階案 = 案C）。
-ヘルパーの詳細: `docs/helper.md`。
-対応プラットフォーム: **Apple Silicon のみ（Intel は 2026-10-20 に廃止）**。書込は `F<n>Md` + `F<n>Tg` だけで、Intel の `FS! ` 経路は削除済み。
-arm64 でない Mac ではアプリが `FanControlError.unsupportedPlatform` で SMC を開かず、ヘルパーは起動時に終了する（kit.md / helper.md）。
+This guide covers adding the package and the privileged helper to a macOS app's Xcode project,
+and checking the result on hardware. Related documents:
 
-## 0. 構成物
+- [helper.md](helper.md): the helper itself (signing, registration, XPC, sessions, safety checks,
+  sleep/wake, manual install)
+- [kit.md](kit.md): the app-side `FanControlKit` (threading, polling, control loop, profiles and
+  curves, thresholds, persistence)
+- [verification/SUMMARY.md](verification/SUMMARY.md): what has been verified on hardware
 
-| パス | 内容 |
+Requirements: Apple Silicon only, Swift tools 6.0, Swift 6 language mode, and a deployment
+target of **macOS 26** for the package and your app target. On a Mac that is not arm64, the kit
+refuses to open the SMC (`FanControlError.unsupportedPlatform`) and the helper exits at launch.
+
+<!-- TODO: verify after refactor — identifiers are being moved from source constants to Info.plist keys; the "Team ID" and identifier steps in §2–§4 will change. -->
+Identifiers (current placeholder values; they must match your app):
+
+| Role | Current value | Where |
+|---|---|---|
+| App bundle id | `com.example.dynamicnotch.DynamicNotch` | `FanControlHelperConstants.appBundleIdentifier`, launchd plist `AssociatedBundleIdentifiers` |
+| Helper label / Mach service / helper signing identifier | `com.example.dynamicnotch.DynamicNotch.fanfi` | `FanControlHelperConstants`, launchd plist, `Helper-Info.plist` `CFBundleIdentifier` |
+| Team ID | `TEAMID0000` (placeholder) | `Support/Helper-Info.plist` `FanControlClientTeamID`, `FanControlHelperConstants.teamIdentifierPlaceholder` |
+
+## 0. Parts
+
+| Path | Contents |
 |---|---|
-| `FanControl/Package.swift` | SwiftPM パッケージ（ライブラリ `FanControlCore` / `FanControlSMC` / `FanControlXPC` / `FanControlKit`、および Linux/CI 確認専用の実行ファイル `FanControlHelper`。後者は同梱しない。§2 参照） |
-| `FanControl/Support/Helper-Info.plist` | ヘルパーに埋め込む Info.plist（`FanControlClientTeamID` を含む） |
-| `FanControl/Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist` | launchd plist（唯一の正本。パッケージ内の他の場所にコピーは無い） |
-| `FanControl/DynamicNotchIntegration/*.swift` | DynamicNotch ターゲットにコピーするドロップイン UI ファイル（下表） |
-| `FanControl/DynamicNotchIntegration/PATCHES.md` | 既存ソースへの手作業パッチ (a)〜(g) |
-| `FanControl/DynamicNotchIntegration/Localizable/en.strings` | 追加文字列（UTF-8 ソース。英語のみ。`ja.strings` は 2026-10-20 に削除、アプリは英語のみ） |
+| `Package.swift` | The libraries `FanControlCore`, `FanControlSMC`, `FanControlXPC` and `FanControlKit`. The executables `FanControlHelper` (Linux/CI build checks only; **do not ship it**, see §2) and `fanfi-probe` (read-only diagnostics). |
+| `Support/Helper-Info.plist` | Info.plist embedded in the helper (includes `FanControlClientTeamID`) |
+| `Support/LaunchDaemons/<label>.plist` | The launchd plist for SMAppService (the only copy) |
+| `Support/manual-install/` | Scripts for the manual-install mode ([README](../Support/manual-install/README.md)) |
+| `Tools/HelperSmokeApp/` | A minimal XcodeGen host app that implements §1–§4 and served as the hardware test bench |
 
-ドロップインファイル:
+## 1. Add the package and link it
 
-| ファイル | 内容 |
-|---|---|
-| `FanControlSettingsStorage.swift` | アプリ全体の設定保存層（2026-10-20、sindresorhus/Defaults を置換。保存形式は Defaults 8.2 と同一）: キー名 `SettingKey`、型付きキー `StoredKeys`/`StoredKey<T>`、`SettingsStore`（`SettingsStore[.x]`、`updates(.x)`）、プロパティラッパー `@StoredSetting(.x)` |
-| `FanControlWidgetSettings.swift` | `FanControlWidgetSettings` / `FanControlGeneralSettings`（`SettingsStore` で永続化）、`StoredKeys` のキー、表示用フォーマッタ |
-| `FanControlWidgetSettingsView.swift` | 設定 ▸ ウィジェット ▸ Fan Control（グリッドサイズ、表示ファン、°C/°F、プロファイル一覧・ファンカーブ・目標 RPM 表示。センサー選択は 2026-10-20 に温度ウィジェットへ移ったため削除） |
-| `FanControlSettingsView.swift` | 「Fan Control」設定ペイン（TabView: 一般/プロファイル/センサー＋エラーフッタ）。**全タブ共通の固定サイズ `contentSize` = 740×600 pt**（DynamicNotchApp ではホストが 760×640 の固定フレームで包む）（タブ切替でウィンドウが伸縮しない。伸びうる中身はスクロール） |
-| `FanControlGeneralTabView.swift` | 有効化、更新間隔、自動開始、非表示時停止、スリープ復帰再適用、警告、ヘルパー状態/インストール、自動制御復帰、SMC ダンプ書き出し |
-| `FanControlProfilesTabView.swift` | 固定 7 プロファイル（プリセット 5 = 読取専用でパラメータとカーブを表示、カスタム 1/2 = 編集・名前変更・初期設定に戻す）、ファンカーブ表示、適用。作成・削除は無し（kit.md「Profiles」）。センサー連動のファンは多点カーブ編集（下記） |
-| `FanControlCurveEditorView.swift` | 多点ファンカーブ編集（2026-10-20）: Swift Charts のライブカーブ（PCHIP、制御点、緊急温度の破線、平滑化した制御温度での動作点）、点のドラッグ、10 °C グリッドの点ごとの温度ピッカー＋RPM スライダ／ステッパー、点の追加・削除、「プリセットを使用」（静音／バランス／ブースト／全速）、検証メッセージ（エラーは保存・適用を無効化）。旧「開始温度／最大温度」ステッパーを置換 |
-| `FanControlSensorsTabView.swift` | 主要な温度（CPU / GPU / SSD）＋全センサー表（キー/名前/温度、ソート可） |
-| `FanControlWidgetView.swift` | Nook ウィジェット本体（medium 100pt: ファン・7 プロファイルの一覧 / doubleWide 250pt: 一覧＋ファン・選択中プロファイルの詳細とファンカーブ）。選択行はアクセントのチェック＋太字の白文字＋ガラスのカプセル。温度は 2026-10-20 に温度ウィジェットへ移動。`FanCurveView`・`FanControlKeyTemperaturesView`・`FanControlWidgetPresence` は他でも使う |
-| `FanControlTemperatureWidgetSettings.swift` | 温度ウィジェットの設定 `FanControlTemperatureWidgetSettings`（期間 1/5/15/30 分、既定 5 分、表示系列、最高/最低、警告しきい値線）と `StoredKeys.fanControlTemperatureWidgetSettings` |
-| `FanControlTemperatureWidgetView.swift` | 温度ウィジェット（`NookWidget.temperature`、250 pt）: CPU / GPU / SSD の現在値、期間内の最高・最低、`temperatureHistory` の折れ線（Swift Charts、間隔 25 s 超で途切れる）、高温警告しきい値の赤破線。色規則は Fan Control ウィジェットと同じ |
-| `FanControlTemperatureWidgetSettingsView.swift` | 設定 ▸ ウィジェット ▸ 温度（期間、表示系列、°C/°F（Fan Control と共有）、最高/最低・しきい値線） |
-| `FanControlLiveActivity.swift` | `FanControlAlertView`（Live Activity 表示）と `FanControlAlertCoordinator`（警告状態・一時展開通知・一般設定 `pollingInterval` / `reapplyProfileAfterWake`、および「いずれかの警告が ON」を `keepAlertsWhilePaused` として `FanControlManager` へ同期） |
+1. In Xcode, choose **File ▸ Add Package Dependencies… ▸ Add Local…** and select the folder
+   that contains `Package.swift`. The paths below assume `$(SRCROOT)/FanControl`.
+2. In the app target's **Frameworks, Libraries, and Embedded Content**, add `FanControlCore` and
+   `FanControlKit`. `FanControlSMC` and `FanControlXPC` come along transitively.
+3. The kit has no third-party dependencies. It does not depend on your settings store: the app
+   copies its settings into the manager (kit.md, "Settings owned by the app").
 
-## 1. パッケージの追加とリンク
+With XcodeGen, give the local package reference a `group:`. Without one, it can clash with a
+source group that points to the same folder.
 
-1. Xcode で DynamicNotch プロジェクトを開き、**File ▸ Add Package Dependencies… ▸ Add Local…** で `FanControl/` フォルダ（`Package.swift` がある階層）を選ぶ。
-   リポジトリ内に置く場合は `$(SRCROOT)/FanControl` を推奨（以降のパスはこの前提）。
-2. DynamicNotch アプリターゲットの **General ▸ Frameworks, Libraries, and Embedded Content** に
-   `FanControlCore` と `FanControlKit` を追加する（`FanControlSMC` / `FanControlXPC` は Kit 経由で推移的にリンクされる）。
-3. 設定保存はドロップイン `FanControlSettingsStorage.swift`（`SettingsStore`）で、追加の依存は不要（2026-10-20 に sindresorhus/Defaults を撤去）（設定ウィンドウは SwiftUI 標準の
-   `Settings` シーン。DynamicNotchApp は 2026-10-20 に sindresorhus/Settings を撤去した。§5）。
+## 2. Helper target
 
-## 2. ヘルパーターゲット
+Build the helper **only as an Xcode Command Line Tool target**. If you ship the SwiftPM executable
+product instead, SwiftPM does not embed `Helper-Info.plist`, the helper falls back to the Team ID
+placeholder, and it rejects every client (helper.md §1).
 
-ヘルパーは **Xcode の Command Line Tool ターゲットとしてのみ** 作る（詳細と理由は `docs/helper.md` §1）。
-SwiftPM の executable product `FanControlHelper` を同梱してはいけない。SwiftPM のビルドは `Helper-Info.plist` を
-Mach-O に埋め込まないため、ヘルパーが Team ID をプレースホルダ `TEAMID0000` にフォールバックし、すべてのクライアントを拒否する。
-
-
-1. **File ▸ New ▸ Target ▸ macOS ▸ Command Line Tool**、名前 `FanControlHelper`、言語 Swift。
-2. 自動生成された `main.swift` を削除し、`FanControl/Sources/FanControlHelper/*.swift` を追加（ファイル参照のみ、コピー不要）。
-3. ターゲットの Frameworks に `FanControlCore` / `FanControlSMC` / `FanControlXPC` を追加。
-4. Build Settings（Info.plist の埋め込みは **手動 `-sectcreate` 方式に統一** する。以下は `Tools/HelperSmokeApp` で Xcode 26.6 により実ビルド確認済みの値）:
+1. Choose **File ▸ New ▸ Target ▸ macOS ▸ Command Line Tool**, named `FanControlHelper`, in Swift.
+2. Delete the generated `main.swift` and add `FanControl/Sources/FanControlHelper/*.swift` as file
+   references; do not copy them.
+3. Add `FanControlCore`, `FanControlSMC` and `FanControlXPC` to the target's frameworks. They are
+   linked statically; `otool -L` shows no package dylibs.
+4. Build settings (verified with Xcode 26.6 in `Tools/HelperSmokeApp`):
    - `PRODUCT_NAME = FanControlHelper`
-   - `PRODUCT_BUNDLE_IDENTIFIER = com.example.dynamicnotch.DynamicNotch.fanfi`（署名 identifier になる。アプリはヘルパーに
-     `identifier "com.example.dynamicnotch.DynamicNotch.fanfi"` を要求する: `FanControlHelperConstants.helperCodeSigningRequirement`）
-   - `OTHER_LDFLAGS = $(inherited) -sectcreate __TEXT __info_plist "$(SRCROOT)/FanControl/Support/Helper-Info.plist"`
-     （パスに空白が入りうるので引用符で囲む）
-   - `GENERATE_INFOPLIST_FILE = NO`、`CREATE_INFOPLIST_SECTION_IN_BINARY = NO`、`INFOPLIST_FILE` は空。
-     Xcode 26.6 での実測（2026-10-20）: `GENERATE_INFOPLIST_FILE = YES` だけなら生成 Info.plist はバイナリに入らず無害。
-     `CREATE_INFOPLIST_SECTION_IN_BINARY = YES` + `INFOPLIST_FILE` を併用すると Xcode が 2 つ目の `-sectcreate __TEXT __info_plist`
-     （`Processed-Info.plist`）を渡す。リンクエラーにはならずセクションは 1 個だったが、どちらが採用されるかは保証が無いので二重指定はしない。
-   - `ENABLE_HARDENED_RUNTIME = YES`
-   - `SKIP_INSTALL = YES`
-   - `MACOSX_DEPLOYMENT_TARGET = 14.6`（アプリと揃える）
-   - 署名はアプリと同じ（`CODE_SIGN_STYLE`、`DEVELOPMENT_TEAM`、`CODE_SIGN_IDENTITY`）。
+   - `PRODUCT_BUNDLE_IDENTIFIER = <helper label>`. This becomes the signing identifier, which the
+     app requires (`FanControlHelperConstants.helperCodeSigningRequirement`).
+   - `OTHER_LDFLAGS = $(inherited) -sectcreate __TEXT __info_plist "$(SRCROOT)/FanControl/Support/Helper-Info.plist"`.
+     Keep the quotes, because the path may contain spaces.
+   - `GENERATE_INFOPLIST_FILE = NO`, `CREATE_INFOPLIST_SECTION_IN_BINARY = NO`, and an empty
+     `INFOPLIST_FILE`. With `GENERATE_INFOPLIST_FILE = YES` alone, the generated plist does not
+     reach the binary, so that setting is harmless. With
+     `CREATE_INFOPLIST_SECTION_IN_BINARY = YES` plus an `INFOPLIST_FILE`, Xcode passes a second
+     `-sectcreate`. That did not fail the link, but nothing guarantees which copy wins, so
+     avoid it.
+   - `ENABLE_HARDENED_RUNTIME = YES`, `SKIP_INSTALL = YES`
+   - `MACOSX_DEPLOYMENT_TARGET` the same as the app's (26.0)
+   - Sign the helper the same way as the app (`CODE_SIGN_STYLE`, `DEVELOPMENT_TEAM`,
+     `CODE_SIGN_IDENTITY`).
 
-   ヘルパーのソース 6 ファイルは Xcode ターゲットで直接コンパイルされ、Core / SMC / XPC は静的リンクされる（`otool -L` にパッケージ由来の
-   dylib は出ない）。パッケージの executable product `FanControlHelper` はアプリが参照しない限りビルドされない（名前が同じでも衝突しない）。
+The project then needs exactly two targets: your app, and `FanControlHelper`. The package's own
+`FanControlHelper` product is never built unless something references it, and the shared name
+does not cause a clash.
 
-結果として Xcode プロジェクトに必要なターゲットは、既存の DynamicNotch アプリターゲットと新規の `FanControlHelper`
-（Command Line Tool）の 2 つだけ。Core / SMC / XPC / Kit はローカル SwiftPM パッケージのライブラリ product としてリンクする。
+## 3. Embed the helper in the app
 
-## 3. アプリへの埋め込み
+In the app target:
 
-DynamicNotch アプリターゲットで:
-
-1. **Build Phases ▸ Target Dependencies** に `FanControlHelper` を追加。
-2. **Copy Files** フェーズを 2 つ追加:
-   - Destination **Executables**（= `Contents/MacOS`）: `FanControlHelper`（Code Sign On Copy にチェック。コピー時に
-     `--preserve-metadata=identifier,entitlements,flags` で再署名され、identifier と runtime フラグは保たれる）
-   - Destination **Wrapper**, Subpath `Contents/Library/LaunchDaemons`: `FanControl/Support/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist`
-3. ビルド後の配置を確認:
+1. **Build Phases ▸ Target Dependencies**: add `FanControlHelper`.
+2. Add two **Copy Files** phases:
+   - Destination **Executables** (= `Contents/MacOS`): `FanControlHelper`, with Code Sign On Copy
+     checked. The copy is re-signed with `--preserve-metadata=identifier,entitlements,flags`,
+     which keeps the identifier and the runtime flag.
+   - Destination **Wrapper**, subpath `Contents/Library/LaunchDaemons`:
+     `FanControl/Support/LaunchDaemons/<label>.plist`.
+3. Check the built bundle:
    ```
-   DynamicNotch.app/Contents/MacOS/FanControlHelper
-   DynamicNotch.app/Contents/Library/LaunchDaemons/com.example.dynamicnotch.DynamicNotch.fanfi.plist
+   YourApp.app/Contents/MacOS/FanControlHelper
+   YourApp.app/Contents/Library/LaunchDaemons/<label>.plist
    ```
-   plist のファイル名は `FanControlHelperConstants.plistName` と一致していなければならない（違うと `SMAppService` の状態が `.notFound`）。
-   launchd plist の `BundleProgram` は `Contents/MacOS/FanControlHelper`（バンドルルートからの相対パス）。
+   The plist file name must equal `FanControlHelperConstants.plistName`; otherwise `SMAppService`
+   reports `.notFound`. Its `BundleProgram` is `Contents/MacOS/FanControlHelper`, relative to the
+   bundle root.
 
-## 4. 署名と Team ID
+## 4. Signing
 
-1. `FanControl/Support/Helper-Info.plist` の `FanControlClientTeamID` を DynamicNotch の実 Team ID に置き換える。
-2. `FanControl/Sources/FanControlXPC/FanControlHelperConstants.swift` の `FanControlHelperConstants.teamIdentifierPlaceholder`（`TEAMID0000`）も同じ値にする
-   （Info.plist が読めなかった場合のフォールバック。プレースホルダのままだとすべてのクライアントを拒否する）。
-   Team ID の置換箇所はこの 2 か所（`Support/Helper-Info.plist` と `teamIdentifierPlaceholder`）。後者を置き換えない場合のみ
-   3 か所目として実行時の `FanControlManager.shared.clientTeamID` が必要（下記）。
-   加えてアプリ側がヘルパーの署名を検証する（`HelperClient` が接続ごとに `setCodeSigningRequirement` で
-   `FanControlHelperConstants.helperCodeSigningRequirement(teamID:)` を課す）。この Team ID は
-   `FanControlManager.shared.clientTeamID`（既定値は `teamIdentifierPlaceholder`）。上記 2 の定数を置き換えれば追加作業は不要。
-   定数を置き換えない場合は、起動時（最初のヘルパー呼び出し前、PATCHES.md (e)）に
-   `FanControlManager.shared.clientTeamID = "<TeamID>"` を設定する。いずれかを怠るとヘルパーへの接続がすべて失敗する。
-3. アプリとヘルパーを **同じ Team ID** で署名し、両方 **Hardened Runtime** を有効にする。配布時はアプリ全体を公証する。
-4. 確認:
+### SMAppService mode (default, Team ID)
+
+1. Put your Team ID in `Support/Helper-Info.plist` (`FanControlClientTeamID`). The helper reads
+   this value to check the app.
+2. Put the same value in `FanControlHelperConstants.teamIdentifierPlaceholder`. It is the
+   helper's fallback, and the default of `FanControlManager.clientTeamID`, which is what the app
+   requires of the helper. If you do not change the constant, set
+   `FanControlManager.shared.clientTeamID = "<TeamID>"` at launch, before the first helper call.
+   If you skip both, every helper connection fails. <!-- TODO: verify after refactor -->
+3. Sign the app and the helper with the **same Team ID**, with **Hardened Runtime** on both, and
+   notarize the app when you distribute it.
+4. Verify:
    ```sh
-   codesign -dvvv --entitlements - DynamicNotch.app/Contents/MacOS/FanControlHelper   # Identifier, TeamIdentifier, flags に runtime(0x10000)
-   launchctl plist __TEXT,__info_plist DynamicNotch.app/Contents/MacOS/FanControlHelper   # 埋め込み Info.plist（FanControlClientTeamID）
-   codesign -d -r- DynamicNotch.app
-   codesign --verify --deep --strict -v DynamicNotch.app
+   codesign -dvvv --entitlements - YourApp.app/Contents/MacOS/FanControlHelper   # Identifier, TeamIdentifier, flags include runtime (0x10000)
+   launchctl plist __TEXT,__info_plist YourApp.app/Contents/MacOS/FanControlHelper   # embedded Info.plist
+   codesign -d -r- YourApp.app
+   codesign --verify --deep --strict -v YourApp.app
    ```
-   `otool -s __TEXT __info_plist` は 16 進ダンプしか出さず、arm64 では `otool -X … | xxd -r -p` でも 32 ビットワードのバイト順が崩れて
-   plist に戻らない。`launchctl plist` か `segedit <bin> -extract __TEXT __info_plist out.plist` を使う。
-   - **アドホック署名（`CODE_SIGN_IDENTITY = -`）での注意**: Xcode 26.6 は `ENABLE_HARDENED_RUNTIME = YES` でもアドホック署名時に
-     `-o runtime` を付けない（`flags=0x2(adhoc)` になる）。アドホックで確認するときは `OTHER_CODE_SIGN_FLAGS = $(inherited) --options=runtime`
-     を足す（`Tools/HelperSmokeApp/project.yml`）。実 ID での署名では不要（付けても無害）。
-   - **実署名後に確認**: Xcode は Command Line Tool ターゲットに `com.apple.application-identifier` entitlement を自動で注入する
-     （アドホックでは値 = bundle ID。`CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO` でも消えない）。Developer ID 署名でプロビジョニングプロファイル無しに
-     これが残ると launchd 起動時に拒否される恐れがあるので、Team ID 付きビルドで `codesign -d --entitlements -` を確認する（未確認）。
+   `otool -s __TEXT __info_plist` prints only hex, and on arm64 even
+   `otool -X … | xxd -r -p` scrambles the word byte order. Use `launchctl plist` or
+   `segedit <bin> -extract __TEXT __info_plist out.plist` instead.
+   - **Ad-hoc signing:** Xcode 26.6 ignores `ENABLE_HARDENED_RUNTIME` when signing ad hoc (the
+     result is `flags=0x2(adhoc)`). Add `OTHER_CODE_SIGN_FLAGS = $(inherited) --options=runtime`.
+   - **After real signing, check the helper's entitlements.** Xcode injects
+     `com.apple.application-identifier` into Command Line Tool targets, and
+     `CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO` does not remove it. Whether launchd accepts this
+     under Developer ID signing without a profile has **not been verified**.
 
-**最小アプリでの検証（2026-10-20）**: §1〜§4 のレシピを XcodeGen の最小アプリ `Tools/HelperSmokeApp`（`README.md`）で再現し、
-Xcode 26.6 の `xcodebuild` でビルド・配置・埋め込み Info.plist・アドホック署名・識別子の一致を確認した（ビルドのみ。登録・起動・書込はしていない）。
-証跡と見つかった不一致（launchd plist のファイル名がコードと不一致だったのを修正、ほか）は
-[`verification/helper-bundle-smoke-2026-10-20.md`](verification/helper-bundle-smoke-2026-10-20.md)。
+### Manual-install mode (developers / personal use, no Team ID)
 
-**代替: 手動インストール（個人利用モード、Team ID なし）**: Apple Developer Program が無く Team ID 署名ができない場合は、上記 1〜3 の代わりに
-アプリとヘルパーを **アドホック署名**（`CODE_SIGN_IDENTITY = -`、Hardened Runtime を付けるなら `OTHER_CODE_SIGN_FLAGS = $(inherited) --options=runtime`）でビルドし、
-ヘルパーを `sudo FanControl/Support/manual-install/install.sh <DynamicNotch.app>` で `/Library/PrivilegedHelperTools/` と `/Library/LaunchDaemons/` に手動で入れる
-（helper.md §6）。§1〜§3 のターゲット・Copy Files 構成はそのままでよい（`install.sh` はバンドル内の `Contents/MacOS/FanControlHelper` をコピーする。
-バンドル内の SMAppService 用 plist は使われない）。Team ID の置換（上記 1・2）は不要:
-ヘルパーは LaunchDaemon plist の `FANCONTROL_CLIENT_REQUIREMENT`（アプリの cdhash を固定）でクライアントを検証し、アプリは自分に Team ID が無いこと・
-手動インストールのファイルがあることを検出して、インストール済みヘルパーの cdhash を要件に使う（kit.md「Helper requirement and install status」）。
-- アプリを再ビルドするたびに cdhash が変わるので `sudo install.sh` を再実行する（しないとヘルパーが接続を拒否する）。
-- **Debug ビルドは `ENABLE_DEBUG_DYLIB = NO`**（または Release）にする。既定の Debug はアプリをスタブ + `DynamicNotch.debug.dylib` に分け、
-  アドホック + Hardened Runtime ではライブラリ検証が dylib を拒否して起動しない（2026-10-20 にスモークアプリで確認）。
-- 個人利用専用。配布には Team ID 方式を使う。手動インストールと SMAppService 登録を同時に入れない（Label / Mach サービス名が同じ）。
+Keep the targets and Copy Files phases from §1–§3 as they are. Build the app and the helper
+**ad-hoc** (`CODE_SIGN_IDENTITY = -`, plus `--options=runtime` as above) and run
+`sudo Support/manual-install/install.sh <YourApp.app>` (helper.md §6). You do not need to replace
+the Team ID. The plist inside the bundle is not used.
 
-**App Sandbox:** DynamicNotch は **サンドボックス化してはいけない**（推奨）。どうしてもサンドボックスを有効にする場合は、
-アプリの entitlements に次の 2 つの一時例外が必須（無いとアプリ内での SMC 読み取りとヘルパーへの XPC 接続がどちらも失敗する）:
+- Re-run `install.sh` after every rebuild, because the cdhash changes.
+- For Debug builds, set **`ENABLE_DEBUG_DYLIB = NO`**, or build Release. Otherwise library
+  validation refuses the debug dylib and the app does not launch.
+- For the build you pin, avoid `get-task-allow` (use Release or
+  `CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO`). See the threat model in helper.md §6.
+- This mode is for personal use only, and must never be installed alongside an SMAppService
+  registration.
 
-| キー | 値 |
+### App Sandbox
+
+Do **not** sandbox the app; this is the recommended setup. If you must, add these two temporary
+exceptions; without them, both the in-app SMC reads and the XPC connection fail:
+
+| Key | Value (array) |
 |---|---|
-| `com.apple.security.temporary-exception.iokit-user-client-class` | `AppleSMCClient`（配列で指定） |
-| `com.apple.security.temporary-exception.mach-lookup.global-name` | `com.example.dynamicnotch.DynamicNotch.fanfi`（配列で指定） |
+| `com.apple.security.temporary-exception.iokit-user-client-class` | `AppleSMCClient` |
+| `com.apple.security.temporary-exception.mach-lookup.global-name` | `<helper label>` |
 
-一時例外は Mac App Store 審査で拒否されうるため、Developer ID 配布（非サンドボックス）を前提とする。
-ヘルパー（`FanControlHelper`）自体は root の launchd デーモンであり、**サンドボックス化しない**（App Sandbox entitlement を付けない）。
+Mac App Store review may reject temporary exceptions, so plan on Developer ID distribution. The
+helper itself is never sandboxed.
 
-安全検査はヘルパーが最終責任を持つ（helper.md §4）: 書込許可リスト（`F<n>Tg` / `F<n>Md` のみ。`F<n>Mn` は 2026-10-20 のレビューで、`FS! ` は同日の Intel 廃止で除外）、
-ペイロード 1〜32 バイトかつ SMC の `dataSize` と一致、`F<n>Tg` はセッション開始時に読んだハードウェア
-`F<n>Mn`〜`F<n>Mx`（±1 RPM 許容）、`F<n>Md` は 0/1、それ以外のキーは拒否。アプリ側のポーリング書込は
-目標値の変化が 25 RPM（`FanControlManager.writeThresholdRPM`）以下なら書かない（kit.md）。
+## 5. UI and app wiring
 
-## 5. UI ファイルとパッチ
+<!-- TODO: verify after refactor — the SwiftUI layer is planned as a separate `FanControlUI` product; until then the host supplies its own UI. -->
+A SwiftUI module, `FanControlUI`, with settings tabs, the curve editor and temperature charts is
+planned. Until it exists, your app provides the UI. What the app has to wire up:
 
-1. `FanControl/DynamicNotchIntegration/*.swift`（13 ファイル。`FanControlSettingsStorage.swift` はアプリ全体の設定保存層）を DynamicNotch アプリターゲットに追加する。
-   各ファイルは `#if os(macOS)` で囲まれ、`SwiftUI` / `FanControlCore` / `FanControlKit` を import する（2026-10-20 まで `Defaults` も）
-   （sindresorhus/Settings には依存しない。設定画面は標準の `Form` + `.formStyle(.grouped)`）。
-   ホストの設定ウィンドウは SwiftUI 標準の `Settings` シーン + `TabView` を前提とし、Fan Control はそのタブの 1 つとして追加する（PATCHES.md (d)）。
-   **履歴（2026-10-20 まで）:** sindresorhus/Settings を使っていた頃は、`import Settings` と `import SwiftUI` を同じファイルで使うと
-   `Settings` が SwiftUI の `Settings` シーン（`struct Settings<Content>: Scene`）と衝突した（Settings 3.1.2 での型検査で、
-   型の位置の `extension Settings.PaneIdentifier` は「'Settings' is ambiguous」、`Settings.Pane(…)` は SwiftUI 側に誤解決）。
-   そのためドロップイン 2 ファイルと PATCHES.md (d) に `import enum Settings.Settings`（Swift 6 モードでは `@preconcurrency import Settings` も）を
-   併記していた。標準の `Settings` シーンへの移行でパッケージごと撤去したので、この回避策は不要になった。
-2. `PATCHES.md` の (a)〜(g) を既存ソースに適用する:
-   (a) `NookWidget.fanControl`（tag 8）と `NookWidget.temperature`（tag 11、2026-10-20）、(b) Nook グリッドの View 振り分け、(c) `WidgetsSettingsTabView`、
-   (d) 設定ウィンドウの Fan Control タブ、(e) `applicationDidFinishLaunching`、(f) `LiveActivity.fanAlert` と `LiveActivityView`、
-   (g) 終了処理（パッチ不要。`FanControlManager` が `NSApplication.willTerminateNotification` で自動制御に戻す）。
-3. 文字列: `Localizable/en.strings` の項目を、プロジェクトの `en.lproj/Localizable.strings`（ソース側）にマージする
-   （キーは英語文字列そのもの）。アプリは英語のみ（ユーザー決定 2026-10-20）なので ja は作らない。DynamicNotchApp 
-   `DynamicNotchApp/` では `Support/merge-strings.py` が `Localization/en.lproj` だけを生成する。
-4. ビルドして警告/エラーを解消する。`DynamicNotchApp/` への適用（2026-10-20）で必要だった差分は 2 点:
-   `FanControlWidgetSettings` に `init()`（`Preferences` が `init()` を要求し、全引数既定値の init では満たせない。PATCHES.md (a)）、
-   XcodeGen ではローカルパッケージ参照に `group:` を付けないと `../FanControl` のソースグループと衝突してドロップインがターゲットから落ちる
-   （`DynamicNotchApp/project.yml`）。
-   ドロップインと PATCHES.md の断片は `Tools/IntegrationTypeCheck`（実 SDK、2026-10-20 まで Defaults 8.2.0 も、DynamicNotch 側はスタブ。
-   2026-10-20 まで Settings 3.1.2 にも依存）で警告・エラー 0 を確認済み（§7）。実プロジェクトで出る差分はスタブと実ソースの違いに起因する。
+1. At launch: copy your settings into the manager (`pollingInterval`, `slowPollingOnBattery`,
+   `reapplyProfileAfterWake`, `keepAlertsWhilePaused`, thresholds through
+   `applySafetyThresholds(_:)`), then call `startMonitoring()` if the feature is enabled. Do it
+   again whenever a setting changes. Profiles are persisted by the kit itself (kit.md,
+   "Persistence").
+2. Visibility: when your UI is hidden, call `setMonitoringPaused(true)`. Views that must show live
+   data regardless use `setLiveDataHold(_:for:)`.
+3. Alerts: observe `.fanControlHighTemperatureChanged`, `.fanControlFanAnomalyChanged`,
+   `.fanControlDidUpdate` and `.fanControlConflictingControllersChanged`.
+4. Termination: nothing to do. The manager returns the fans to automatic on
+   `NSApplication.willTerminateNotification`. Do not add your own wake re-apply either; the
+   manager already does it (kit.md, "Sleep/wake").
+5. Apply profiles with `profile.resolved(for: manager.fans)`, so that presets defined through
+   `defaultMode` open the session (kit.md, "Profiles").
+6. Handle `HelperInstallStatus` (`.requiresApproval`: show
+   `FanControlManager.helperApprovalInstructions`; `.installedManually` /
+   `.installedManuallyMismatch`) and `HelperConnectionState.rejected(reason:)`. The fix for the
+   latter is "re-run `sudo install.sh <this app>`, then Check Again".
 
-## 6. Mac での検証チェックリスト（Phase 1 → 5）
+## 6. Hardware verification checklist (Phase 1 → 5)
 
-Apple Silicon の実機（できれば複数機種、ファンレスの MacBook Air も）で順に確認する。Intel は 2026-10-20 に対応を廃止したので対象外。
+Run these in order on Apple Silicon hardware, ideally several models including a fanless
+MacBook Air. Items marked [x] were verified on Mac14,9 with macOS 26.5. The evidence is
+summarised in [verification/SUMMARY.md](verification/SUMMARY.md); the detailed logs are in
+Japanese.
 
-### Phase 1: 読み取り（ヘルパー不要）
-
-**パッケージ単体（`fanfi-probe`、UI なし）**: 2026-10-19、MacBook Pro 14" Mac14,9（Apple M2 Pro）/ macOS 26.5.2（25F84）/
-Swift 6.3.3（Command Line Tools のみ）で確認。SMC への書込は一切していない（probe は読み取り専用）。
-出力: [`verification/Mac14,9-macOS26-probe.txt`](verification/Mac14,9-macOS26-probe.txt)、
-[`verification/Mac14,9-macOS26-dump.txt`](verification/Mac14,9-macOS26-dump.txt)（`BMSN` のバッテリーシリアルのみ伏せ字）。
+### Phase 1: reading (no helper)
 
 ```sh
-swift run fanfi-probe            # 機種・キー数・ファン・温度
-swift run fanfi-probe --dump     # 全キーの型/サイズ/属性/生バイト
-swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
+swift run fanfi-probe            # model, key count, fans, temperatures, aggregates
+swift run fanfi-probe --dump     # every key: type, size, attributes, raw bytes
+swift run fanfi-probe --watch 2  # refresh fans and temperatures every 2 s
 ```
 
-- [x] 非特権プロセスから `AppleSMC` を開ける（`IOServiceMatching("AppleSMC")` → `IOServiceOpen` 成功）。`#KEY` = 2299、全キー列挙可。
-- [x] `FanDiscovery.discoverFans`: `FNum` = 2、2 基とも `F<n>Mn` 2317 / `F<n>Mx` 6800 RPM（`flt `）。
-      アイドル時 `F<n>Ac` = `F<n>Tg` = 0（ファン停止）、`F<n>Md` = 0 → `.automatic`。`F<n>ID` は存在せず名前は「Fan 1」「Fan 2」にフォールバック。`FS! ` も存在しない。
-- [x] `SensorCatalog.discoverTemperatureSensors`: `T*` キー 259 個（`flt ` 250、`ioft` 9）がすべて −20〜130 °C に入り検出された。
-      `ioft` はリトルエンディアンだった（修正前はビッグエンディアン扱いで 9 個とも範囲外として落ちていた）。`readTemperatures` の再読取も 259/259。
-- [x] 型/コーデック: ファン・温度の経路は `flt `（LE Float32）と `ui8 ` のみで正しく復号。未対応だった `si64` を追加。`{jst`（4 キー、21 バイト構造体）は `.bytes` のまま。
-- [ ] センサー名: 多くのキーが `SensorCatalog` の名前に当てはまらない、または値が温度として不自然（下記「Mac14,9 の所見」）。
-      対応済み（パッケージ側）: Apple Silicon 向けに `TB1T`/`TB2T`（「Battery 1/2」）、`TaLP`/`TaRF`（「Airflow Left/Right」）、`TH0x`（「NAND (SSD)」）、`Ts1P`（「Palm Rest 2」）を追加。
-      `Ts` 接頭辞（「Skin/Palm Rest」）は `Ts0C` などが 45〜55 °C で掌置き温度に見えないため廃止し、`Ts0P`/`Ts1P` だけ完全一致で命名。
-      根拠のないキー（`TCMb`/`TCMz`/`TCDX`、`TVM*`、`TPD*`/`TRD*`、`Th0*`、`TD*`、`Tf*`、`TG*` ほか）は「Sensor XXXX」のまま。259 キーで名前が一意なことをテストで確認。
-      各名前の出典（コミュニティ／Mac14,9 で値が整合）は `SensorCatalog.swift` のコメント。DynamicNotch 上での見え方は組込後に確認。
-- [x] `Tp*` のちらつき対策: `TemperatureSampleFilter`（`FanControlCore`）を `FanControlManager` のポーリング経路に入れた。
-      `Tp/Te/Tg/TC` の 10 °C 未満の値は直前の採用値（連続 5 回まで）→ 同接頭辞グループのその回の最大値 → 生値の順に置き換える（kit.md「Temperature sample filter」）。
-      Mac14,9 のパターン（`0.00 / 6.70 / 8.43` など）はテストで再現済み。UI 上の表示とセンサー連動モードでの効き方は組込後に確認。
-- [x] 集約センサー（`SensorAggregator`、kit.md「Aggregate sensors」）: フィルタ後の値から `agg:cpu`「CPU (max)」（`Tp/Te/TC`）、
-      `agg:cpu.p`「CPU Performance Cores (max)」、`agg:cpu.e`「CPU Efficiency Cores (max)」、`agg:gpu`「GPU (max)」（`Tg`）を
-      `sensorReadings` の末尾に追加。`fanfi-probe` の各読取の後に「Aggregates」として表示される（2026-10-20、Mac14,9 で 4 つとも出ることを確認）。
-      `.sensor(sensorKey: "agg:cpu", …)` が `plan` でそのまま解決されることはテストで確認。UI 上の表示は組込後に確認。
-- [x] 緊急判定の接頭辞: `TG` を除外した `Tp/Te/TC/Tg`（`SafetyPolicy.defaultEmergencySensorPrefixes` = `SafetyPolicy.default`。Intel 廃止で機種別の分岐は削除）。
-- [x] 以下の UI 項目は 2026-10-20 にDynamicNotch（`DynamicNotchApp/`）へ組み込んで一部実施（下記「DynamicNotch UI」）。
+- [x] An unprivileged process can open `AppleSMC`; `#KEY` = 2299, and all keys can be enumerated.
+- [x] Fan discovery: `FNum` = 2, both fans `Mn` 2317 / `Mx` 6800 RPM (`flt `). At idle,
+      `Ac` = `Tg` = 0 (stopped) and `Md` = 0, which is automatic. There is no `F<n>ID` (names fall
+      back to "Fan 1/2") and no `FS! `.
+- [x] Temperatures: 259 `T*` keys (250 `flt `, 9 `ioft`), all inside −20…130 °C. `ioft` is
+      **little-endian**; before that was fixed, all 9 were dropped as out of range.
+- [x] Codec: the fan and temperature paths use only `flt ` (LE Float32) and `ui8 `. `si64` was
+      added.
+- [x] The `Tp*` flicker filter (`TemperatureSampleFilter`), the aggregates (`agg:cpu` = max of
+      `Tp*`, matching `TCMz`), and the emergency prefixes `Tp/Te/TC/Tg` (`TG*` excluded).
+- [x] Ranking exclusions: `Tf*` and the constant keys no longer win the automatic "hottest"
+      selection (unit-tested; re-check in your UI).
+- [ ] Sensor names on other models; many keys stay "Sensor XXXX".
+- [ ] Fanless Macs, and environments where the SMC is unavailable.
 
-**Mac14,9 の所見（ダンプから読み取れる範囲）**
+**Mac14,9 findings from the dump:**
 
-- 属性ビット: 読取に成功した 2170 キーはすべて `0x80` を持ち、`0x80` の無い 54 キーはすべて読取失敗 → `0x80` は読取ビット。
-  書込候補の `F<n>Tg` = `0xd4`、`F<n>Md` = `0xd0` は `0x40` を持ち、`F<n>Mn` = `0x84`、`F<n>Mx` = `0x85`、`FNum` = `0x80` は持たない。
-  `SMCKeyInfo.isWritable` を `0x40` に変更（書込は未試行なので推定）。
-- `Ftst` は存在しない（`keyInfo` が `0x84` keyNotFound）。`F<n>Md`（`ui8 ` 1 バイト）、`F<n>Tg`（`flt ` 4 バイト）、`F<n>Ac`（`flt `、attr `0x84`）は存在。
-  他に `F<n>Dc`（`flt `, `0x95`）、`F<n>Fb`（`ui8 `）、`F<n>Fc`（`ui16`）、`F<n>St`（`ui8 `, 値 3）、`F<n>Sf`（`ui16`, 値 0）、`FOff`（`ui8 `, 値 1）、`FRmp`、`FOFC`、`FBAD` があるが意味は未確認。
-- 整数型のエンディアンはキーごとに異なる: `#KEY`・`FOFC`・`F<n>Fc` はビッグエンディアン、バッテリー系（`B*`）や観測した `ui64`/`si64` はリトルエンディアンに見える。
-  `SMCCodec` の整数はビッグエンディアンのまま（ファン/温度経路は影響なし）。整数キーを新たに使う場合は実機で確認すること。
-- 読取失敗 126 キー: 32 バイト超（`SMCClient` は 32 バイトまで）42 個、`0x80` 無し 54 個（両方に該当 11 個）、残り 41 個は `0x80` ありで SMC がエラーを返す。
-- 温度として不自然な値（`--watch 3` で 4 回読んで確認）:
-  - 負値で一定: `Tf02` −12.23、`Tf12` −12.80、`Tf22` −11.38（ほか `Tf00`/`Tf10` ≈ −0.1〜0.1）。
-  - 一定値: `Tf06` 94.50、`Tf16`/`Tf26` 79.42、`Ta0D`/`Ta0H`/`Ta0L` 9.50、`Tf01`/`Tf11`/`Tf21` 5.7〜12.2。温度ではなく閾値等の可能性があるが未確認。
-  - 常に 0.00: `TH1a`, `TH1b`, `TVMD`, `Ta0C/G/K/V`, `Tz11`〜`Tz18`, `Tz1j`。
-  - 2026-10-20 の再読取（アイドル、`fanfi-probe` 3 回）: `Tf06`/`Tf16`/`Tf26` = 105.31 / 93.08 / 88.81（セッション内では一定だが前日の 94.50 / 79.42 / 79.42 から変化）、
-    `Tf02/12/22`・`Tf00/10/20`・`Tf01/11/21`・`Tf05/15/25` は前日とほぼ同じ一定値、`Tf04`/`Tf08`〜`Tf2E` は 50〜60 °C で変動（温度らしいが意味不明）。
-    `Ta0V` は 0.00（前日の probe 出力では 52.97）、`Ta0W` は 9.50（前日 62.47）。
-  - → これらは「ランキング除外キー」として `SensorCatalog.isExcludedFromRanking(_:)` に登録（`Tf` 接頭辞すべて＋上記の一定値キー。`Ta0W` は妥当な値を読むことがあるので除外しない）。
-    検出・センサー タブでの表示は従来どおりで、「最も高温」の自動選択・`SensorAggregator.overview`・最高温センサーのフォールバック・温度ソートの上位から外す（kit.md）。
-  - `Tp*`（P コア）は 3 つ組ごとに 50〜75 °C の実測値と `0.00 / 6.70 / 8.43`（または `0.00 / 4.63 / 5.32`、`0.00 / 6.03 / 7.43`）の固定パターンを読取ごとに行き来する。
-    アイドル時の `--watch 1`（6 回）では片方のクラスタ（`Tp0*`、`Tp16`〜`Tp18`）がずっと固定パターンのままで、もう片方（`Tp1A` 以降）は実測値だった（クラスタの電源断と推測）。
-    最大値（緊急判定）には影響しないが、センサー連動モードで単一の `Tp*` キーを選ぶと 0 °C 付近を読むことがある → `TemperatureSampleFilter` で対策（上記）。
-  - `TCMz` は同時刻の `Tp*` 実測値の最大値と一致し（例 66.36 = `Tp1C`）、固定パターンの影響を受けなかった。`TCMb` も `Tp*` の値の一つと一致する。
-    センサー連動モードで CPU 温度を使うなら単一の `Tp*` より `TCMz` が適している可能性がある（1 機種・短時間の観察のみ。名前は付けていない）。
-  - `TG*`（`ioft`、33 °C 前後、`TB0T` とほぼ同値）は Intel では GPU 用接頭辞だったが、この機種では GPU の値に見えない（GPU は `Tg*`）→ 既定の `emergencySensorPrefixes` から除外済み（上記）。
-- 名前が付かないが関連が深そうなキー（値の推移からの推測を含むため要確認）: `TCMb`/`TCMz`/`TCDX`（CPU 系 55〜75 °C）、`TPD*`・`TRD*`（44 °C / 48 °C 前後の群）、
-  `Th0*`（48 °C 前後）、`TVM0`/`TVm0`/`TVm1`（60〜67 °C）、`TD*`（29〜34 °C、`TDBP` 等）、`TB1T`/`TB2T` は「Battery 1T/2T」と表示されていた（`TB0T` と同値。「Battery 1/2」に変更済み）。
-  `TH0a`/`TH0b`/`TH0x`（「Storage」、38 °C 前後）は SSD と思われるが未確認。
+- Attribute bits: every one of the 2170 readable keys has `0x80`, and all 54 keys without `0x80`
+  fail to read, so `0x80` is the *read* bit. `F<n>Tg` = `0xd4` and `F<n>Md` = `0xd0` have the
+  write bit `0x40`; `F<n>Mn` = `0x84`, `F<n>Mx` = `0x85` and `FNum` = `0x80` do not.
+- `Ftst` does not exist. Other fan keys of unknown meaning: `F<n>Dc`, `Fb`, `Fc`, `St`, `Sf`,
+  `FOff`, `FRmp`, `FOFC`, `FBAD`.
+- Integer endianness varies by key: `#KEY`, `FOFC` and `F<n>Fc` look big-endian, while the
+  battery keys and `ui64`/`si64` look little-endian. `SMCCodec` integers stay big-endian; check on
+  hardware before relying on any new integer key.
+- 126 keys fail to read: 42 are larger than 32 bytes, 54 lack `0x80` (11 are in both groups), and
+  41 make the SMC return an error.
+- Implausible "temperatures": `Tf02/12/22` read a constant −11 to −13; `Tf06/16/26` read a
+  constant 79–105, which changed between days; several `Ta0*`, `TH1a/b`, `TVMD` and `Tz1*` read
+  0.00 or a constant 9.50. These keys are excluded from ranking only (kit.md).
+- The `Tp*` (P-core) keys alternate per read between real values (50–75 °C) and fixed patterns
+  (`0.00 / 6.70 / 8.43` and similar), and a power-gated cluster can keep reading the pattern for
+  many reads. `TCMz` tracks the maximum real `Tp*` value.
+- `TG*` (`ioft`, about 33 °C, close to `TB0T`) is **not** the GPU on this model; the GPU is
+  `Tg*`.
 
-**DynamicNotch UI（2026-10-20、`DynamicNotchApp/`、Xcode 26.6 アドホック Debug、Mac14,9 / macOS 26.5.2）**
+### Phase 2/3: helper installation
 
-前提と方法: DynamicNotch のプロジェクト `DynamicNotchApp/` に §1〜§5 を適用して確認した
-（`DynamicNotchApp/README.md`「FanControl 統合」）。シェルに画面収録・アクセシビリティ権限が無いため、DEBUG ビルドのフック
-（`DynamicNotchApp/Sources/Support/DebugHooks.swift`）でアプリ内からウィンドウを PNG 化し、実ウィンドウに `NSEvent` のクリックを合成して
-操作した（トグル・タブ・ラジオは本物の UI をクリック）。証跡: `DynamicNotchApp/.derivedData/shots/fc1/`（英語）、`fc-ja/`（日本語、`-AppleLanguages (ja)`）。
-ヘルパーには一度も接続していない（ヘルパーログの `Accepted connection` は同時に動いていた HelperSmokeApp の pid のみ）。書込・登録・適用ボタンは押していない。
-**注意**: 確認中、別プロセス（HelperSmokeApp、`.derivedData-next`）が書込セッションを持ちファンを手動で回していた（`fanfi-probe` で
-`F0Md`=`F1Md`=1、`Tg`=6800）。ウィジェットの 6,7xx RPM はそのため。このアプリは同じバンドル ID なので UserDefaults を共有し、
-スモークアプリのプロファイル「Custom」がアクティブとして表示された。
+SMAppService mode:
 
-- [x] 設定 ▸ Fan Control ▸ 一般で「ファン制御を有効にする」を ON（チェックボックスをクリック、`fanControlGeneralSettings.isEnabled` = true）→ センサー タブに温度が並ぶ
-      （キー/名前/温度、温度の降順）。ヘルパー状態は「手動インストール済み（個人利用モード）」「未接続」と表示（状態取得のみ）。（`fc1/enabled/`, `fc1/sensors/`）
-- [x] Nook にウィジェット（`nookSettings.widgets` に `fanControl`）→ 「Fans」見出し、Fan 1 / Fan 2 と現在 RPM、RPM バー、温度、プロファイルメニュー（「Custom」）が表示され、
-      約 2 秒の更新間隔で値が変わった（6,730 → 6,858 RPM）。**2x1 では温度が 2 件しか入らない**（ダブルワイドでは 3 件）。（`fc1/widget/`, `fc1/widget2/`）
-      機能 OFF の間は「Fan control disabled」と表示（`fc1/open-disabled/`）。
-- [x] 集約センサー: センサー タブの先頭に `agg:cpu`「CPU (max)」/`agg:cpu.p`/`agg:cpu.e`/`agg:gpu` が Σ 付きで並ぶ（温度ソートでも先頭）。
-      `agg:cpu` = 75 °C が同時刻の `Tp*` の最大値（`Tp1K` 75 °C）と一致、`TCMz` とも一致。`Tp*` が 0 °C 付近を読む瞬間と `TG*` の除外は画面では確認していない。
-- [ ] ウィジェットの温度（「最も高温の 3 センサーを表示」ON、既定）: **CPU/GPU 集約ではなく `Tf06` 105 °C / `Tf16` 93 °C / `Tf26` 89 °C が出た**。
-      `Tf0x/1x/2x` は §6 の所見で「一定値、閾値等の可能性」とした群（2026-10-19 の probe では `Tf06` 94.50）で、温度ではない可能性が高い。
-      これが常に最上位を占めるので、集約の二重表示防止は確認できない。赤表示も未確認（集約が 90 °C 未満だった）。
-      **修正済み・アプリでの再確認待ち（2026-10-20）**: `Tf*` と一定値キーを `SensorCatalog.isExcludedFromRanking(_:)` で「最も高温」の候補から除外
-      （ウィジェットは `SensorAggregator.hottestOverview` を使用）。Mac14,9 相当の読取値で `agg:cpu`/`agg:gpu` が選ばれ `Tf06` が選ばれないことをテストで確認
-      （`SensorRankingTests`）。センサー タブでは除外キーも表示したまま、温度ソート時は実センサーの後ろに並べ、キー列に「?」マークとツールチップ
-      （「一定値または不安定な値で、温度ではない可能性があります…」）を付け、温度を淡色表示する。DynamicNotchAppでウィジェットとセンサー タブを再確認すること。
-      別件（未修正）: 2x1 ウィジェットは温度を 2 件しか出さない（`FanControlWidgetView` の `prefix(isCompact ? 2 : 4)`。ダブルワイドは 3 件）。
-- [ ] プロファイル タブのセンサー連動ピッカー: 未確認（プロファイル編集を避けた）。
-- [x] 2x1 / ダブルワイド切替（設定 ▸ Nook ▸ Widgets ▸ fanControl のラジオをクリック、`gridSize` 2 → 5）で幅が 100 pt → 250 pt になり、ダブルワイドは
-      「Fans」「Temperatures」の 2 列表示。（`fc1/widgets-fc/`, `fc1/widget-wide/`）°C/°F 切替は未確認。
-- [x] **固定 6 プロファイル UI（2026-10-20、読取のみ・適用は押していない）**: ウィジェットのプロファイル選択に 6 件（自動 / 定速・静音 / 定速・強 / ブースト /
-      区切り / カスタム 1 / カスタム 2、アクティブにチェック）。ダブルワイドは左にファン＋主要温度（CPU / GPU / SSD）、右にファンカーブ（30〜100 °C × Mn〜Mx、
-      緊急温度の赤破線、現在の動作点）。自動ではカーブの代わりに「macOS が制御」。2x1 はファン＋CPU / GPU＋選択メニュー（長い名前は「Constant Qu…」と省略）。
-      設定 ▸ プロファイル: プリセット 4 件は鍵アイコン・操作不可でパラメータとカーブを表示、カスタム 1/2 は名前欄・モード編集・「初期設定に戻す / 元に戻す / 保存」。
-      センサー タブ先頭に主要な温度。General / プロファイル / センサーの切替でウィンドウサイズが変わらない（ペイン 740×600 pt、ホスト固定フレーム 760×640 で、ウィンドウは常に 760×728 px）。旧形式のストア（スモークアプリの「Custom」）は
-      移行で破棄され、アクティブは自動になった。スクリーンショット: `DynamicNotchApp/.derivedData/shots/profiles/`（`dw/`、`s-*/`、`preview/`＝DEBUG `fanpreview:` フック）
-- [ ] 同上の未確認: 実ノッチでの 2x1 表示（オフスクリーン描画のみ）、手動プロファイル適用中の実カーブと動作点、日本語表示、°F 表示。
-- [x] **UI 改修（2026-10-20、読取のみ・適用は押していない。開発用インスタンス `…dev-fc2` のオフスクリーン描画）**: ウィジェットの一覧は 7 件（「最大」を含む）で、
-      選択行はアクセントのチェック＋太字の白文字＋ガラスのカプセル、他の行は淡色。2x1（必要高さ 194 pt）・ダブルワイド（175 pt）とも 202 pt のセルに収まる（DEBUG `notchgeom`）。
-      ウィジェットから CPU / GPU / SSD を外した（ヘッダーの高温表示は維持）。カーブはエンジンの `FanProfile.curve(for:)`（ブーストは 5 点の PCHIP）、目標は
-      `FanControlEngine.targetRPM(for: profile…)`、動作点は `controlTemperature(for:)`。スクリーンショット `/tmp/dn-FC2-shots/`（BUILD-LOG 参照）。
-- [ ] **温度ウィジェット**（`NookWidget.temperature`、2026-10-20）: Nook に追加すると CPU / GPU / SSD の現在値・期間内の最高/最低・履歴グラフが出る。期間チップ
-      1 / 5 / 15 / 30 分で表示範囲が変わり、設定に保存される。高温警告しきい値（一般タブ）が赤破線で出て、しきい値変更に追随する。CPU/GPU が しきい値 −10 °C 以上で
-      オレンジ、以上で赤。スリープ・Nook 非表示中（ポーリング停止）の区間は線が途切れる。オフスクリーン描画では合成履歴（スパイク・欠損あり）とライブ履歴を確認済み、
-      実ノッチ・°F は未確認。
-- [ ] ファンレス機 / SMC 不可環境: 該当機なし。
-- [ ] Nook を閉じるとポーリングが止まる: 未計測。
-- [ ] 「SMC ダンプを書き出す…」: 未実施（保存パネル操作が必要）。
-- [—] 日本語: 2026-10-20 夕方に廃止（アプリは英語のみ。`ja.lproj` と `Localizable/ja.strings` を削除）。それ以前は `ja.lproj` で日本語表示を確認していた（`fc-ja/`）。
-- DynamicNotchApp の制約: Live Activity をノッチ左右に出す経路（`LiveActivityView`）がDynamicNotchApp では使われていないため、PATCHES.md (f) の `fanAlert` 表示は確認できない。
+- [ ] The status goes "not installed" → install → "requires approval", with guidance and an
+      "Open Login Items" action.
+- [ ] After approving in System Settings ▸ General ▸ Login Items & Extensions, "Check Again" shows
+      "installed".
+- [ ] `.notFound` (a misplaced plist) shows guidance only, with no install button.
+- [ ] `sudo launchctl print system/<label>` shows the service, and `log stream` shows connections.
+- [ ] Code-signing requirements in both directions with real Team ID signing.
 
-### Phase 2/3: ヘルパー登録
-- [ ] 一般タブのヘルパー状態が「未インストール」→「ヘルパーをインストール…」→「承認待ち」になり、案内文と「ログイン項目を開く」が表示される。
-- [ ] システム設定 ▸ 一般 ▸ ログイン項目と機能拡張で DynamicNotch を許可 →「再確認」で「インストール済み」。
-- [ ] `.notFound`（plist 配置ミス）では「アプリバンドル内に見つかりません」と案内のみ表示され、インストールボタンは出ない。
-- [ ] `sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi` でサービスが見える。
-- [ ] `log stream --predicate 'subsystem == "com.example.dynamicnotch.DynamicNotch" AND category == "fancontrol-helper"'` に接続ログ。
+Manual-install mode:
 
-**手動インストール（個人利用モード、helper.md §6）の場合**（上の SMAppService の項目の代わり。書込はしない）:
-- [ ] `./install.sh --dry-run <App.app>` が署名検証・アプリ／ヘルパーの cdhash・生成 plist（`Program`、`FANCONTROL_CLIENT_REQUIREMENT`）を表示し、何も変更しない。
-- [ ] `sudo ./install.sh <App.app>` が完了し、`./status.sh <App.app>` で 2 ファイルが root 所有で存在、「the app's cdhash matches the pinned requirement」。
-- [ ] 一般タブのヘルパー状態が「手動インストール済み（個人利用モード）」になり、`install.sh` / `uninstall.sh` の案内が出る（インストールボタンは出ない）。
-- [ ] 接続（書込なしの `version`。スモークアプリなら「Helper version」）→ `helper protocol 1, build 1.0 (1)`。ログに
-      `Client requirement mode: MANUAL INSTALL (personal use), client cdhash pinned to <cdhash>` と `Accepted connection …`。
-- [ ] `sudo launchctl print system/com.example.dynamicnotch.DynamicNotch.fanfi` で `path = /Library/LaunchDaemons/…plist`、`program = /Library/PrivilegedHelperTools/…`、
-      environment に `FANCONTROL_CLIENT_REQUIREMENT`。AMFI がヘルパーを拒否していないこと（`com.apple.application-identifier` の件、helper.md §6「注意」）。
-- [ ] 否定系: アプリを再ビルドして `install.sh` を再実行しないまま（または別アプリを指定して入れたまま）操作 → 一般タブの状態が「手動インストール済み（別のビルドに固定）」、
-      接続が「拒否（別のビルドに固定）」になり、`install.sh` 再実行の案内と「再確認」が出る。ヘルパーの `log stream` に**この pid からの `Accepted connection` が出ない**こと
-      （接続前の固定 cdhash 比較で止まる）。アイドル中やプロファイルを何度選んでも接続が増えないこと（自動再試行なし）。`sudo install.sh <このアプリ>` 再実行後、「再確認」
-      （または次の操作）で接続できる。plist を読めない場合の実行時検出は、拒否が 2 回続いた時点で「ヘルパーが拒否」になり以後接続しない。
-- [x] 読み取りのみの監視（プロファイル未適用）でアプリを放置 → ヘルパーのログにこのアプリからの接続が 1 件も無い。
-      記録（2026-10-20、DynamicNotchApp を `.derivedData-fix` にビルド、ヘルパーはスモークアプリの cdhash に固定）: 修正前のビルドでも放置中の接続は 0 で、
-      11:20〜11:23 と 11:37 に見えた `Accepted connection N` → `invalidated` はすべて DynamicNotch 内のクリック（AppKit `sendAction:`）の 1〜2 秒後（ウィジェットのプロファイル選択など、
-      kit.md "Helper connection lifecycle"）。修正後のビルドは起動直後から状態「手動インストール済み（別のビルドに固定）」/ 接続「拒否（別のビルドに固定）」と案内・「再確認」を表示し、
-      「再確認」（DEBUG フック `fanhelpercheck`）を 2 回実行しても kit ログ `Helper connection rejected, not retrying automatically: …` だけでヘルパーへの接続は 0 件。
-- [ ] 否定系: 別 identifier・別 cdhash のアドホック署名プロセスからの接続は拒否される（`codesign -s - -i com.example.dynamicnotch.DynamicNotch` で署名した別バイナリでも拒否されること）。
-- [ ] 後片付け: `sudo ./uninstall.sh` → `launchctl print` でサービスが消え、状態表示が「未インストール」に戻る。
+- [x] `install.sh --dry-run` prints the verification, both cdhashes and the generated plist,
+      and changes nothing.
+- [x] `sudo install.sh` → the helper starts as root on demand, logs
+      `Client requirement mode: MANUAL INSTALL …`, and accepts the pinned app.
+- [x] Read-only monitoring never connects to the helper.
+- [x] App rebuilt without re-running `install.sh`: the app shows "pinned to another build", makes
+      no connection attempts, and does not retry automatically.
+- [ ] A process ad-hoc signed with the app's identifier but a different cdhash is rejected.
+- [ ] `sudo uninstall.sh` → the service is gone and the status returns to "not installed".
 
-### Phase 4: 書き込み・プロファイル
+### Phase 4: writing and profiles
 
-**初回書込（2026-10-20、HelperSmokeApp + 手動インストールモード、Mac14,9）**: Fan 1 を固定 3000 RPM にして戻すまでを実施し成功。`F0Md`=1 → `F0Tg`=3000 で current が約 3 秒で 3000 に追随、`F0Md`=0 だけで target が SMC の値に即座に戻り current も数秒で収束した。記録: [`verification/first-write-2026-10-20.md`](verification/first-write-2026-10-20.md)。以下のチェックリストはこの結果を反映している。
+> Before the first write, follow the procedure in [verification/SUMMARY.md](verification/SUMMARY.md#first-write-procedure):
+> run `fanfi-probe --watch 1` and the helper `log stream` side by side, confirm the escape routes
+> first, and start with one fan at a modest fixed RPM.
 
-- [x] （HelperSmokeApp）固定 3000 RPM の書込で `F0Md`=1、`F0Tg`=3000、`F0Ac` が追随する。Fan 2 は影響なし。
-- [x] （HelperSmokeApp）「自動制御に戻す」で `F0Md`=0 → SMC 制御に戻る（`Tg` の書き戻し不要）。セッション無しで押しても何も書かない。
-> **最初の書込の前に** `docs/verification/pre-write-review-2026-10-20.md` の「初回書込の手順」に従う
-> （別ターミナルで `swift run fanfi-probe --watch 1` を流し、逃げ道 `F<n>Md` = 0 を先に確認する）。
-- [ ] 最初は「固定 3000 RPM」程度の 1 ファン（`F0`）だけで、`F0Md`=1 → `F0Tg`=3000 の順に書かれ、`F0Ac` が数秒で目標付近に追従すること。
-      `F0Md` が 1 のまま `F0Tg` が 0 に留まる／`F0Ac` が 0 のまま、なら即「自動制御に戻す」。
-- [ ] 「自動制御に戻す」→ `F0Md`=0、`F0Ac` が SMC 制御（アイドルなら数十秒で 0 RPM）に戻ること。ヘルパーは `F0Tg` を記録値（0）に書き戻さない（helper.md §4）。
-- [ ] `Mn` 未満の目標値（`enforceHardwareMinimum = false` で 1000 RPM 等）を適用 → `rpmOutOfRange` エラーで**何も書かれない**こと（`F0Md` が 0 のまま）。
-- [ ] プロファイル タブで「最大」を適用 → 接続状態が「接続済み（ファンを制御中）」、ファンが最大回転へ。
-      `F0Md`=1 → `F0Tg` 書込で回転数が変わること（`F0Ac` を確認）。Intel の `FS! ` 経路は 2026-10-20 に削除したので確認不要。
-- [ ] プリセット「定速・静音」（3000）/「定速・強」（5000）/「ブースト」（`agg:cpu` の多点カーブ 50 °C 最小・60 °C 3500・70 °C 5200・80 °C 6400・85 °C 6800。2026-10-20 に線形 70→95 °C から変更、kit.md「Profiles」）/「最大」（全ファン 6800）をウィジェットと設定の両方から適用 → 期待どおりの回転数。
-      ブーストはアイドル（`agg:cpu` ≈ 72–78 °C）でも ≈ 5500–6100 RPM になる（仕様）。
-      プリセットは `defaultMode` で定義されるため、UI は `FanProfile.resolved(for:)` を渡して適用する（`FanControlProfiles.apply`）。セッションが開くこと。
-- [ ] カスタム 1/2 を編集・保存・名前変更・「初期設定に戻す」→ 適用。アクティブなスロットを保存すると次のポーリングで反映される。
-- [ ] カスタムスロットで「固定」スライダ / 「センサー連動」（センサー＋多点カーブ。2026-10-20 に開始/最大温度ステッパーをカーブ編集へ置換）を設定して保存 → 適用 → 期待通りの回転数。
-      カーブ編集: 点のドラッグ・行のスライダ／ステッパー・点の追加／削除・「プリセットを使用」でグラフが即座に変わり、動作点（「現在: CPU（最大）72°C → … RPM」）が
-      カーブ上に出る。温度ピッカーは 10 °C グリッド（30〜100 °C）の空き温度のみ。回転数が下がる区間・最大に届かないカーブ・緊急しきい値以上でしか全速にならないカーブに警告、
-      エラー（2 点未満・同温度・範囲外）では保存／適用が無効。保存後に再起動しても点が残る（`ProfileStore` の `curves`）。オフスクリーン描画のみ確認、操作は未確認。（2026-10-20 HelperSmokeApp: `agg:cpu` 45→75 °C を全ファンに適用 → 75 °C 超で 6800、74.35 °C で 6702 と線形カーブどおり。UI 経由は未実施。`verification/first-write-2026-10-20.md`）
-- [ ] プリセットは編集・名前変更できず、どのプロファイルも削除できない（作成も無い）。
-- [ ] アプリ再起動後も保存したプロファイルとアクティブ選択が残る。
-- [ ] 「自動制御に戻す」でファンが SMC 制御に戻る。機能を OFF にしても戻る。アプリ終了時（⌘Q）も戻る。
-- [x] 手動制御中に `kill -9` → ヘルパーがセッションを解放しファンが自動に戻る（helper.md §5）。（2026-10-20 HelperSmokeApp: 約 2 秒で automatic に復帰。`verification/first-write-2026-10-20.md`）
-- [x] 手動制御中にヘルパーへ `sudo launchctl kill SIGTERM system/<label>` → ヘルパーが復元して終了コード 0、ファンは automatic（2026-10-20、同上）。
-- [ ] ウィジェットのプロファイル選択（7 件。「最大」を含む）から切替できる。ウィジェットでは編集できない。
-- [ ] 機能 OFF の間はプロファイル タブの「適用」が無効で、説明文が表示される。
-- [ ] 監視停止中に手動プロファイルを適用すると監視が自動で開始される。
-- [ ] 適用直後にポーリングが走っても、旧プロファイルの目標値に書き戻されない（`log stream` のヘルパー書込ログで確認）。
-- [ ] **ハンチング試験（制御ループ、kit.md「Control loop」）**: ブーストを適用し、一定の持続負荷（例: `yes > /dev/null` を P コア数ぶん、または一定負荷のベンチマーク）を
-      5 分以上かける。温度が落ち着いた後（`controlTemperatures["agg:cpu"]` ≈ 一定）、`fanfi-probe --watch 2` で `F0Tg` / `F0Ac` を 3 分記録し、
-      **定常温度で目標・実回転が ±150 RPM を超えて上下を繰り返さない**こと（`F<n>Tg` の書込は数回以内、ヘルパーの書込ログも同様）。
-      `agg:cpu` の生値（`sensorReadings`）が数 °C 揺れていても目標が揺れないこと。比較用に `manager.tuning = .disabled` で同じ試験をすると揺れが再現する（任意）。
-- [ ] 負荷の立ち上がり（アイドル → 高負荷）で目標が 1 ポーリングあたり最大 500 RPM ずつ、約 20 秒以内にカーブの値まで上がる。負荷を止めると 10 秒以上待ってから
-      500 RPM 以下の段で緩やかに下がる。緊急オーバーライド（95 °C）では即座に最大になる（遅延なし）。
-- [ ] ヘルパーを `sudo kill -STOP` で停止させて書込 → 約 8 秒で「timeout」エラーになり、以後の操作が詰まらない（確認後 `kill -CONT`）。
-      `kill -CONT` 後、旧接続の解放でヘルパーが復元し `F<n>Md`=0 になること。
-- [ ] 手動制御中にヘルパーを `sudo kill -9`（SIGKILL。復元は走らない）→ `fanfi-probe` で `F<n>Md`=1 のまま残ることを確認し、
-      「自動制御に戻す」で（セッションが無くても）`F<n>Md`=0 に戻ること（`restoreDefaultControl` の孤立手動状態の回収）。
+- [x] Fixed 3000 RPM on Fan 1 writes `F0Md = 1`, then `F0Tg = 3000`; `F0Ac` follows within about
+      3 s, and Fan 2 is unaffected.
+- [x] "Restore automatic" writes `F0Md = 0` and the SMC takes over immediately, with no `Tg`
+      write-back. With no session and no manual fan, it writes nothing.
+- [x] `kill -9` of the app during manual control → the helper restores within about 2 s.
+- [x] Helper SIGTERM during manual control → the helper restores and exits with code 0.
+- [x] A sensor-linked curve (`agg:cpu` 45 → 75 °C) follows the curve (74.35 °C → 6702 RPM).
+- [ ] A target below `Mn` (with `enforceHardwareMinimum = false`) → `rpmOutOfRange`, and
+      **nothing** is written.
+- [ ] Each preset (Constant Quiet 3000, Constant High 5000, Boost, Max) applied from the UI.
+      Boost runs at about 5500–6100 RPM at idle on Mac14,9, which is by design.
+- [ ] Custom slots: edit, save, rename, reset, apply; the curve editor; persistence across
+      relaunch.
+- [ ] Quitting the app (⌘Q) or turning the feature off returns the fans to automatic.
+- [ ] A poll that runs right after an apply does not write the old profile's targets.
+- [ ] **Hunting test:** run Boost under constant load for at least 5 min, then record
+      `fanfi-probe --watch 2` for 3 min. Targets must not swing by more than ±150 RPM at a steady
+      temperature. On a rising load, the target moves by at most 500 RPM per poll and reaches the
+      curve value within about 20 s. When the load drops, the target waits at least 10 s, then
+      falls in steps. The emergency override is immediate.
+- [ ] Freeze the helper with `sudo kill -STOP` → after about 8 s the call fails with "timeout"
+      and the app does not hang. After `kill -CONT`, the helper restores.
+- [ ] SIGKILL the helper during manual control → `Md` stays 1, and "Restore automatic" (with no
+      session) writes `Md = 0`.
+- [ ] **Automated hunting check (`--fan-stats`):** apply a sensor-linked profile (e.g. a custom
+      slot with a curve on `agg:cpu`, or Boost) under a steady load, wait about 1 min, then run
+      `swift run fanfi-probe --watch 1 --fan-stats 120` (read-only; it prints one actual/target
+      line per second and then per-fan statistics; exit code 0 = every fan PASS, 1 = FAIL).
+      Per fan it reports actual min/max/mean, target min/max, the number of target reversals
+      (direction changes, moves under 50 RPM ignored) and the max |actual − target| after a 5-s
+      settle. **PASS**: at most 1 reversal per 60 s (at least 1 allowed in any window) and
+      |actual − target| ≤ 150 RPM for ≥ 95 % of post-settle samples. **FAIL** prints the reason:
+      *target hunting* means the control loop oscillates (look at the smoothing knobs in
+      `FanControlTuning`: rise/fall time constants, `deadbandRPM`, `minimumDwell`,
+      `maximumStepRPM`; the curve slope around the current temperature, and
+      `Tp*` sample noise that `TemperatureSampleFilter` should absorb); *actual does not track
+      target* means the SMC is not following the written `Tg` (check `Md` = 1, a competing writer
+      such as FanFi, or a target outside `Mn…Mx`). The thresholds live in
+      `FanStabilityCriteria` (FanControlCore/FanStatistics.swift). In automatic mode the check
+      describes the SMC's own controller and is only a baseline.
 
-### Phase 5: 高度機能
-- [ ] 負荷をかけて CPU/GPU センサーが 90°C（`SafetyPolicy.highTemperatureAlert`）以上 → ウィジェットが赤表示、Live Activity「高温」とノッチの一時展開。85°C 以下で解除。
-- [x] 書込セッション中、95°C（`emergencyTemperature`）以上で全ファン最大に強制される（自動プロファイルでも）。（2026-10-20 HelperSmokeApp: 閾値を 55 °C に下げて検証。automatic だった Fan 2 も 6800 に強制され、既定閾値に戻すと即座にプロファイル目標へ復帰。`verification/first-write-2026-10-20.md`）
-      90°C（95 − `alertHysteresis`）以下に下がるまで解除されない（`FanControlManager.emergencyOverrideActive`）。
-- [ ] ファン停止（目標 > 0 で実測 0 が 3 回連続）→ 該当ファン行に警告アイコン、Live Activity「ファン停止」（テストは固定モードで物理的に止める等、注意して行う）。
-- [ ] 警告トグルを OFF にすると Live Activity が出ない。
-- [x] 手動プロファイル適用中にスリープ → 復帰後約 5 秒で再適用される（2026-10-20 HelperSmokeApp で確認。**ただし復帰直後は SMC が `Tg` を 0 にリセットし `Md`=1 のままなので数秒間ファンが停止した**。`verification/first-write-2026-10-20.md` テスト 4）。
-- [x] **再テスト（対策実装後、2026-10-20 実装）**: ヘルパーがスリープ前に強制中のファンを SMC に返し（`F<n>Md`=0）、復帰時に 0 / 1 / 3 秒で最後の目標を再適用、目標の記録が無い手動ファンは `F<n>Md`=0 に戻す（helper.md §5「スリープ／復帰」）。（2026-10-20 11:26 合格: 復帰後の `manual(0)` は 1 サンプルのみ、約 2 秒で復元。SMC は復帰直後に `Md`=3 / `Tg`=0 で起こし自ら `Md`=0 に戻す。`verification/first-write-2026-10-20.md`）
-      アプリは復帰通知で即座・2 秒・5 秒に再適用し、ポーリングで「手動かつ `Tg` < `Mn`」等を検出して書き直す（kit.md「Sleep/wake」「State drift」）。
-      手順: アプリを再ビルド → `sudo install.sh` を再実行（ヘルパーの cdhash が変わるため必須）→ `fanfi-probe --watch 1` とヘルパーの `log stream`（`--level info`）、アプリの `category == "fancontrol-kit"` を並べ、Fan 1 を固定 3000 RPM にして蓋を閉じ 60 秒以上スリープ → 復帰。
-      期待するパターン: スリープ直前に `F0 … automatic`（ヘルパーの返却）になってよい。**復帰後に `manual(0)` のサンプルが出ない**（最初のサンプルから `manual(3000)`、または一瞬 `automatic` を経て `manual(3000)`）。Fan 2 は `automatic`（復帰直後に一瞬 `manual(0)` でも次のサンプルで `automatic`）。
-      SMC が通知より先に状態を変える可能性があるため、復帰直後の 1 サンプル（≤ 1 秒）の `manual(0)` は許容し記録する。2 サンプル以上続いたら不合格（ログでどの層が書いたかを確認）。
-      ヘルパーログに `Power: system will sleep; session of pid … open, handed back to the SMC: F0Md=0; remembered targets: F0 3000`、`Power: system has powered on; wake recovery at 0.0s, 1.0s, 3.0s`、`Power: wake recovery 1/3 … wrote …`（または `fans already match`）が出ること、`FAILED` が無いこと。
-      アプリログに `Woke with a session open: re-applying the active profile at 0.0s, 2.0s, 5.0s`。`Unsettled fan(s) detected` が出た場合は、どのファンがどの状態だったかを記録する。
-      「スリープ解除後にプロファイルを再適用」を OFF にした場合は、復帰直後にセッションが閉じ（ヘルパーが返す）、ファンが automatic になること（`manual(0)` が出ないこと）。
-      設定は `FanControlAlertCoordinator` が `FanControlManager.reapplyProfileAfterWake` に同期。
-- [ ] 書込セッション無しで Nook を閉じても、警告が 1 つでも ON なら低頻度ポーリング（`max(5×間隔, 10 秒)`）が続き警告が出る。両方 OFF なら停止する。
-- [ ] **電源連動ポーリング**（§5.4 (a)、2026-10-20 実装）: 一般タブ「バッテリー駆動時はポーリングを 10 秒に」ON（既定）で電源アダプタを抜く →
-      ウィジェットの「最終更新」が約 10 秒間隔になり（`FanControlManager.isOnBattery == true`、`effectivePollingInterval == 10`）、
-      挿し直すと即座に設定値（既定 2 秒）に戻る。アプリログに `Power source changed: battery` / `AC`。トグル OFF ならバッテリーでも設定値のまま。
-      ポーリング間隔を 10 秒より長く（`defaults write` で 30 秒等）していれば短くならないこと。Nook 非表示中の低頻度ポーリングはバッテリーで 50 秒（`max(5×10, 10)`）。
-      Nook 非表示時の停止の効果も併せて確認。
-- [ ] **FanFi 併用時の警告**（§5.2、2026-10-20 実装）: FanFi（`com.fanfi.fanfi`）を起動 → 一般タブ上部に
-      「別のファン制御アプリ（FanFi）が動作しています。…」の警告、Live Activity「FanFi が動作中」が約 8 秒だけ出る（FanFi を終了するまで再表示されない）。
-      FanFi を終了すると警告が消え（`didTerminateApplication` で即時、遅くとも 60 秒）、再度起動すると Live Activity がもう一度出る。
-      FanFi のヘルパー（`/Library/LaunchDaemons/com.fanfi.fanfi.smcwrite.plist` / `/Library/PrivilegedHelperTools/com.fanfi.fanfi.smcwrite`）が
-      インストール済みでもアプリが動いていなければ警告しない（`conflictingControllerStatuses` には載る）。実バンドル ID が `com.fanfi.fanfi` であることを
-      実物の FanFi.app で確認する。
-- [ ] 「Nook が非表示のときは一時停止」: ホストが Nook の開閉で `FanControlNookVisibility.nookVisibilityChanged(isVisible:)` を呼ぶこと（PATCHES.md (b-2)）。
-      ウィジェットをグリッドから外しても Nook を開けば一時停止が解ける／Nook を閉じたまま設定 ▸ Fan Control ▸ センサーを開くと通常間隔で更新され
-      （「最終更新」が増え続けない）、閉じると一時停止に戻る／設定をオフにすると即座に通常間隔に戻ることを確認。
-- [ ] 「ファン制御を有効にする」を素早くオフ→オン（ダブルクリック）しても監視が止まらない（ウィジェットが「SMC unavailable」にならない）ことを確認。
-- [ ] **温度閾値の設定**（§5.6、2026-10-20 実装）: 一般タブ「温度しきい値」で「高温警告」を現在の CPU/GPU 最高温度より低く（例: アイドル 50 °C なら 70 °C）すると、
-      次のポーリング（設定変更時に即時 1 回ポーリング）でウィジェットが赤表示・Live Activity「高温」になり、「ヒステリシス」分下回るまで解除されない。
-      書込セッション中に「緊急（全ファン最大）」を現在温度以下（最小 71 °C）にすると全ファンが最大に強制され、戻すと（ヒステリシス分下がっていれば）プロファイル目標に戻る。
-      「既定値に戻す」で 90 / 95 / 5 °C に戻り、ボタンが無効化される。ステッパー: 警告 70〜100、緊急（警告 + 1）〜105（警告を上げると緊急が押し上げられ、緊急を下げると警告が引き下げられる）、
-      ヒステリシス 1〜10。値は設定キー `fanControlThresholdSettings`（`SettingsStore`、JSON 文字列）に保存され、再起動後も維持される（`defaults read <bundle id> fanControlThresholdSettings`）。
-      `emergencySensorPrefixes` は変わらない（UI なし）。
-- [ ] **センサー名のローカライズ**（§5.7、2026-10-20 実装）: 日本語環境で設定 ▸ Fan Control ▸ センサーの「名前」列が「CPU 高性能コア 09」「GPU 0f」「バッテリー 1」「NAND（SSD）」
-      「センサー Tz11」のように表示され、「キー」列に SMC キーがそのまま残る。英語環境では従来と同じ名前（`SensorCatalog.displayName(for:)`）。
+### Phase 5: advanced
 
-## 7. この Linux 環境で検証できなかったこと
+- [x] Emergency override (threshold lowered to 55 °C for the test): every fan, including the one
+      in automatic mode, is forced to 6800 RPM, and the fans return to the profile when the
+      thresholds are restored.
+- [x] Sleep/wake with a session open: no persistent `manual(0)` after wake, and the profile is
+      restored within about 2 s (helper.md §5).
+- [ ] High-temperature alert at 90 °C, cleared at 85 °C; the fan anomaly alert (target > 0 with
+      0 RPM for 3 polls).
+- [ ] With the UI hidden and no session: a slow poll continues while any alert is enabled, and
+      polling stops otherwise.
+- [ ] Power-aware polling: on battery the interval is 10 s, and it returns to the setting at
+      once on AC (`Power source changed: battery` / `AC` in the log).
+- [ ] Coexistence with other fan-control apps: launching a known app (for example FanFi,
+      `com.fanfi.fanfi`) shows a warning, which clears on quit. An installed helper whose app
+      is not running is listed but does not trigger a warning.
+- [ ] Threshold settings: lowering the alert or emergency threshold takes effect on the next
+      poll, and "Reset to Defaults" restores 90 / 95 / 5 °C.
+- [ ] Turning the feature off and on quickly does not leave monitoring stopped.
 
-- **SwiftUI / Defaults / Settings を使う UI コードの型検査は Mac で実施済み（2026-10-19）**。作業用パッケージ
-  `Tools/IntegrationTypeCheck`（`README.md` 参照）で、`DynamicNotchIntegration/*.swift` の 8 ファイルを実 macOS 26 SDK
-  （SwiftUI / AppKit）、実 `FanControlCore` / `FanControlKit`、**Defaults 8.2.0** と **Settings 3.1.2**（いずれも当時の最新安定版）に対して
-  コンパイルし、Swift 5 言語モード・Swift 6 言語モード（`TYPECHECK_SWIFT6=1`）とも警告・エラー 0。8 ファイルは DynamicNotch 側の
-  シンボルを参照しないためスタブ無しで通る。PATCHES.md (a)〜(f) の断片も、ホストアプリに倣ったスタブ
-  （`NookWidget` / `NookGridSizeType` / `Preferences` / `WidgetPrefs` / `LiveActivity` / `ActiveLiveActivitiesManager` など）に対して型検査した。
-  見つかった問題と修正（以下 (d) の 2 項目は sindresorhus/Settings 時代のもの。2026-10-20 に標準の `Settings` シーンへ移行し、
-  Settings パッケージへの依存ごと撤去した。現在の (d) は `TabView` へのタブ追加で、型検査も Settings 無しで行う）:
-  - PATCHES.md (d): `extension Settings.PaneIdentifier` が SwiftUI の `Settings` と曖昧、`Settings.Pane(…)` が SwiftUI 側に誤解決
-    → `import enum Settings.Settings` を追加（§5）。ドロップインの 2 ファイルにも予防的に同じ import を追加（変更前もコンパイルは通っていた）。
-  - PATCHES.md (d): グローバル `let FanControlSettingsPaneController: () -> SettingsPane = { … }` は Swift 6 モードで
-    非 Sendable のグローバル変数・main actor 隔離の初期値としてエラー → `@MainActor func FanControlSettingsPaneController() -> SettingsPane` に変更。
-    Swift 6 モードでは `PaneIdentifier` が非 Sendable のため `@preconcurrency import Settings` も必要。
-  - ドロップイン 8 ファイル本体の型エラーは無かった。
-  `FanControlKit` の macOS 依存部は実 SDK でビルド済み（README「検証状況」）。
-- UI が参照する Kit/Core の API（メンバー名、引数ラベル、`async`/`throws`、読み取り専用か否か、static か否か、
-  `HelperInstallStatus` / `HelperConnectionState` の case）は実装と突き合わせ済み。`FanControlManager` は 2026-10-20 から `@MainActor`
-  （SMC I/O は専用キュー上の actor `FanControlPoller`。`docs/kit.md`「Threading model」）。UI は main actor から同期メソッドを直接呼び、
-  async メソッドは `Task { @MainActor in … }` で待つ（ドロップインは変更不要。両言語モードで型検査済み）。
-- （履歴）`Settings.Section(label:content:)` / `Settings.Container(contentWidth:)` / `Settings.Pane(identifier:title:toolbarIcon:)` /
-  `Settings.PaneHostingController(pane:)` は Settings 3.1.2 の実 API で型検査していた。2026-10-20 以降ドロップインはこれらを使わない。
-- `WidgetPrefs` / `Preferences` の実際の要件はスタブでの推定（`gridSizeType` のみ）。実プロジェクトで追加要件があれば
-  PATCHES.md (a) の `extension FanControlWidgetSettings: Preferences, WidgetPrefs` に足す。
-- `NookWidget` の View 振り分け箇所、`ActiveLiveActivitiesManager` インスタンスの保持場所はホスト側のソースから特定できていない（PATCHES.md 参照）。
-- SMC 読取はパッケージ単体で Mac14,9 / macOS 26 にて確認済み（§6 Phase 1）。SMC 書込、ヘルパー登録、署名要件は未検証。
+## 7. Open questions
 
-## 8. 未決事項（設計書 §5 より）
-
-- **Team ID**（§5.1）: `Helper-Info.plist` と `teamIdentifierPlaceholder` の実値。出荷前に必須。
-- **Mach サービス名**（§5.2）: `com.example.dynamicnotch.DynamicNotch.fanfi` で既存 FanFi と非競合。両方が同時に SMC を書くと互いに上書きし合う。
-  **併用時の注意表示は実装済み（2026-10-20）**: `ConflictingControllerDetector` が FanFi（アプリ `com.fanfi.fanfi`、ヘルパー `com.fanfi.fanfi.smcwrite`）の
-  起動とヘルパーの有無を検出し、一般タブ上部の警告と一度きりの Live Activity で知らせる（kit.md「Other fan control apps」）。
-  残り: 警告のみで書込は止めない（FanFi 起動中は書込を拒否する／確認を挟むかは要判断）、実 FanFi.app でのバンドル ID の確認（§6 Phase 5）、他のファン制御アプリ（Macs Fan Control 等）を対象に加えるか。
-- **Intel 対応の廃止（決定 2026-10-20）**: Apple Silicon のみ対応。`FanWriteStrategy` の `FS! ` / target-only 分岐、`SMCKey.forceBits`、
-  ヘルパー許可リストの `^FS! $`、`HelperWritePolicy` / `PowerTransitionPolicy` / `SessionRegistry` / `UnsettledFanDetector` の強制ビット処理、
-  `SafetyPolicy.default(appleSilicon:)` / `SensorAggregator.definitions(appleSilicon:)` の Intel 側の表、`SensorCatalog` の Intel 専用名を削除した。
-  arm64 でない Mac は `FanControlError.unsupportedPlatform`（アプリ）／起動拒否（ヘルパー、終了コード 78）。`F<n>Md` の無いファンは
-  `FanControlError.fanModeKeyMissing` で拒否する（フォールバックしない）。
-- **新しい Apple Silicon の `Ftst` キー**（§5.7, helper.md §4）: 一部機種では `F<n>Md` だけでは目標値が効かず `Ftst` アンロックが必要との報告がある。現状ヘルパーの書込許可リスト外（2026-10-20 のレビューで `F<n>Mn` も許可リストから外した）。Phase 4 で実機確認後に追加を判断。
-  Mac14,9（M2 Pro）/ macOS 26 には `Ftst` キー自体が存在しない（読取で keyNotFound、§6 Phase 1）。この機種では許可リストに足しても書けない。
-- **温度閾値**（§5.6）: 警告 90°C（ヒステリシス 5°C）、強制最大 95°C は暫定の既定値。**設定 UI は実装済み（2026-10-20）**: 一般タブ「温度しきい値」の
-  ステッパー 3 つと「既定値に戻す」（`FanControlThresholdSettings`、設定キー `fanControlThresholdSettings`。範囲は `ThresholdBounds`: 警告 70〜100、
-  緊急（警告 + 1）〜105、ヒステリシス 1〜10 °C）。`FanControlAlertCoordinator.syncManagerSettings()` が `FanControlManager.applySafetyThresholds(_:)` で
-  `safetyPolicy` に反映（接頭辞と `enforceHardwareMinimum` は変えない）。残り: 既定値の機種別妥当性、警告と緊急で別々のヒステリシスが要るか、°F 表示時もステッパーは °C のまま（要判断）、実機確認（§6 Phase 5）。
-  対象センサー接頭辞は実装済み: `Tp/Te/TC/Tg`（`SafetyPolicy.defaultEmergencySensorPrefixes`。Mac14,9 では `TG*` は GPU ではなく 33 °C 前後の `ioft` キー。
-  Intel 用の `TG` 入りの表は 2026-10-20 に削除）。`Tf06` は 94.5〜105 °C の一定値だが接頭辞外（§6 Phase 1 の所見参照。ランキング除外キーは緊急判定の接頭辞に一致しないことをテストで確認）。
-  要確認: 他の Apple Silicon 機種でも `TG*` が GPU でないか、`TC*`（`TCMz` 等）を対象に含めたままでよいか。
-  センサー値フィルタ（`TemperatureSampleFilter`、下限 10 °C・保持 5 回・グループ最大値へのフォールバック）も暫定値。急な下降は棄却しない方針（kit.md）。
-  センサー連動の CPU センサー → 集約センサーで対応: `agg:cpu`（`Tp/Te/TC` の最大値）などを仮想センサーとして提供し、センサー連動の既定センサーを `agg:cpu` にした（kit.md「Aggregate sensors」）。
-  残る判断: `agg:cpu` に `TC*` を含めるか（Mac14,9 の `TCMz` は `Tp*` 最大値と一致し無害だが、他機種の `TC*` の意味は未確認）、最大値以外（平均など）の集約が必要か。
-- **センサー名**（§5.7）: `SensorCatalog` の名称はコミュニティ情報で英語固定。Apple Silicon 向けに一部追加済み（§6 Phase 1）。
-  **ローカライズは実装済み（2026-10-20）**: `SensorCatalog.nameComponents(for:)`（ラベルキー + そのまま付ける接尾辞）と drop-in の `FanControlSensorNames.localized(_:)`
-  （`FanControlSensorsTabView.swift`）。`displayName(for:)` / `SensorReading.name` は英語のまま（保存値・従来キー、Mac14,9 の全 259 キーで出力不変をテスト）。
-  センサータブと Live Activity は対応済み。ウィジェット（`FanControlWidgetView.swift`）とプロファイルタブ（`FanControlProfilesTabView.swift`）は
-  まだ `FanControlFormatting.sensorName`（集約名のみローカライズ）を使っており、`FanControlSensorNames.localized` への置き換えが残る。
-  未決: `TCMz`/`TCMb`/`TCDX`、`TVM*`、`TPD*`/`TRD*`、`Th0*`、`TD*`、`Tf*` などの名称（根拠が見つからず「Sensor XXXX」のまま）、他機種での検証、`Tp*` の P/E コア区別（コミュニティ間で不一致）。
-  非温度／不安定キー: `SensorCatalog.rankingExcludedPrefixes`（`Tf`、全機種）と `rankingExcludedKeys`（Mac14,9 で一定値の `TH1a`/`TH1b`/`TVMD`/`Ta0C/D/G/H/K/L/V`/`Tz11`〜`Tz18`/`Tz1j`）を
-  自動選択・ランキングから除外（表示・明示選択は可）。`Tf*` の意味は不明で、除外は Mac14,9 の観察のみに基づく（`Tf04` 等は温度らしく変動するが一括除外）。
-  他機種で除外キーが実温度だった場合や、別の一定値キーが上位に来る場合は表を見直す。
-- **ポーリング間隔**（§5.4）: 1/2/5/10 秒の選択式。**電源状態による自動切替は実装済み（2026-10-20）**: バッテリー駆動時は
-  `max(間隔, 10 秒)`（一般タブのトグル、既定 ON。`FanControlManager.slowPollingOnBattery` / `batteryPollingInterval`）、Nook 非表示時の低頻度ポーリングもこれに従う。
-  残り: バッテリー時の間隔（10 秒固定、UI なし）を選べるようにするか、低電力モード（`ProcessInfo.isLowPowerModeEnabled`）や残量でさらに落とすか、実機での消費電力の計測。
-- **制御開始タイミング**（§5.5）: 既定は機能 OFF。ON かつ「起動時に監視を開始」で起動時に監視（読み取り）を開始、OFF の場合はウィジェット初表示時に開始。ファン書き込みはユーザーがプロファイルを適用したときのみ。
-- **ライセンス**（§5.8）: 法務確認。
+- **`Ftst` on newer Apple Silicon.** Reportedly needed on some models; it is not on the
+  allowlist, and on Mac14,9 it does not exist. Decide after testing on hardware.
+- **Thresholds.** 90 / 95 / 5 °C are provisional defaults and are user-adjustable (alert 70–100,
+  emergency alert+1…105, hysteresis 1–10). Open: whether these defaults suit each model, whether
+  the alert and the emergency need separate hysteresis values, and how the steppers should behave
+  in °F.
+- **Sensor semantics.** Is `TG*` non-GPU on every Apple Silicon model? Should `TC*` stay in the
+  emergency prefixes and in `agg:cpu`? Is the maximum the right aggregate, or is an average
+  needed? The sample-filter parameters (10 °C floor, hold for 5 reads, fall back to the group
+  maximum) are provisional.
+- **Sensor names.** No reliable source for `TCM*`, `TVM*`, `TPD*/TRD*`, `Th0*`, `TD*` or `Tf*`.
+  The P/E core split is inconsistent across community sources.
+- **Coexistence.** Detection only warns. Open: whether to refuse writes while another
+  controller runs, and whether to add more apps to the list. "Restore automatic" also hands back
+  fans that another tool forced; the UI should say so.
+- **Power.** Should the battery interval be configurable, should Low Power Mode be honoured, and
+  what does the 2 s default cost in battery?
+- **Start-up.** The persisted active profile is **not** re-applied at launch; the session stays
+  closed until the user acts.
+- **Unverified:** SMAppService registration and approval with real signing, the 8 s XPC timeout
+  under load, and whether the 2 s termination wait is enough.
