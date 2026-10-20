@@ -32,23 +32,28 @@ public enum SensorCatalog {
     /// `TPD*`/`TRD*`, `Th0*` (on Apple Silicon not the Intel heat pipe),
     /// `TD*`, `Tf*`, `TG*`, `Ta0*`, `Tz*`, `TS*`. Several of these are also
     /// excluded from ranking (`isExcludedFromRanking(_:)`).
-    public static let knownNames: [String: String] = [
+    public static let knownNames: [String: String] = knownComponents.mapValues { known in
+        SensorNameComponents(labelKey: known.label, suffix: known.suffix).englishName
+    }
+
+    /// `knownNames` as (label key, suffix), so that the label can be localized.
+    private static let knownComponents: [String: (label: String, suffix: String?)] = [
         // [legacy] + [AS] battery: TB0T = battery maximum, TB1T/TB2T = individual
         // battery sensors. Verified on Mac14,9 (all three ≈ 33 °C).
-        "TB0T": "Battery",
-        "TB1T": "Battery 1",
-        "TB2T": "Battery 2",
+        "TB0T": ("Battery", nil),
+        "TB1T": ("Battery", "1"),
+        "TB2T": ("Battery", "2"),
         // [legacy] + [AS] (Stats: "Airport"). Verified on Mac14,9 (≈ 45 °C).
-        "TW0P": "Wireless",
+        "TW0P": ("Wireless", nil),
         // [legacy] palm rest. Verified on Mac14,9 (Ts0P/Ts1P ≈ 30 °C, the coolest
         // sensors besides the battery area, as expected for the palm rest).
-        "Ts0P": "Palm Rest",
-        "Ts1P": "Palm Rest 2",
+        "Ts0P": ("Palm Rest", nil),
+        "Ts1P": ("Palm Rest", "2"),
         // [AS] Stats ("Airflow left" / "Airflow right"). Verified on Mac14,9 (≈ 44 °C).
-        "TaLP": "Airflow Left",
-        "TaRF": "Airflow Right",
+        "TaLP": ("Airflow Left", nil),
+        "TaRF": ("Airflow Right", nil),
         // [AS] Stats ("NAND"). Verified on Mac14,9 (≈ 38 °C, with TH0a/TH0b).
-        "TH0x": "NAND (SSD)",
+        "TH0x": ("NAND (SSD)", nil),
     ]
 
     /// Prefix patterns, checked in order after an exact `knownNames` match. The
@@ -88,16 +93,53 @@ public enum SensorCatalog {
     /// keys get distinct names (prefix names keep the key's remaining
     /// characters, and no exact name equals a name a prefix produces for a
     /// 4-character key; tested against every key seen on Mac14,9).
+    ///
+    /// The result is the stable English name (it is stored in
+    /// `SensorReading.name` and used as a legacy key); UIs that localize build
+    /// their text from `nameComponents(for:)` instead. Always equal to
+    /// `nameComponents(for: key).englishName`.
     public static func displayName(for key: String) -> String {
+        nameComponents(for: key).englishName
+    }
+
+    // MARK: - Localizable name components (design doc §5.7)
+
+    /// English label keys `nameComponents(for:)` can return for SMC keys
+    /// (aggregates return their aggregate name instead). Every entry is also a
+    /// Localizable.strings key in the DynamicNotch drop-ins.
+    public static let labelKeys: [String] = [
+        "CPU Performance Core", "CPU Efficiency Core", "GPU", "Battery", "Airflow Left", "Airflow Right",
+        "NAND (SSD)", "Palm Rest", "Wireless", "Memory", "Storage", fallbackLabelKey,
+    ]
+
+    /// Label key of the fallback name (`"Sensor <key>"`).
+    public static let fallbackLabelKey = "Sensor"
+
+    /// Structured name for an SMC temperature key (or aggregate id), from which
+    /// `displayName(for:)` is derived and a UI builds a localized name:
+    /// `localized(labelKey)` followed by `" " + suffix` when `suffix` is set.
+    ///
+    /// - Exact `knownNames` entries: e.g. `TB1T` → ("Battery", "1"), `TH0x` →
+    ///   ("NAND (SSD)", nil).
+    /// - Prefix patterns: the rest of the key is the suffix, e.g. `Tp09` →
+    ///   ("CPU Performance Core", "09").
+    /// - Aggregate ids: (aggregate name, nil), e.g. `agg:cpu` → ("CPU (max)", nil).
+    /// - Anything else: (`fallbackLabelKey`, key) with `isFallback == true`.
+    public static func nameComponents(for key: String) -> SensorNameComponents {
         if SensorAggregator.isAggregate(key) {
-            return SensorAggregator.knownNames[key] ?? "Sensor \(key)"
+            if let name = SensorAggregator.knownNames[key] {
+                return SensorNameComponents(labelKey: name, suffix: nil)
+            }
+            return SensorNameComponents(labelKey: fallbackLabelKey, suffix: key, isFallback: true)
         }
-        if let known = knownNames[key] { return known }
+        if let known = knownComponents[key] {
+            return SensorNameComponents(labelKey: known.label, suffix: known.suffix)
+        }
         for entry in prefixNames where key.hasPrefix(entry.prefix) {
             let suffix = key.dropFirst(entry.prefix.count).trimmingCharacters(in: .whitespaces)
-            return suffix.isEmpty ? entry.label : "\(entry.label) \(suffix)"
+            return SensorNameComponents(labelKey: entry.label, suffix: suffix.isEmpty ? nil : suffix)
         }
-        return "Sensor \(key)"
+        return SensorNameComponents(labelKey: fallbackLabelKey, suffix: key, isFallback: true)
     }
 
     // MARK: - Non-thermal / unreliable keys
@@ -192,4 +234,32 @@ public extension SensorReading {
     /// `SensorCatalog.isExcludedFromRanking(id)`: a non-thermal or unreliable
     /// key that automatic "hottest" selection and ranking skip.
     var isExcludedFromRanking: Bool { SensorCatalog.isExcludedFromRanking(id) }
+}
+
+/// A sensor name split into a localizable label and a verbatim suffix
+/// (`SensorCatalog.nameComponents(for:)`, design doc §5.7).
+public struct SensorNameComponents: Hashable, Sendable {
+    /// English label, also the Localizable.strings key (one of
+    /// `SensorCatalog.labelKeys`, or an aggregate name such as "CPU (max)").
+    public var labelKey: String
+    /// Appended verbatim after a space (rest of the SMC key, sensor index, or
+    /// the raw key for the fallback), or `nil`.
+    public var suffix: String?
+    /// `true` for keys without a known name (`"Sensor <key>"`).
+    public var isFallback: Bool
+
+    public init(labelKey: String, suffix: String?, isFallback: Bool = false) {
+        self.labelKey = labelKey
+        self.suffix = suffix
+        self.isFallback = isFallback
+    }
+
+    /// The unlocalized name (`SensorCatalog.displayName(for:)`).
+    public var englishName: String { name(label: labelKey) }
+
+    /// The name with `label` (e.g. the localized `labelKey`) in place of the label key.
+    public func name(label: String) -> String {
+        guard let suffix, !suffix.isEmpty else { return label }
+        return "\(label) \(suffix)"
+    }
 }
