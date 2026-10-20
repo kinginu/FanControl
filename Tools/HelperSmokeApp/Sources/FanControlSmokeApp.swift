@@ -36,6 +36,7 @@ struct SmokeView: View {
     @State private var installerStatus: HelperInstallStatus = HelperInstaller().status()
     @State private var message = ""
     @State private var confirmFirstWrite = false
+    @State private var confirmSixThousand = false
     @State private var confirmSensorLinked = false
     @State private var confirmLowThreshold = false
     @State private var tick = Date()
@@ -138,6 +139,21 @@ struct SmokeView: View {
                         }
                     } message: {
                         Text("Only after fanfi-probe --watch 1 and the helper log are running and \"Restore automatic\" was checked (pre-write-review「初回書込の手順」).")
+                    }
+                // Every fan, constant 6000 RPM (near F<n>Mx 6800). Confirmed first.
+                Button("All fans → 6000 RPM…") { confirmSixThousand = true }
+                    .confirmationDialog("Write to the SMC?", isPresented: $confirmSixThousand) {
+                        Button("Write F<n>Md = 1, F<n>Tg = 6000 for every fan", role: .destructive) {
+                            Task {
+                                await run {
+                                    for (index, _) in manager.fans.enumerated() {
+                                        try await manager.setFanRPM(fanIndex: index, rpm: 6000)
+                                    }
+                                }
+                            }
+                        }
+                    } message: {
+                        Text("Loud. Use \"Restore automatic\" to hand control back to the SMC.")
                     }
                 Button("Apply sensor-linked (agg:cpu 45→75 °C)…") { confirmSensorLinked = true }
                     .confirmationDialog("Write to the SMC?", isPresented: $confirmSensorLinked) {
