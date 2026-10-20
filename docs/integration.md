@@ -362,7 +362,17 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       「スリープ解除後にプロファイルを再適用」を OFF にした場合は、復帰直後にセッションが閉じ（ヘルパーが返す）、ファンが automatic になること（`manual(0)` が出ないこと）。
       設定は `FanControlAlertCoordinator` が `FanControlManager.reapplyProfileAfterWake` に同期。
 - [ ] 書込セッション無しで Nook を閉じても、警告が 1 つでも ON なら低頻度ポーリング（`max(5×間隔, 10 秒)`）が続き警告が出る。両方 OFF なら停止する。
-- [ ] バッテリー駆動で更新間隔 10 秒・Nook 非表示時停止の効果を確認。
+- [ ] **電源連動ポーリング**（§5.4 (a)、2026-10-20 実装）: 一般タブ「バッテリー駆動時はポーリングを 10 秒に」ON（既定）で電源アダプタを抜く →
+      ウィジェットの「最終更新」が約 10 秒間隔になり（`FanControlManager.isOnBattery == true`、`effectivePollingInterval == 10`）、
+      挿し直すと即座に設定値（既定 2 秒）に戻る。アプリログに `Power source changed: battery` / `AC`。トグル OFF ならバッテリーでも設定値のまま。
+      ポーリング間隔を 10 秒より長く（`defaults write` で 30 秒等）していれば短くならないこと。Nook 非表示中の低頻度ポーリングはバッテリーで 50 秒（`max(5×10, 10)`）。
+      Nook 非表示時の停止の効果も併せて確認。
+- [ ] **FanFi 併用時の警告**（§5.2、2026-10-20 実装）: FanFi（`com.fanfi.fanfi`）を起動 → 一般タブ上部に
+      「別のファン制御アプリ（FanFi）が動作しています。…」の警告、Live Activity「FanFi が動作中」が約 8 秒だけ出る（FanFi を終了するまで再表示されない）。
+      FanFi を終了すると警告が消え（`didTerminateApplication` で即時、遅くとも 60 秒）、再度起動すると Live Activity がもう一度出る。
+      FanFi のヘルパー（`/Library/LaunchDaemons/com.fanfi.fanfi.smcwrite.plist` / `/Library/PrivilegedHelperTools/com.fanfi.fanfi.smcwrite`）が
+      インストール済みでもアプリが動いていなければ警告しない（`conflictingControllerStatuses` には載る）。実バンドル ID が `com.fanfi.fanfi` であることを
+      実物の FanFi.app で確認する。
 - [ ] 「Nook が非表示のときは一時停止」: ホストが Nook の開閉で `FanControlNookVisibility.nookVisibilityChanged(isVisible:)` を呼ぶこと（PATCHES.md (b-2)）。
       ウィジェットをグリッドから外しても Nook を開けば一時停止が解ける／Nook を閉じたまま設定 ▸ Fan Control ▸ センサーを開くと通常間隔で更新され
       （「最終更新」が増え続けない）、閉じると一時停止に戻る／設定をオフにすると即座に通常間隔に戻ることを確認。
@@ -399,7 +409,10 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 ## 8. 未決事項（設計書 §5 より）
 
 - **Team ID**（§5.1）: `Helper-Info.plist` と `teamIdentifierPlaceholder` の実値。出荷前に必須。
-- **Mach サービス名**（§5.2）: `com.example.dynamicnotch.DynamicNotch.fanfi` で既存 FanFi と非競合。両方が同時に SMC を書くと互いに上書きし合うため、併用時の注意をユーザーに示すかは要判断。
+- **Mach サービス名**（§5.2）: `com.example.dynamicnotch.DynamicNotch.fanfi` で既存 FanFi と非競合。両方が同時に SMC を書くと互いに上書きし合う。
+  **併用時の注意表示は実装済み（2026-10-20）**: `ConflictingControllerDetector` が FanFi（アプリ `com.fanfi.fanfi`、ヘルパー `com.fanfi.fanfi.smcwrite`）の
+  起動とヘルパーの有無を検出し、一般タブ上部の警告と一度きりの Live Activity で知らせる（kit.md「Other fan control apps」）。
+  残り: 警告のみで書込は止めない（FanFi 起動中は書込を拒否する／確認を挟むかは要判断）、実 FanFi.app でのバンドル ID の確認（§6 Phase 5）、他のファン制御アプリ（Macs Fan Control 等）を対象に加えるか。
 - **Intel 対応の廃止（決定 2026-10-20）**: Apple Silicon のみ対応。`FanWriteStrategy` の `FS! ` / target-only 分岐、`SMCKey.forceBits`、
   ヘルパー許可リストの `^FS! $`、`HelperWritePolicy` / `PowerTransitionPolicy` / `SessionRegistry` / `UnsettledFanDetector` の強制ビット処理、
   `SafetyPolicy.default(appleSilicon:)` / `SensorAggregator.definitions(appleSilicon:)` の Intel 側の表、`SensorCatalog` の Intel 専用名を削除した。
@@ -419,6 +432,8 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
   非温度／不安定キー: `SensorCatalog.rankingExcludedPrefixes`（`Tf`、全機種）と `rankingExcludedKeys`（Mac14,9 で一定値の `TH1a`/`TH1b`/`TVMD`/`Ta0C/D/G/H/K/L/V`/`Tz11`〜`Tz18`/`Tz1j`）を
   自動選択・ランキングから除外（表示・明示選択は可）。`Tf*` の意味は不明で、除外は Mac14,9 の観察のみに基づく（`Tf04` 等は温度らしく変動するが一括除外）。
   他機種で除外キーが実温度だった場合や、別の一定値キーが上位に来る場合は表を見直す。
-- **ポーリング間隔**（§5.4）: 1/2/5/10 秒の選択式。電源状態による自動切替は未実装。
+- **ポーリング間隔**（§5.4）: 1/2/5/10 秒の選択式。**電源状態による自動切替は実装済み（2026-10-20）**: バッテリー駆動時は
+  `max(間隔, 10 秒)`（一般タブのトグル、既定 ON。`FanControlManager.slowPollingOnBattery` / `batteryPollingInterval`）、Nook 非表示時の低頻度ポーリングもこれに従う。
+  残り: バッテリー時の間隔（10 秒固定、UI なし）を選べるようにするか、低電力モード（`ProcessInfo.isLowPowerModeEnabled`）や残量でさらに落とすか、実機での消費電力の計測。
 - **制御開始タイミング**（§5.5）: 既定は機能 OFF。ON かつ「起動時に監視を開始」で起動時に監視（読み取り）を開始、OFF の場合はウィジェット初表示時に開始。ファン書き込みはユーザーがプロファイルを適用したときのみ。
 - **ライセンス**（§5.8）: 法務確認。

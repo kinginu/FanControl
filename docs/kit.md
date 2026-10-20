@@ -20,6 +20,8 @@ Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (intern
 | `ManualHelperSigning.swift` | own Team ID lookup and cdhash of the root-owned manually installed helper (manual-install mode) |
 | `FanWriteStrategy.swift` | pure `F<i>Md` + `F<i>Tg` write sequences (unit-tested on Linux) |
 | `ApplyGenerationGate.swift` | pure drop rule for stale poll write batches (unit-tested on Linux) |
+| `PowerSourceMonitor.swift` | `PowerSourceProviding` + IOKit `PowerSourceMonitor` (AC / battery, power-aware polling) |
+| `ConflictingControllerDetector.swift` | `ConflictingController` (`.fanFi`), `ConflictingControllerDetector` (other fan control apps running / helper installed) |
 | `FanControlPlatform.swift` | arm64 assertion (`isSupported` / `requireSupported()`, backed by `FanControlCore.FanControlHost`, `sysctl hw.optional.arm64`), `defaultSafetyPolicy`, `sensorAggregateDefinitions` |
 
 ## Threading model
@@ -54,8 +56,11 @@ is `HelperClient` (lock-protected, justified in its doc comment).
   ordered fire-and-forget work (monitoring flag, polls, sleep/wake flags) and `await run { … }`
   for results. Poll results are published back with `DispatchQueue.main.async` in the order they
   were produced (the published properties are `public internal(set)` for this).
-- A `Timer` on the main run loop (`.common` mode, 10 % tolerance) fires every `pollingInterval`
-  (effective range 0.5 to 300 s). Each tick snapshots the active profile, `safetyPolicy` and the
+- A `Timer` on the main run loop (`.common` mode, 10 % tolerance) fires every
+  `effectivePollingInterval` (`pollingInterval`, slowed on battery; effective range 0.5 to 300 s).
+  The power source (`PowerSourceProviding`, IOKit run-loop source on the main run loop) and the
+  conflict check (`ConflictingControllerDetector`, NSWorkspace launch / terminate observers on the
+  main queue) are main-actor state too. Each tick snapshots the active profile, `safetyPolicy` and the
   session flag on the main actor (`PollContext`), then enqueues the poll on the poller.
 - Helper writes go through a FIFO `WriteSerializer` actor, so a write list (mode key first,
   then target) is never interleaved with another list. `FanControlPoller.applyTargets` is
@@ -188,6 +193,36 @@ false`, normal polling) but `isMonitoringPaused` keeps the host's request, so re
 hold returns to the paused rate without the view restoring anything (`MonitoringPauseState`,
 `MonitoringPauseStateTests`). `isPauseInEffect` (new, read-only) is what the timer uses.
 
+**Power-aware polling (§5.4 (a), 2026-10-20):** `PowerSourceMonitor` (the default
+`PowerSourceProviding`) reads `IOPSGetProvidingPowerSourceType(IOPSCopyPowerSourcesInfo())`
+(`kIOPSBatteryPowerValue` = on battery; AC, UPS, desktops and unreadable state = not on battery)
+and observes changes with `IOPSNotificationCreateRunLoopSource` on the main run loop. The manager
+mirrors it into `isOnBattery` and computes `effectivePollingInterval` with the pure
+`PollingIntervalPolicy.effectiveInterval` (FanControlCore):
+`slowPollingOnBattery && isOnBattery ? max(pollingInterval, batteryPollingInterval) : pollingInterval`,
+clamped to 0.5...300 s. The timer is rescheduled whenever the effective interval changes (power
+source switch, or any of the three settings). The paused low-frequency poll uses it too
+(`PollingIntervalPolicy.pausedInterval`: `max(5 × effectivePollingInterval, 10 s)`, i.e. 50 s on
+battery with the defaults). Tests inject a mock source (`init(powerSource:)`,
+`PowerAwarePollingTests`, `PollingIntervalPolicyTests`).
+
+**Other fan control apps (§5.2, 2026-10-20):** our helper has its own Mach service, so it does not
+collide with FanFi's `com.fanfi.fanfi.smcwrite`, but two apps writing `F<n>Md` / `F<n>Tg` override
+each other. `ConflictingControllerDetector` checks each `ConflictingController` (built in:
+`.fanFi` = app `com.fanfi.fanfi`, helper label `com.fanfi.fanfi.smcwrite`): app running
+(`NSRunningApplication.runningApplications(withBundleIdentifier:)`, terminated instances ignored)
+and helper installed (`/Library/LaunchDaemons/<label>.plist` or
+`/Library/PrivilegedHelperTools/<label>` exists). Probes are injectable
+(`ConflictingControllerDetectorTests`). The manager publishes `conflictingControllerStatuses`
+(everything found, including an installed helper whose app is not running) and
+`conflictingControllers` (display names of the *running* apps, e.g. `["FanFi"]`; posts
+`.fanControlConflictingControllersChanged`). It refreshes on `startMonitoring()`, on
+`NSWorkspace.didLaunchApplicationNotification` / `didTerminateApplicationNotification` for a known
+bundle id (observers registered with the other system observers), at most every
+`conflictCheckInterval` (60 s) from the poll timer, and on `refreshConflictingControllers()` (the
+General tab calls it on appear). Detection only warns; the kit never blocks or changes writes
+because of it.
+
 **Sleep/wake** (revised 2026-10-20 after first-write test 4: across sleep the SMC resets `F<i>Tg`
 to 0 but keeps `F<i>Md` = 1, so fans wake "manual, target 0" = stopped). Two layers; the helper is
 the safety authority (`docs/helper.md` §5 「スリープ／復帰」: it hands forced fans back to the SMC
@@ -303,8 +338,10 @@ still open): the session stays closed until the user acts.
 `schemaVersion` 2) is stored as JSON (`ProfileStore.encodeJSON`) in `UserDefaults` under
 **`fanControl.profileStore`** (`FanControlManager.profileStoreDefaultsKey`) on every change. The
 real app may swap this for a sindresorhus `Defaults` key with the same name. See "Profiles" below.
-`pollingInterval`, `reapplyProfileAfterWake` and `safetyPolicy` are not persisted by the kit; the
-app's settings layer owns them.
+`pollingInterval`, `slowPollingOnBattery`, `batteryPollingInterval`, `reapplyProfileAfterWake` and
+`safetyPolicy` are not persisted by the kit; the app's settings layer owns them
+(`FanControlGeneralSettings.slowPollingOnBattery`, default `true`, decoded with `decodeIfPresent`
+so older stored settings keep working).
 
 ## Profiles (fixed set of six, 2026-10-20)
 
@@ -370,7 +407,9 @@ the DynamicNotch drop-in UI this is `FanControlAlertCoordinator.syncManagerSetti
 
 | Property | Default | Effect |
 |---|---|---|
-| `pollingInterval` | 2.0 s | timer interval (clamped to 0.5...300 s); setting it reschedules the timer |
+| `pollingInterval` | 2.0 s | timer interval (clamped to 0.5...300 s); a change of `effectivePollingInterval` reschedules the timer |
+| `slowPollingOnBattery` | `true` | on battery poll every `max(pollingInterval, batteryPollingInterval)` (the coordinator mirrors `FanControlGeneralSettings.slowPollingOnBattery`, General tab toggle "Slow Down Polling on Battery (10 s)") |
+| `batteryPollingInterval` | 10 s | battery interval used while `slowPollingOnBattery` (not exposed in the UI) |
 | `reapplyProfileAfterWake` | `true` | `true`: re-apply on wake at 0 / 2 / 5 s; `false`: close an open session immediately on wake |
 | `keepAlertsWhilePaused` | `true` | keep a slow poll while paused without a session (the drop-in coordinator mirrors `highTemperatureAlertEnabled \|\| fanAnomalyAlertEnabled`) |
 | `safetyPolicy` | `FanControlPlatform.defaultSafetyPolicy` | thresholds; taken per poll. An app that persists its own policy should start from `SafetyPolicy.default` |
@@ -494,6 +533,7 @@ retried automatically, and UIs show the remedy (re-run `sudo install.sh <this ap
 | `.fanControlHighTemperatureChanged` | `highTempAlertActive` changed | `"active": Bool` |
 | `.fanControlFanAnomalyChanged` | `anomalousFanIDs` changed | `"fanIDs": Set<Int>` |
 | `.fanControlDidUpdate` | after every published poll | none |
+| `.fanControlConflictingControllersChanged` | `conflictingControllers` changed | `"names": [String]` |
 
 These are the hooks for Live Activities (design doc §4.2).
 
