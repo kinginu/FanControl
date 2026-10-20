@@ -63,6 +63,14 @@ cdhash_of() {
     printf '%s\n' "$hash"
 }
 
+# has_true_entitlement <path-to-code> <entitlement-key>: succeeds if the code signature's
+# entitlements set <key> to true (codesign --xml output, whitespace-insensitive).
+has_true_entitlement() {
+    local xml
+    xml="$(codesign -d --entitlements - --xml "$1" 2>/dev/null | tr -d '[:space:]')" || return 1
+    [[ "$xml" == *"<key>$2</key><true/>"* ]]
+}
+
 # pinned_requirement <plist>: FANCONTROL_CLIENT_REQUIREMENT of a LaunchDaemon plist (empty if none)
 pinned_requirement() {
     plutil -extract "EnvironmentVariables.${ENV_KEY}" raw -o - "$1" 2>/dev/null || true

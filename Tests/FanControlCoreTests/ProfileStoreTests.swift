@@ -30,7 +30,7 @@ struct ProfileStoreTests {
             #expect(FanProfile.constantQuiet().mode(for: fan) == .constant(rpm: 3000))
             #expect(FanProfile.constantHigh().mode(for: fan) == .constant(rpm: 5000))
             #expect(FanProfile.boost().mode(for: fan)
-                    == .sensor(sensorKey: "agg:cpu", startTemperature: 50, maxTemperature: 80))
+                    == .sensor(sensorKey: "agg:cpu", startTemperature: 70, maxTemperature: 95))
             #expect(FanProfile.defaultCustom1().mode(for: fan) == FanProfile.boost().mode(for: fan))
             #expect(FanProfile.defaultCustom2().mode(for: fan) == .constant(rpm: 3500))
         }
@@ -215,11 +215,14 @@ struct ProfileStoreTests {
                                          isEmergency: false)
         }
         #expect(plan(40) == [0: 2317, 1: 2317])
-        #expect(plan(50) == [0: 2317, 1: 2317])
-        // 65 °C = halfway: 2317 + (6800 − 2317) / 2 = 4558.5 → 4559 (rounded)
-        #expect(plan(65) == [0: 4559, 1: 4559])
-        #expect(plan(80) == [0: 6800, 1: 6800])
-        #expect(plan(90) == [0: 6800, 1: 6800])
+        #expect(plan(70) == [0: 2317, 1: 2317])
+        // Mac14,9 idle hottest core (agg:cpu 72.7 °C): close to minimum, not near max.
+        // 2317 + (72.7 − 70) / 25 × 4483 = 2801.2 → 2801
+        #expect(plan(72.7) == [0: 2801, 1: 2801])
+        // 82.5 °C = halfway: 2317 + (6800 − 2317) / 2 = 4558.5 → 4559 (rounded)
+        #expect(plan(82.5) == [0: 4559, 1: 4559])
+        #expect(plan(95) == [0: 6800, 1: 6800])
+        #expect(plan(100) == [0: 6800, 1: 6800])
         // No agg:cpu reading → fail hot (max).
         #expect(plan(nil) == [0: 6800, 1: 6800])
         // Constant presets clamp into Mn…Mx and ignore sensors.

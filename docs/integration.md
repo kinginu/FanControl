@@ -324,7 +324,7 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 - [ ] `Mn` 未満の目標値（`enforceHardwareMinimum = false` で 1000 RPM 等）を適用 → `rpmOutOfRange` エラーで**何も書かれない**こと（`F0Md` が 0 のまま）。
 - [ ] プロファイル タブで「最大」を適用 → 接続状態が「接続済み（ファンを制御中）」、ファンが最大回転へ。
       Apple Silicon では `F0Md`=1 → `F0Tg` 書込、Intel では `FS! ` ビット → `F0Tg` 書込で回転数が変わること（`F0Ac` を確認）。
-- [ ] プリセット「定速・静音」（3000）/「定速・強」（5000）/「ブースト」（`agg:cpu` 50→80 °C）をウィジェットと設定の両方から適用 → 期待どおりの回転数。
+- [ ] プリセット「定速・静音」（3000）/「定速・強」（5000）/「ブースト」（`agg:cpu` 70→95 °C。2026-10-20 に 50→80 °C から変更、kit.md「Profiles」）をウィジェットと設定の両方から適用 → 期待どおりの回転数。
       プリセットは `defaultMode` で定義されるため、UI は `FanProfile.resolved(for:)` を渡して適用する（`FanControlProfiles.apply`）。セッションが開くこと。
 - [ ] カスタム 1/2 を編集・保存・名前変更・「初期設定に戻す」→ 適用。アクティブなスロットを保存すると次のポーリングで反映される。
 - [ ] カスタムスロットで「固定」スライダ / 「センサー連動」（センサー・開始/最大温度）を設定して保存 → 適用 → 期待通りの回転数。（2026-10-20 HelperSmokeApp: `agg:cpu` 45→75 °C を全ファンに適用 → 75 °C 超で 6800、74.35 °C で 6702 と線形カーブどおり。UI 経由は未実施。`verification/first-write-2026-10-20.md`）
@@ -360,6 +360,10 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       設定は `FanControlAlertCoordinator` が `FanControlManager.reapplyProfileAfterWake` に同期。
 - [ ] 書込セッション無しで Nook を閉じても、警告が 1 つでも ON なら低頻度ポーリング（`max(5×間隔, 10 秒)`）が続き警告が出る。両方 OFF なら停止する。
 - [ ] バッテリー駆動で更新間隔 10 秒・Nook 非表示時停止の効果を確認。
+- [ ] 「Nook が非表示のときは一時停止」: ホストが Nook の開閉で `FanControlNookVisibility.nookVisibilityChanged(isVisible:)` を呼ぶこと（PATCHES.md (b-2)）。
+      ウィジェットをグリッドから外しても Nook を開けば一時停止が解ける／Nook を閉じたまま設定 ▸ Fan Control ▸ センサーを開くと通常間隔で更新され
+      （「最終更新」が増え続けない）、閉じると一時停止に戻る／設定をオフにすると即座に通常間隔に戻ることを確認。
+- [ ] 「ファン制御を有効にする」を素早くオフ→オン（ダブルクリック）しても監視が止まらない（ウィジェットが「SMC unavailable」にならない）ことを確認。
 
 ## 7. この Linux 環境で検証できなかったこと
 

@@ -115,6 +115,11 @@ final class FanControlAlertCoordinator {
         if manager.keepAlertsWhilePaused != keepAlerts {
             manager.keepAlertsWhilePaused = keepAlerts
         }
+        // "Pause When Nook Is Hidden" turned off (or the feature disabled) while
+        // paused: nothing else would clear the pause until the Nook opens again.
+        if !(general.isEnabled && general.pauseWhenNookHidden) && manager.isMonitoringPaused {
+            manager.setMonitoringPaused(false)
+        }
     }
 
     /// Recomputes `currentAlert` from the manager state and the alert settings.

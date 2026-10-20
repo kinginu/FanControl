@@ -123,7 +123,8 @@ public enum PowerTransitionPolicy {
 
     /// The fans the session forces, from the client's last successful write per key
     /// (`lastWritten`; the helper's own power writes are not recorded there).
-    /// `touchedForceBits` are the `FS! ` bits the session has set at some point.
+    /// `touchedForceBits` are the `FS! ` bits the session has set at some point on top of its
+    /// snapshot (`HelperWritePolicy.newlySetForceBits`); pre-existing bits are never included.
     public static func rememberedFans(lastWritten: [SMCKey: [UInt8]], touchedForceBits: UInt64,
                                       keyInfo: (SMCKey) -> SMCKeyInfo?) -> [RememberedFan] {
         var controls: [Int: RememberedFan.Control] = [:]

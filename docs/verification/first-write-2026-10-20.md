@@ -104,7 +104,7 @@ probe（UTC、1 秒間隔。ヘルパーの書込ログは debug レベルで永
 - 復帰 5 秒後の再適用は動作した（`FanControlManager.reapplyProfileAfterWake`）。
 - Fan 2 は復帰直後 `manual(0)` になっており、スリープ前に automatic だったファンまで Md=1 で起きている（直前の 6800 強制の名残か、SMC が全ファンの Md を揃えるのかは未確認）。
 - **要対応（安全性）**: 復帰直後の「Md=1 / Tg=0」を数秒放置するのは避けたい。候補: (1) ヘルパー自身が `NSWorkspace.didWakeNotification`／IOKit の電源通知を監視し、復帰時に即座にセッション中のファンへ最後の目標値を再書込するか `Md`=0 に戻す、(2) アプリ側の 5 秒待ちを撤廃し、復帰通知で即座に再適用する、(3) ポーリングで「Md=1 かつ Tg < Mn」を異常として即再書込する（現状の unsettled 機構の拡張）。
-- **対策（2026-10-20 実装、実機再テスト待ち）**: 候補 (1)〜(3) をすべて実装した。ヘルパー: `Sources/FanControlHelper/PowerObserver.swift`（IOKit 電源通知）＋ `SessionRegistry.prepareForSleep` / `recoverAfterWake`、判断は `Sources/FanControlXPC/PowerTransitionPolicy.swift`（スリープ前に `Md`=0 で返却、復帰時 0/1/3 秒で再適用、記録の無い手動ファンは `Md`=0）。アプリ: `FanControlManager.handleWake`（即座・2 秒・5 秒で再適用）と `Sources/FanControlKit/UnsettledFanDetector.swift`（ポーリングで「手動かつ Tg < Mn」等を検出）。手順と期待パターンは `docs/integration.md` §6 Phase 5、ログは `docs/helper.md` §5「スリープ／復帰」。
+- **対策（2026-10-20 実装、同日の再テストで合格。下記「テスト 4 再テスト」）**: 候補 (1)〜(3) をすべて実装した。ヘルパー: `Sources/FanControlHelper/PowerObserver.swift`（IOKit 電源通知）＋ `SessionRegistry.prepareForSleep` / `recoverAfterWake`、判断は `Sources/FanControlXPC/PowerTransitionPolicy.swift`（スリープ前に `Md`=0 で返却、復帰時 0/1/3 秒で再適用、記録の無い手動ファンは `Md`=0）。アプリ: `FanControlManager.handleWake`（即座・2 秒・5 秒で再適用）と `Sources/FanControlKit/UnsettledFanDetector.swift`（ポーリングで「手動かつ Tg < Mn」等を検出）。手順と期待パターンは `docs/integration.md` §6 Phase 5、ログは `docs/helper.md` §5「スリープ／復帰」。
 
 ## テスト 4 再テスト: スリープ／復帰の安全策（2026-10-20 11:22–11:26）
 

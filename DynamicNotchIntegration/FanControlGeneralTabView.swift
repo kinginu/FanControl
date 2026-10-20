@@ -107,8 +107,15 @@ struct FanControlGeneralTabView: View {
                     // Restore first, then stop: `restoreDefaultControl()` needs the
                     // SMC reader (it would reopen one if monitoring were already
                     // stopped) and closes the write session itself.
+                    // Stop only if the feature is still off once the restore has
+                    // finished: a quick off → on (double-click) has already run
+                    // `startMonitoring()` on the on-path, which must not be undone.
                     fanControlPerform($actionError) {
-                        defer { manager.stopMonitoring() }
+                        defer {
+                            if !Defaults[.fanControlGeneralSettings].isEnabled {
+                                manager.stopMonitoring()
+                            }
+                        }
                         try await manager.restoreDefaultControl()
                     }
                 }

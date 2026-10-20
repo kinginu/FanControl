@@ -216,6 +216,15 @@ public enum HelperWritePolicy {
         }
     }
 
+    /// The `FS! ` bits a write newly sets relative to the session's snapshot: `written & ~snapshot`.
+    /// Bits already set before the session (by the SMC or another tool) are not the session's,
+    /// so `restore` / power hand-back must not clear them. `nil` if either payload does not decode.
+    public static func newlySetForceBits(written: [UInt8], snapshot: [UInt8], type: SMCDataType) -> UInt64? {
+        guard let bits = forceBits(of: written, type: type),
+              let before = forceBits(of: snapshot, type: type) else { return nil }
+        return bits & ~before
+    }
+
     /// `bytes` read as a big-endian integer with `mask` cleared, re-serialised at the same width.
     public static func clearingBits(_ mask: UInt64, in bytes: [UInt8]) -> [UInt8] {
         var out = bytes

@@ -93,6 +93,28 @@ case .fanControl: FanControlWidgetView()
 `RootView` が各ウィジェット設定を `.environment(\.xxxWidgetSettings, …)` で配っているが、Fan Control の View は
 `@Default(.fanControlWidgetSettings)` を直接読むので environment キーの追加は不要。
 
+### (b-2) Nook の表示／非表示 → 監視の一時停止（「Nook 非表示中は一時停止」、2026-10-20 追加）
+
+一時停止はホストの Nook の開閉で駆動する。ウィジェットの `onAppear` / `onDisappear` だけに頼ると、ウィジェットをグリッドから外した・
+Nook を閉じたまま設定を開いた場合に一時停止が解けなくなる（逆に、ウィジェットを置いていないと一時停止がかからない）。
+Nook が開いた／閉じたことが分かる箇所（NotchViewModel の状態が `.nook` に入る／出る箇所、または `RootView` の
+`.onChange(of: notchState)`）で次の 1 行を呼ぶ。メインスレッドから呼ぶこと（`FanControlNookVisibility` は `@MainActor`）:
+
+```swift
+// Nook が開いた: isVisible = true / 閉じた（ノッチに戻った・非表示）: isVisible = false
+FanControlNookVisibility.nookVisibilityChanged(isVisible: notchState == .nook)
+```
+
+`FanControlNookVisibility`（`FanControlSettingsView.swift`）は機能が有効かつ `pauseWhenNookHidden` のときだけ
+`FanControlManager.shared.setMonitoringPaused(!isVisible)` を呼び、それ以外は一時停止を解除する。補足:
+
+- ウィジェット自身の `onAppear`（解除）/ `onDisappear`（一時停止）はホストのフックが無い場合の代替として残している。フックがあれば
+  Nook を開くたびに確実に解除される。
+- 設定ペイン（`FanControlSettingsView`）は表示中 `FanControlManager.setLiveDataHold(true, for:)` で一時停止を保留し（Nook が閉じていても
+  通常間隔でポーリング）、閉じると保留を外す。ホストの要求（`isMonitoringPaused`）は書き換えないので、元の状態を覚えて戻す必要は無い。
+- 一般設定で「Nook 非表示中は一時停止」をオフにする（または機能を無効にする）と、`FanControlAlertCoordinator.syncManagerSettings()` が
+  一時停止を解除する。
+
 ## (c) `WidgetsSettingsTabView.swift` — ウィジェット別設定画面
 
 ```swift

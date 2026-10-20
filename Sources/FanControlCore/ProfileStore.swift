@@ -10,7 +10,7 @@ import Foundation
 /// | `automatic` | Automatic | SMC default | no |
 /// | `constantQuiet` | Constant Quiet | every fan 3000 RPM | no |
 /// | `constantHigh` | Constant High | every fan 5000 RPM | no |
-/// | `boost` | Boost | every fan follows `agg:cpu`, 50 → 80 °C | no |
+/// | `boost` | Boost | every fan follows `agg:cpu`, 70 → 95 °C | no |
 /// | `custom1` | Custom 1 | default: copy of Boost | modes + name |
 /// | `custom2` | Custom 2 | default: every fan 3500 RPM | modes + name |
 ///

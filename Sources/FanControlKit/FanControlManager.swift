@@ -88,7 +88,12 @@ public final class FanControlManager: @unchecked Sendable {
     public private(set) var fanControlModes: [Int: FanControlMode] = [:]
     public private(set) var isSMCConnected: Bool = false
     public private(set) var isMonitoring: Bool = false
+    /// The host's last `setMonitoringPaused` request (Nook hidden). Whether the
+    /// slow / stopped polling is actually in effect is `isPauseInEffect`.
     public private(set) var isMonitoringPaused: Bool = false
+    /// `isMonitoringPaused` and no live-data hold (`setLiveDataHold(_:for:)`):
+    /// the poll timer runs slowed (or stopped) only while this is `true`.
+    public private(set) var isPauseInEffect: Bool = false
     public private(set) var lastUpdate: Date?
     public private(set) var lastError: FanControlError?
     public private(set) var helperStatus: HelperInstallStatus = .notRegistered
@@ -151,7 +156,7 @@ public final class FanControlManager: @unchecked Sendable {
     /// session is open. The app mirrors "any alert enabled" into this.
     public var keepAlertsWhilePaused: Bool = true {
         didSet {
-            if keepAlertsWhilePaused != oldValue, isMonitoring, isMonitoringPaused { scheduleTimer() }
+            if keepAlertsWhilePaused != oldValue, isMonitoring, isPauseInEffect { scheduleTimer() }
         }
     }
     /// Team ID the helper's code signature must carry
@@ -200,6 +205,8 @@ public final class FanControlManager: @unchecked Sendable {
 
     // MARK: - Private (main thread)
 
+    /// Main thread. Nook pause request + live-data holds (`isPauseInEffect`).
+    @ObservationIgnored private var pauseState = MonitoringPauseState()
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var systemObservers: [(NotificationCenter, NSObjectProtocol)] = []
     /// Pending wake re-apply attempts (`wakeReapplyDelays`).
@@ -331,10 +338,13 @@ public final class FanControlManager: @unchecked Sendable {
         refreshNow()
     }
 
-    /// Call with `true` when the Nook is hidden (design doc §5.4). Polling slows
-    /// down to `max(5 × pollingInterval, 10 s)` while a write session is open (so
-    /// sensor-based modes and the emergency override keep working) or while
-    /// `keepAlertsWhilePaused` is `true` (so alerts keep firing); otherwise it stops.
+    /// Call with `true` when the Nook is hidden and `false` when it is shown
+    /// (design doc §5.4; the host drives it from its Nook visibility, PATCHES.md (b)).
+    /// While the pause is in effect (`isPauseInEffect`: paused and no live-data
+    /// hold) polling slows down to `max(5 × pollingInterval, 10 s)` while a write
+    /// session is open (so sensor-based modes and the emergency override keep
+    /// working) or while `keepAlertsWhilePaused` is `true` (so alerts keep
+    /// firing); otherwise it stops.
     public func setMonitoringPaused(_ paused: Bool) {
         guard Thread.isMainThread else {
             DispatchQueue.main.async { self.setMonitoringPaused(paused) }
@@ -342,8 +352,33 @@ public final class FanControlManager: @unchecked Sendable {
         }
         guard paused != isMonitoringPaused else { return }
         isMonitoringPaused = paused
+        pauseState.requested = paused
+        syncPauseInEffect()
+    }
+
+    /// A view that shows live data regardless of the Nook (the settings pane)
+    /// holds it while visible: `true` on appear, `false` on disappear, with a
+    /// name unique to the view. While any hold exists the Nook pause is not in
+    /// effect (normal polling) and `isMonitoringPaused` keeps the host's request,
+    /// so releasing the last hold returns to the paused rate without the view
+    /// having to remember or restore the previous pause state.
+    public func setLiveDataHold(_ held: Bool, for holder: String) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.setLiveDataHold(held, for: holder) }
+            return
+        }
+        pauseState.setHold(held, for: holder)
+        syncPauseInEffect()
+    }
+
+    /// Main thread. Reschedules the timer when `isPauseInEffect` changes; polls
+    /// at once when the pause ends.
+    private func syncPauseInEffect() {
+        let inEffect = pauseState.isInEffect
+        guard inEffect != isPauseInEffect else { return }
+        isPauseInEffect = inEffect
         scheduleTimer()
-        if !paused { pollIfMonitoring() }
+        if !inEffect { pollIfMonitoring() }
     }
 
     // MARK: - Control
@@ -371,13 +406,29 @@ public final class FanControlManager: @unchecked Sendable {
                     throw FanControlError.rpmOutOfRange(fan: fanIndex, rpm: rpm, allowed: allowed)
                 }
             }
-            var updated = base
-            if base.isBuiltIn {
-                updated = FanProfile(id: Self.customProfileID, name: "Custom", modes: base.modes, isBuiltIn: false)
-            }
-            updated.modes[fanIndex] = mode
+            let updated = Self.profile(changing: base, fanIndex: fanIndex, to: mode, fans: fans)
             try await self.apply(updated, force: true, allowOpeningSession: true, makeActive: true)
         }
+    }
+
+    /// The profile `setFanControlMode` applies: `base` with fan `fanIndex` set to
+    /// `mode`. The other fans keep their *effective* mode: `base` is resolved for
+    /// `fans` first, so a preset's `defaultMode` (Constant High, Boost, …) is
+    /// materialised into per-fan modes instead of being dropped (untouched fans
+    /// would otherwise fall back to automatic), and `apply` sees every manual fan
+    /// in `modes`. A built-in base becomes the "Custom" profile (`customProfileID`,
+    /// carrying the preset's `defaultMode` for fans not discovered yet); a user
+    /// profile keeps its id, name and `defaultMode`.
+    static func profile(changing base: FanProfile, fanIndex: Int, to mode: FanControlMode,
+                        fans: [FanDevice]) -> FanProfile {
+        let resolved = base.resolved(for: fans)
+        var updated = resolved
+        if base.isBuiltIn {
+            updated = FanProfile(id: customProfileID, name: "Custom", modes: resolved.modes, isBuiltIn: false,
+                                 defaultMode: base.defaultMode)
+        }
+        updated.modes[fanIndex] = mode
+        return updated
     }
 
     /// Applies `profile` (writing immediately, bypassing the throttle) and makes
@@ -977,7 +1028,7 @@ public final class FanControlManager: @unchecked Sendable {
         timer = nil
         guard isMonitoring else { return }
         let interval: TimeInterval
-        if isMonitoringPaused {
+        if isPauseInEffect {
             // Slow mode keeps sensor-based modes / the emergency override (session)
             // and the alerts (`keepAlertsWhilePaused`) alive while hidden.
             guard isSMCWriteSessionOpen || keepAlertsWhilePaused else { return }
@@ -999,7 +1050,7 @@ public final class FanControlManager: @unchecked Sendable {
         let open = helperClient.isSessionOpen
         guard open != isSMCWriteSessionOpen else { return }
         isSMCWriteSessionOpen = open
-        if isMonitoringPaused { scheduleTimer() }
+        if isPauseInEffect { scheduleTimer() }
     }
 
     // MARK: - Sleep / wake / termination (main thread)

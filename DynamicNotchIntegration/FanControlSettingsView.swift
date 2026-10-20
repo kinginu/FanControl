@@ -12,6 +12,7 @@
 // `settingsPaneSize` in WindowsManager.swift).
 
 import SwiftUI
+import Defaults
 import FanControlCore
 import FanControlKit
 
@@ -55,6 +56,27 @@ struct FanControlSettingsView: View {
         .task {
             manager.refreshHelperStatus()
         }
+        // Live data while the pane is open, even with the Nook hidden ("Pause When
+        // Nook Is Hidden"): a hold suspends the pause without changing the host's
+        // request, so closing the pane returns to whatever the Nook state asks for.
+        .onAppear { manager.setLiveDataHold(true, for: Self.liveDataHolder) }
+        .onDisappear { manager.setLiveDataHold(false, for: Self.liveDataHolder) }
+    }
+
+    private static let liveDataHolder = "FanControlSettingsView"
+}
+
+/// Host hook for "Pause When Nook Is Hidden" (design doc §5.4, PATCHES.md (b)):
+/// call `nookVisibilityChanged(isVisible:)` from the host's Nook open / close
+/// handling. Pausing is driven by the Nook itself, not by the Fan Control widget's
+/// appear / disappear, so it also works when the widget is not in the grid and is
+/// always cleared when the Nook opens again. Turning the setting off resumes
+/// polling (`FanControlAlertCoordinator.syncManagerSettings`).
+@MainActor
+enum FanControlNookVisibility {
+    static func nookVisibilityChanged(isVisible: Bool) {
+        let general = Defaults[.fanControlGeneralSettings]
+        FanControlManager.shared.setMonitoringPaused(!isVisible && general.isEnabled && general.pauseWhenNookHidden)
     }
 }
 

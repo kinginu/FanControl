@@ -117,7 +117,7 @@ case .notFound: /* plist がバンドルに無い・配置ミス */ break
 - セッション中に書いた各キーの **書込前の値** を初回書込の直前に記録する。記録（読み取り）に失敗した場合は書込自体を `6 smcError` で拒否する。
 - close / 解放 / ヘルパーの SIGTERM 時の復元（`HelperWritePolicy.restore`、書込前レビュー 2026-10-20 で順序を変更。`docs/verification/pre-write-review-2026-10-20.md`）:
   1. `F<n>Mn` を記録値に戻す（現在は許可リスト外なので通常は記録されない）。
-  2. モード系キーを**固定の自動値**に戻す: `F<n>Md` = 0、`FS! ` = 記録値からこのセッションが立てたビットを落とした値（記録値そのものには戻さない。前のセッションの手動状態を再現しないため）。失敗したら 1 回だけ再試行する。
+  2. モード系キーを**固定の自動値**に戻す: `F<n>Md` = 0、`FS! ` = 記録値からこのセッションが立てたビットを落とした値（記録値そのものには戻さない。前のセッションの手動状態を再現しないため）。「このセッションが立てたビット」は、書込値のうちセッション開始時の記録値で**立っていなかった**ビットだけ（`HelperWritePolicy.newlySetForceBits`。記録時点で SMC や他のツールが立てていたビットは数えないので、復元・スリープ・復帰でも落とさない）。失敗したら 1 回だけ再試行する。
   3. `F<n>Tg` は、このセッションでモード系キー（`F<n>Md` または `FS! ` のビット）を書いて**いない**ファン（target-only）だけ記録値に戻す。値はハードウェア `Mn`〜`Mx` にクランプする。
   モードを自動に戻したファンの `F<n>Tg` は書かない（自動制御中は SMC が目標値を持つ）。Apple Silicon ではアイドル時の記録値が `Tg` = 0（`Mn` 未満）で、
   旧実装のように `F<n>Md` = 1 のまま書き戻すとファン停止を指令することになり、続く `Md` = 0 が失敗すると手動 0 RPM のまま残る恐れがあった。
@@ -189,10 +189,12 @@ codesign -d -r- DynamicNotch.app
 7. 未署名・別 Team ID のクライアントは接続が即座に無効化される。
 8. `SMAppService.daemon(plistName:).unregister()` 後、`launchctl print` でサービスが消える。
 
-### スリープ／復帰（2026-10-20 実装、実機再テスト待ち）
+### スリープ／復帰（2026-10-20 実装、同日 11:22–11:26 の実機再テストで合格）
 
 背景（`docs/verification/first-write-2026-10-20.md` テスト 4）: スリープをまたぐと SMC は `F<n>Tg` を 0 にリセットし `F<n>Md` = 1 を保持する（スリープ前に automatic だったファンも）。
 復帰直後はファンが「手動・目標 0」= 停止状態になり、アプリの復帰通知が遅れればそのまま残る。ヘルパーは安全性の最終責任者なので、アプリに頼らず自分で処理する。
+
+再テスト（同ファイル「テスト 4 再テスト」）で分かった実際の仕組み: スリープ前にヘルパーが `Md` = 0 で返していても、SMC は復帰直後に**全ファンを `F<n>Md` = 3 / `Tg` = 0**（1 でも 0 でもない過渡状態）で起こし、1〜2 秒後に自分で `Md` = 0 に戻す。この過渡中に書いた `F<n>Tg` は SMC が `Md` = 0 に戻す時点で捨てられる（定着しない）。復帰直後の「手動・目標 0」は SMC 側の過渡状態で、こちらの書込由来ではない。合格基準（復帰後 `manual(0)` が 2 サンプル連続しない）を満たし、プロファイルは約 2 秒で復元、回転数は約 6 秒で追随した（対策前は約 5 秒）。
 
 実装: `PowerObserver`（`Sources/FanControlHelper/PowerObserver.swift`、IOKit の薄い糊）が `IORegisterForSystemPower` を登録する。
 ヘルパーは `dispatchMain()` で動き main の CFRunLoop を回さないため、通知ポートは run loop source ではなく `IONotificationPortSetDispatchQueue` で専用キューに載せる。
@@ -202,10 +204,11 @@ codesign -d -r- DynamicNotch.app
 |---|---|
 | `kIOMessageCanSystemSleep` | 常に許可（`IOAllowPowerChange`）。スリープを拒否しない |
 | `kIOMessageSystemWillSleep` | セッションが開いていれば、セッションが強制中のファン（最後の `F<n>Md` 書込が非 0、またはこのセッションが立てた `FS! ` ビット）を SMC に返す: `F<n>Md` = 0、`FS! ` は該当ビットを落とす。`F<n>Tg` は書かない。セッションとクライアントの意図は保持。書込の成否にかかわらず直後に `IOAllowPowerChange`（30 秒制限に対し数回の SMC 呼出のみ） |
-| `kIOMessageSystemHasPoweredOn` | 0 s / 1 s / 3 s（`PowerTransitionPolicy.wakeRetryDelays`。復帰直後は SMC が書込を拒否しうる）に復旧を試みる。各回でファンを読み直すので冪等（揃っていれば何も書かない）。新たなスリープで残りの試行は破棄 |
+| `kIOMessageSystemHasPoweredOn` | 0 s / 1 s / 3 s（`PowerTransitionPolicy.wakeRetryDelays`。復帰直後の `Md` = 3 過渡中の書込は SMC が 1〜2 秒後に `Md` = 0 へ戻す際に捨てるため、過渡が終わった後の試行で書き直す）に復旧を試みる。各回でファンを読み直すので冪等（揃っていれば何も書かない）。新たなスリープで残りの試行は破棄 |
 
 復帰時の各試行（セッションあり、`PowerTransitionPolicy.wakeRecovery`）:
 
+- `Md` は非 0 なら手動扱い（`Md` = 3 の過渡状態も含む）。そのため 1 回目の試行は `Md` = 3 を手動と見て `F<n>Tg` だけを書き、これは定着しない。SMC が `Md` = 0 に戻した後の 2 回目の試行が `F<n>Md` = 1 → `F<n>Tg` を書き直して定着する（再テストで確認した想定動作。下のログ例）。
 - 記憶したファン（強制中で目標値の記録あり）: 手動でなければモードキー（`F<n>Md` = 最後に書かれた値 / `FS! ` ビット）→ `F<n>Tg` = 最後の目標値の順で書く。手動だが `F<n>Tg` が記憶値から 5 RPM を超えてずれていれば `F<n>Tg` だけ書く。
 - それ以外で手動モードのファン（目標の記録が無い `F<n>Md` = 1。テスト 4 の Fan 2 のように SMC が手動で起こしたもの、`Md`=1 だけ成功して `Tg` が失敗したもの）: `F<n>Md` = 0（`FS! ` はビットを落とす）で SMC に返す。
 - 書込順は `F<n>Md`（ファン番号順）→ `FS! ` 1 回 → `F<n>Tg`。記憶はクライアントの最新の書込なので、復帰後にアプリが目標を変えれば以降の試行はそれに従う。
@@ -219,12 +222,14 @@ Power: registered for system sleep/wake notifications                       (inf
 Power: system will sleep; session of pid 1234 open, handed back to the SMC: F0Md=0; remembered targets: F0 3000
 Power: system will sleep; no session open, nothing to hand back
 Power: system has powered on; wake recovery at 0.0s, 1.0s, 3.0s
-Power: wake recovery 1/3 (session of pid 1234): observed F0 Md=0 Tg=2468, F1 Md=1 Tg=0; wrote F0Md=1, F1Md=0, F0Tg=3000
-Power: wake recovery 2/3 (session of pid 1234): fans already match (F0 Md=1 Tg=3000, F1 Md=0 Tg=…)
+Power: wake recovery 1/3 (session of pid 1234): observed F0 Md=3 Tg=0, F1 Md=3 Tg=0; wrote F1Md=0, F0Tg=3000
+Power: wake recovery 2/3 (session of pid 1234): observed F0 Md=0 Tg=0, F1 Md=0 Tg=0; wrote F0Md=1, F0Tg=3000
+Power: wake recovery 3/3 (session of pid 1234): fans already match (F0 Md=1 Tg=3000, F1 Md=0 Tg=0)
 Power: system has powered on; no session open but fan(s) 0,1 are in manual mode - not writing (another tool may own them)
 Power: IORegisterForSystemPower failed; sleep/wake fan handling is disabled   (error。この場合は従来どおりアプリ側の処理だけ)
 ```
 
+上の 1/3〜3/3 は再テスト（Fan 1 固定 3000 RPM、Fan 2 automatic）で実際に出た並び。1/3 の `F0Tg=3000` は `Md` = 3 の過渡中なので効かず、2/3 で `Md` = 0 を観測して書き直すのが正常（失敗ではない）。
 失敗した書込は `F0Tg=3000 FAILED (<理由>)` のように同じ行に出る。アプリ側（`FanControlManager`）も復帰時に即座・2 s・5 s で再適用し、ポーリングで「手動かつ `Tg` < `Mn`」などを検出して書き直す（kit.md「Sleep/wake」「State drift」）。
 既知の制約: DarkWake でも `HasPoweredOn` が届くため、セッション中は DarkWake の間も記憶した目標で回る（次の `WillSleep` で再び返す）。ヘルパーの SIGKILL / クラッシュ中のスリープは対象外。
 
@@ -290,17 +295,35 @@ identifier "com.example.dynamicnotch.DynamicNotch" and cdhash H"<40 桁の 16 �
 
 ### 脅威モデル（なぜ cdhash 固定なら個人利用で許容できるか）
 
-- **セキュリティ境界はヘルパーによるクライアント検証**。これを通ったプロセスは root の SMC 書込（許可リスト・値域検証つき、§4）を依頼できる。
+- **損害の上限を決めるのはヘルパー自身の書込検証**（許可リスト + `HelperWritePolicy.validate` のハードウェア値域検証、§4）。クライアント検証を通ったプロセスが依頼できるのは
+  「許可されたファンキーに、そのファンの `Mn`〜`Mx` の範囲で、モードは 0/1 で書く」ことだけで、ヘルパーは切断・終了時に自動制御へ戻す（§5）。最悪でも「アプリ自身ができること」
+  （ファンを最大で回し続ける、最低回転数に固定する）に限られ、任意の SMC キーや範囲外の値は書けない。
+- **手動インストール方式では、ログイン中ユーザーと同じ uid で動くプロセスは信頼境界の内側**にある。クライアント検証（cdhash 固定）が防ぐのは
+  「**別のビルド**（別バイナリ）が接続すること」であり、同じユーザーの悪意あるプロセスがヘルパーを使うことまでは防がない:
+  - cdhash 要件が見るのは**メイン実行ファイルのコードディレクトリ**だけ（`NSXPCConnection.setCodeSigningRequirement` は接続相手の動的コードを検査し、バンドル全体の封印は見ない）。
+  - アプリが `com.apple.security.get-task-allow` を持つと（Xcode が Debug ビルドに自動注入する）、同じユーザーは `task_for_pid` / `lldb -p` で実行中のアプリにコードを注入でき、
+    そのプロセスは固定 cdhash を満たしたままヘルパーに依頼できる。
+  - アプリが `com.apple.security.cs.disable-library-validation` を持つと、ユーザーが書き換えられるバンドル内の framework（`Lottie.framework`、`Sparkle.framework` など）を
+    差し替えたものがそのまま読み込まれ、やはり cdhash は変わらない。
+  - したがって cdhash 固定は「同じユーザーのマルウェア」に対する境界ではない。Team ID 方式（§1〜§3）でもアプリ側の entitlement が同じなら事情は同じ。
+- **`install.sh` の警告**: 固定するアプリが上の 2 つの entitlement を持つと警告を出す（ヘルパーの `com.apple.application-identifier` 警告と同様。中止はしない）。
+  - **`get-task-allow` を外す**: 固定するビルドは Release でビルドするか、Debug なら `CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO` を付ける
+    （例: `xcodebuild … -configuration Release build CODE_SIGN_IDENTITY=-` または `… -configuration Debug build CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO`）。
+    `codesign -d --entitlements - --xml <App.app>` に `get-task-allow` が無いことを確認してから `install.sh` する。
+  - **`disable-library-validation` は残す**: アドホック署名には Team ID が無く、Hardened Runtime のライブラリ検証は「同じ Team ID か Apple 署名」のライブラリしか読み込まないため、
+    外すと埋め込み framework（Lottie / Sparkle）の読込が拒否されアプリが起動しない（Debug dylib で同じ症状を確認済み。下記「注意」）。
+    代わりにアプリのバンドルを自分のユーザーだけが書ける場所に置く（`/Applications` に置くなら所有者・権限を確認する）。
 - **bundle ID だけの要件（`identifier "com.example.dynamicnotch.DynamicNotch"`）は偽装できる**。アドホック署名は誰でも任意の identifier で作れるため、
-  同じユーザー権限で動く任意のプロセスが `codesign -s - -i com.example.dynamicnotch.DynamicNotch` で自分を署名すれば通ってしまう。だから環境変数が cdhash を含まない場合は起動を拒否する。
-- **cdhash はコードディレクトリのハッシュ**で、実行ファイル（とバンドルの場合は Info.plist・リソースの封印）の内容に結び付く。別のプロセスが同じ cdhash を持つには
-  同一のバイナリでなければならず、同一バイナリなら DynamicNotch そのもの。Team ID 方式の「Apple の証明書チェーン + Team ID」の代わりに「このビルドそのもの」を信頼する。
+  同じユーザー権限で動く任意のプロセスが `codesign -s - -i com.example.dynamicnotch.DynamicNotch` で自分を署名すれば、注入も差し替えも不要で通ってしまう。だから環境変数が cdhash を含まない場合は起動を拒否する。
+- **cdhash はコードディレクトリのハッシュ**で、メイン実行ファイルの内容（と、署名時に封印された Info.plist・リソースのハッシュ）に結び付く。別のバイナリが同じ cdhash を持つことはできないので、
+  再ビルドしたアプリ・別のアプリ・スモークアプリは接続できない（「固定 cdhash が一致しないとき」）。Team ID 方式の「Apple の証明書チェーン + Team ID」の代わりに「このビルド」を信頼する。
 - 要件文字列は root 所有の `/Library/LaunchDaemons/…plist`（0644）にあり、書き換えられるのは root だけ。root を持つ攻撃者はヘルパーを使わずとも SMC に書けるので、ここは新たな攻撃面にならない。
 - **アプリ → ヘルパーの検証**: `HelperClient` は接続時に root 所有の `/Library/PrivilegedHelperTools/<label>` から cdhash を読み（ファイルとその親ディレクトリが uid 0 かつ group/other 書込不可で、
   署名が `SecStaticCodeCheckValidity` を通ることを確認）、それを要件に固定する。そこに置けるのは root（＝ `sudo install.sh` したユーザー）だけなので、信頼の起点は「root が入れたもの」で、
   そもそも system ドメインの Mach サービス名を登録できるのも root だけ。これは主に「別のバイナリが同じ Mach 名で応答している」取り違えを防ぐためのもので、SMC 書込の安全性はヘルパー側の検証が担う。
 - 弱点・前提: (1) アプリを再ビルド・置換するたびに cdhash が変わり、`install.sh` の再実行が必要（しないとヘルパーが接続を拒否する。アプリ側のエラー文に再実行の案内を付けている）。
   (2) Gatekeeper / 公証は効かない（自分でビルドしたものを自分で入れる前提）。(3) 配布には使わない（他人の Mac では Team ID 方式を使う）。
+  (4) 同じユーザーのプロセスは上記のとおりヘルパーを使えるので、個人利用の Mac で、自分のユーザーで動くものを信頼できることが前提。
 
 ### アプリ側
 
@@ -362,6 +385,7 @@ sudo ./uninstall.sh
 2. アプリのメイン実行ファイルの cdhash を `codesign -dvvv` の `CDHash=` 行から取得（1 行だけであること・40 桁 16 進であることを確認）。
    ユニバーサルバイナリはホストのアーキテクチャ（`uname -m`、Apple Silicon なら arm64）のスライスを `--arch` で選ぶ。そのスライスが無い・単一アーキテクチャがホストと違う場合は中止。
 3. ヘルパーに `com.apple.application-identifier` entitlement（Xcode が自動注入）が付いていれば警告を出す（下記「注意」）。
+   アプリに `com.apple.security.get-task-allow` または `com.apple.security.cs.disable-library-validation` が付いていれば警告を出す（「脅威モデル」。中止はしない）。
 4. SMAppService 由来の同名ジョブが読み込まれていれば中止。
 5. テンプレートから plist を生成（`plutil -replace` で `Program` と `FANCONTROL_CLIENT_REQUIREMENT`、`plutil -lint`）。
 6. 読み込み済みなら `launchctl bootout system/<label>`（終了を待つ）→ `install -o root -g wheel -m 0755` でヘルパーを配置し、配置後の署名と cdhash を再確認 →

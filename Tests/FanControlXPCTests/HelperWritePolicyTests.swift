@@ -129,6 +129,22 @@ struct HelperWritePolicyTests {
         #expect(writer.writes.map(\.1) == [Mac14_9.flt(2317), Mac14_9.flt(3000)])
     }
 
+    @Test func testPreExistingForceBitsAreNotTouchedBySession() {
+        let fs = SMCKeyInfo(dataSize: 2, dataType: .ui16, attributes: 0xd4)
+        // Snapshot FS! = 0b10 (fan 1 forced by another tool); the app writes 0b11 to force fan 0.
+        let touched = HelperWritePolicy.newlySetForceBits(written: [0x00, 0x03], snapshot: [0x00, 0x02],
+                                                           type: fs.dataType)
+        #expect(touched == 0b01)
+        let writer = RecordingWriter()
+        restore([("FS! ", [0x00, 0x02])], touched: touched ?? 0, writer: writer)
+        // Restore writes the snapshot back unchanged: fan 1 stays forced.
+        #expect(writer.writes.map(\.0) == ["FS! "])
+        #expect(writer.writes.map(\.1) == [[0x00, 0x02]])
+        // Undecodable payloads.
+        #expect(HelperWritePolicy.newlySetForceBits(written: [0x00, 0x03], snapshot: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+                                                     type: .hex) == nil)
+    }
+
     @Test func testIntelForceBitsClearedAndTargetsOfForcedFansSkipped() {
         let writer = RecordingWriter()
         // Snapshot FS! = 0b10 (fan 1 forced by someone else), this session forced fan 0.

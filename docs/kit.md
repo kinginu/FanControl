@@ -20,7 +20,7 @@ Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (intern
 
 - All observable properties of `FanControlManager` are mutated on the **main thread** only.
   Synchronous public methods (`startMonitoring`, `stopMonitoring`, `refreshNow`,
-  `setMonitoringPaused`, `saveProfile`, `deleteProfile`, `clearLastError`) hop to main if called elsewhere.
+  `setMonitoringPaused`, `setLiveDataHold`, `saveProfile`, `deleteProfile`, `clearLastError`) hop to main if called elsewhere.
   `FanControlManager` is **not** `@MainActor`; it is `@unchecked Sendable`, so views may call it
   directly from the main thread and `await` its async methods from a `Task`.
   Async methods can be awaited from any context; they publish via `MainActor.run`.
@@ -135,7 +135,12 @@ re-registers a mismatched helper once.
 
 `setFanControlMode` / `setFanRPM` edit the active profile: a user profile is updated in place;
 if a built-in profile is active, its modes are copied into a user profile named "Custom"
-(`FanControlManager.customProfileID`), which becomes active. RPMs are validated against
+(`FanControlManager.customProfileID`), which becomes active. In both cases the base is first
+resolved for the discovered fans (`profile.resolved(for:)`, via `FanControlManager.profile(changing:…)`),
+so the other fans keep their *effective* mode: changing Fan 1 while Constant High is active leaves
+Fan 2 at 5000 RPM (before 2026-10-20 only `modes` was copied, which dropped a preset's
+`defaultMode` and sent untouched fans back to automatic). "Custom" also carries the preset's
+`defaultMode` for fans discovered later (`ProfileEditTests`). RPMs are validated against
 `fan.rpmRange` (or `0...max` if `safetyPolicy.enforceHardwareMinimum` is false) and rejected with
 `.rpmOutOfRange`.
 
@@ -143,6 +148,13 @@ if a built-in profile is active, its modes are copied into a user profile named 
 `max(5 × pollingInterval, 10 s)` if a write session is open (sensor-based modes and the emergency
 override keep working) or if `keepAlertsWhilePaused` is `true` (default; the high-temperature and
 fan-anomaly alerts keep firing). Otherwise polling stops while paused.
+The host drives the pause from its Nook visibility (`FanControlNookVisibility.nookVisibilityChanged(isVisible:)`,
+PATCHES.md (b-2)); the widget's appear / disappear is only a fallback. Views that must show live
+data whatever the Nook state (the settings pane) call `setLiveDataHold(true, for: <name>)` on appear
+and `false` on disappear: while any hold exists the pause is not in effect (`isPauseInEffect ==
+false`, normal polling) but `isMonitoringPaused` keeps the host's request, so releasing the last
+hold returns to the paused rate without the view restoring anything (`MonitoringPauseState`,
+`MonitoringPauseStateTests`). `isPauseInEffect` (new, read-only) is what the timer uses.
 
 **Sleep/wake** (revised 2026-10-20 after first-write test 4: across sleep the SMC resets `F<i>Tg`
 to 0 but keeps `F<i>Md` = 1, so fans wake "manual, target 0" = stopped). Two layers; the helper is
@@ -264,12 +276,23 @@ users cannot create or delete profiles. Ids are fixed UUIDs (`FanProfile.BuiltIn
 | Automatic | `…000000000001` | SMC default (no override) | no |
 | Constant Quiet (定速・静音) | `…000000000011` | every fan 3000 RPM (`quietRPM`) | no |
 | Constant High (定速・強) | `…000000000012` | every fan 5000 RPM (`highRPM`) | no |
-| Boost (ブースト) | `…000000000013` | every fan `.sensor(agg:cpu, 50 → 80 °C)` | no |
+| Boost (ブースト) | `…000000000013` | every fan `.sensor(agg:cpu, 70 → 95 °C)` (`boostStartTemperature` / `boostMaxTemperature`) | no |
 | Custom 1 (カスタム 1) | `…000000000021` | default = copy of Boost | per-fan modes + name |
 | Custom 2 (カスタム 2) | `…000000000022` | default = every fan 3500 RPM (`custom2RPM`) | per-fan modes + name |
 
 Constant RPMs are clamped to each fan's `Mn…Mx` when applied (Mac14,9: 2317…6800). The emergency
 override (`SafetyPolicy`) still forces every fan to max when hot, whatever the profile.
+
+- **Boost thresholds (provisional, changed 2026-10-20 from 50 → 80 °C):** `agg:cpu` is the
+  *maximum* over all CPU core sensors, and the hottest core idles at about 72–78 °C on Mac14,9
+  (probe: `agg:cpu` 72.7 °C, `TCMz` / `Tp0A` ≈ 78 °C). With 50 → 80 °C the linear curve put both
+  fans at ~5700–6500 RPM on an idle machine (SMC: 0 RPM). 70 → 95 °C keeps idle near `Mn`
+  (72.7 °C → ≈ 2800 RPM) and still ramps to full speed well before the SMC's own curve under
+  sustained load ("stronger than Apple"); 95 °C matches the emergency force-max threshold. The
+  preset is read-only: a user who wants a different ramp copies it into Custom 1 / Custom 2 and
+  retunes it there. Custom 1's factory default (`defaultCustom1()`, also restored by `reset`)
+  follows Boost; a Custom 1 already stored with the old 50 → 80 °C copy keeps it until reset.
+  The profile editor's default for a newly sensor-linked fan uses the same two values.
 
 - **"Every fan" presets:** `FanProfile.defaultMode` (new, optional, Codable-compatible) is the mode
   of every fan without an entry in `modes`; `mode(for:)` = `modes[id] ?? defaultMode ?? .automatic`.

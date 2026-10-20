@@ -67,6 +67,21 @@ if codesign -d --entitlements - --xml "$HELPER_SRC" 2>/dev/null | grep -q 'com.a
     warn "see docs/helper.md 「手動インストール（個人利用モード）」."
 fi
 
+# The cdhash pin only stops a *different build* from connecting. A same-user process can still
+# run code inside the pinned app if the app allows debugging (get-task-allow) or loads unsigned
+# libraries (disable-library-validation); the helper's allowlist + range checks bound what it can
+# do. See docs/helper.md 「脅威モデル」.
+if has_true_entitlement "$APP" com.apple.security.get-task-allow; then
+    warn "the app carries com.apple.security.get-task-allow (Debug build): any process of your user can"
+    warn "attach to it (task_for_pid / lldb) and use the helper through it. For the build you pin, prefer"
+    warn "Release, or Debug with CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO (docs/helper.md 「脅威モデル」)."
+fi
+if has_true_entitlement "$APP" com.apple.security.cs.disable-library-validation; then
+    warn "the app carries com.apple.security.cs.disable-library-validation: a replaced framework inside the"
+    warn "bundle would load without changing the pinned cdhash. Needed for ad-hoc + Hardened Runtime with"
+    warn "embedded frameworks; keep the app bundle writable only by you (docs/helper.md 「脅威モデル」)."
+fi
+
 APP_CDHASH="$(cdhash_of "$APP")"
 HELPER_CDHASH="$(cdhash_of "$HELPER_SRC")"
 REQUIREMENT="$(client_requirement "$APP_CDHASH")"

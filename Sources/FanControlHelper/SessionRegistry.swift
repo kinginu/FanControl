@@ -51,7 +51,8 @@ public final class SessionRegistry: @unchecked Sendable {
     /// Hardware `F<n>Mn...F<n>Mx` per fan, read at session open (before any write can
     /// change `F<n>Mn`). Fans missing here cannot have speed keys written.
     private var fanLimits: [Int: ClosedRange<Double>] = [:]
-    /// `FS! ` bits this session has set; cleared from the snapshot on restore.
+    /// `FS! ` bits this session has newly set (not already set in its snapshot); cleared from the
+    /// snapshot on restore and handed back on sleep / wake.
     private var touchedForceBits: UInt64 = 0
     /// The client's last successful write per key (its intent), re-applied on wake.
     /// The helper's own sleep/wake writes are not recorded here.
@@ -147,9 +148,18 @@ public final class SessionRegistry: @unchecked Sendable {
             }
             originals.append((key, original))
         }
-        if key == .forceBits, let bits = HelperWritePolicy.forceBits(of: bytes, type: info.dataType) {
+        if key == .forceBits {
+            // Only bits this session sets on top of the snapshot are "touched": bits already set
+            // before the session (SMC or another tool) are left as they were on restore / sleep / wake.
             // Recorded before the write: if the SMC applied it despite an error, restore still clears it.
-            touchedForceBits |= bits
+            let snapshot = originals.first(where: { $0.key == key })?.bytes ?? []
+            if let bits = HelperWritePolicy.newlySetForceBits(written: bytes, snapshot: snapshot,
+                                                              type: info.dataType) {
+                touchedForceBits |= bits
+            } else if let bits = HelperWritePolicy.forceBits(of: bytes, type: info.dataType) {
+                // Undecodable snapshot (should not happen: size is checked above): fall back to all bits.
+                touchedForceBits |= bits
+            }
         }
 
         do {

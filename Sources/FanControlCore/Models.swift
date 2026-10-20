@@ -150,13 +150,17 @@ public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
         /// Boost: sensor followed by every fan.
         public static let boostSensorKey = "agg:cpu"
         /// Boost: fans at `minRPM` at or below this temperature (°C).
-        public static let boostStartTemperature = 50.0
-        /// Boost: fans at `maxRPM` at or above this temperature (°C).
-        public static let boostMaxTemperature = 80.0
+        /// `agg:cpu` is the *hottest* core, which idles at ~72–78 °C on Apple Silicon
+        /// (Mac14,9), so the ramp starts at 70 °C: near minimum at idle, full speed well
+        /// before the SMC would (provisional; docs/kit.md "Profiles").
+        public static let boostStartTemperature = 70.0
+        /// Boost: fans at `maxRPM` at or above this temperature (°C); equals the
+        /// emergency force-max threshold of `SafetyPolicy.default`.
+        public static let boostMaxTemperature = 95.0
         /// Default of the Custom 2 slot: every fan at this RPM.
         public static let custom2RPM = 3500
 
-        /// The Boost mode (`.sensor(agg:cpu, 50 → 80 °C)`).
+        /// The Boost mode (`.sensor(agg:cpu, 70 → 95 °C)`).
         public static var boostMode: FanControlMode {
             .sensor(sensorKey: boostSensorKey, startTemperature: boostStartTemperature,
                     maxTemperature: boostMaxTemperature)
