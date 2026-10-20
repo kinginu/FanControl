@@ -4,12 +4,21 @@
 // The "Fan Control" settings pane (design doc §4.3), registered as a
 // `Settings.Pane` (see PATCHES.md (d)). Mirrors `LiveActivitiesSettingsView`:
 // a `TabView` with General / Profiles / Sensors tabs, plus an error footer.
+//
+// The pane has ONE fixed size for every tab (`contentSize`), so switching tabs
+// never resizes the settings window; tab contents that can grow (General's
+// sections, the profile editor, the sensor table) scroll inside it. The host
+// app wraps the pane in a slightly larger fixed frame (DynamicNotchApp: 760×640,
+// `settingsPaneSize` in WindowsManager.swift).
 
 import SwiftUI
 import FanControlCore
 import FanControlKit
 
 struct FanControlSettingsView: View {
+
+    /// Fixed size of the whole pane (tabs + error footer), identical for every tab.
+    static let contentSize = CGSize(width: 740, height: 600)
 
     @State private var selection: Int = 0
     /// Error from the last action started in this pane (thrown by the manager).
@@ -21,14 +30,17 @@ struct FanControlSettingsView: View {
         VStack(spacing: 8) {
             TabView(selection: $selection) {
                 FanControlGeneralTabView(actionError: $actionError)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .tabItem { Text("General") }
                     .tag(0)
 
                 FanControlProfilesTabView(actionError: $actionError)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .tabItem { Text("Profiles") }
                     .tag(1)
 
                 FanControlSensorsTabView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .tabItem { Text("Sensors") }
                     .tag(2)
             }
@@ -39,7 +51,7 @@ struct FanControlSettingsView: View {
             }
         }
         .padding(.all)
-        .frame(idealHeight: 544)
+        .frame(width: Self.contentSize.width, height: Self.contentSize.height)
         .task {
             manager.refreshHelperStatus()
         }

@@ -12,7 +12,6 @@
   Aggregate sensor names (SensorAggregator, e.g. "CPU (max)") are localized below.
 */
 
-
 /* MARK: Navigation / names */
 "Fan Control" = "Fan Control";
 "Fan Alert" = "Fan Alert";
@@ -28,7 +27,6 @@
 "Fans" = "Fans";
 "Show All Fans" = "Show All Fans";
 "No fans detected" = "No fans detected";
-"Show 3 Hottest Sensors" = "Show 3 Hottest Sensors";
 "No sensors found" = "No sensors found";
 "Display" = "Display";
 "Temperature Unit" = "Temperature Unit";
@@ -80,17 +78,10 @@
 
 /* MARK: Profiles tab (FanControlProfilesTabView) */
 "Select a profile" = "Select a profile";
-"New Profile" = "New Profile";
-"%@ Copy" = "%@ Copy";
-"Delete this profile?" = "Delete this profile?";
-"This cannot be undone." = "This cannot be undone.";
-"Delete" = "Delete";
 "Cancel" = "Cancel";
 "Profile Name" = "Profile Name";
 "Active" = "Active";
-"Built-in profiles are read-only. Duplicate one to customize it." = "Built-in profiles are read-only. Duplicate one to customize it.";
 "Apply" = "Apply";
-"Duplicate" = "Duplicate";
 "Revert" = "Revert";
 "Save" = "Save";
 "Automatic" = "Automatic";
@@ -105,10 +96,6 @@
 "Maximum Temperature" = "Maximum Temperature";
 "Minimum speed at or below the start temperature, maximum speed at or above the maximum temperature." = "Minimum speed at or below the start temperature, maximum speed at or above the maximum temperature.";
 "Turn on Fan Control in the General tab to apply profiles." = "Turn on Fan Control in the General tab to apply profiles.";
-
-/* MARK: Built-in profile names (FanProfile.automatic/silent/maximum; "Automatic" is shared with the mode picker above) */
-"Silent" = "Silent";
-"Maximum" = "Maximum";
 
 /* MARK: Aggregate sensor names (SensorAggregator; FanControlFormatting.sensorName) */
 "CPU (max)" = "CPU (max)";
@@ -127,7 +114,37 @@
 
 /* MARK: Nook widget (FanControlWidgetView) and Live Activity (FanControlLiveActivity) */
 "Fan control disabled" = "Fan control disabled";
-"Temperatures" = "Temperatures";
 "Profile" = "Profile";
 "High temperature" = "High temperature";
 "Fan stopped" = "Fan stopped";
+
+/* MARK: Fixed profile names (FanProfile.DefaultName; "Automatic" is shared with the mode picker above) */
+"Constant Quiet" = "Constant Quiet";
+"Constant High" = "Constant High";
+"Boost" = "Boost";
+"Custom 1" = "Custom 1";
+"Custom 2" = "Custom 2";
+
+/* MARK: Profiles tab — fixed set (FanControlProfilesTabView) */
+"Presets" = "Presets";
+"Custom" = "Custom";
+"Reset to Default" = "Reset to Default";
+"Reset this profile to its default settings?" = "Reset this profile to its default settings?";
+"Your changes to this profile, including its name, are discarded." = "Your changes to this profile, including its name, are discarded.";
+"macOS (the SMC) controls every fan. Fan control returns the fans to automatic." = "macOS (the SMC) controls every fan. Fan control returns the fans to automatic.";
+"Every fan at a constant %@ RPM (limited to each fan's range). Read-only preset." = "Every fan at a constant %@ RPM (limited to each fan's range). Read-only preset.";
+"Every fan follows %@: minimum speed at the start temperature, maximum speed at the maximum temperature. Read-only preset." = "Every fan follows %@: minimum speed at the start temperature, maximum speed at the maximum temperature. Read-only preset.";
+"Editable profile. Choose a mode for each fan, then Save or Apply." = "Editable profile. Choose a mode for each fan, then Save or Apply.";
+"Dot = current speed" = "Dot = current speed";
+
+/* MARK: Fan curve and key temperatures (FanCurveView, FanControlKeyTemperaturesView) */
+"Fan Curve" = "Fan Curve";
+"Controlled by macOS" = "Controlled by macOS";
+"Key Temperatures" = "Key Temperatures";
+"CPU" = "CPU";
+"GPU" = "GPU";
+"SSD" = "SSD";
+
+/* MARK: Widget settings — fixed profiles (FanControlWidgetSettingsView) */
+"Show Key Temperatures" = "Show Key Temperatures";
+"Show Fan Curve (Double Wide)" = "Show Fan Curve (Double Wide)";

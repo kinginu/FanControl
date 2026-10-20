@@ -144,33 +144,6 @@ struct PersistenceTests {
                             FanProfile.maximum(for: fans).id]).count == 3)
     }
 
-    @Test func testProfileStore() throws {
-        let custom = FanProfile(name: "Custom", modes: [
-            0: .sensor(sensorKey: "TC0P", startTemperature: 50, maxTemperature: 90),
-            1: .constant(rpm: 3000),
-        ])
-        var store = ProfileStore(profiles: [.automatic(), .silent(for: fans)])
-        store.upsert(custom)
-        store.activeProfileID = custom.id
-        #expect(store.activeProfile == custom)
-
-        var renamed = custom
-        renamed.name = "Renamed"
-        store.upsert(renamed)
-        #expect(store.profiles.count == 3)
-        #expect(store.activeProfile?.name == "Renamed")
-
-        let data = try ProfileStore.encodeJSON(store)
-        #expect(try ProfileStore.decodeJSON(data) == store)
-
-        #expect(store.delete(id: FanProfile.BuiltInID.automatic) == false)
-        #expect(store.delete(id: custom.id) == true)
-        #expect(store.activeProfileID == nil)
-        #expect(store.activeProfile == nil)
-        #expect(store.profiles.count == 2)
-        #expect(store.delete(id: UUID()) == false)
-    }
-
     @Test func testSnapshotRoundtrip() throws {
         let snapshot = FanControlSnapshot(fans: fans, currentRPMs: [0: 1210], targetRPMs: [0: 1200],
                                           sensors: [SensorReading(id: "TC0P", name: "CPU", temperature: 50)],

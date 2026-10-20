@@ -32,8 +32,8 @@ struct FanControlWidgetSettings: Defaults.Serializable, Codable, Equatable, Hash
     /// Fan ids to show (`FanDevice.id`); `nil` shows every fan.
     var visibleFanIDs: [Int]? = nil
     /// Sensor keys to show (`SensorReading.id`, aggregate ids such as
-    /// `"agg:cpu"` included); `nil` shows the 3 hottest overview sensors
-    /// (see `visibleSensors(from:aggregateDefinitions:)`).
+    /// `"agg:cpu"` included); `nil` shows the key temperatures
+    /// (CPU (max), GPU (max), SSD; see `visibleSensors(from:aggregateDefinitions:)`).
     var visibleSensorKeys: [String]? = nil
     /// Unit used for temperatures in the widget, the alert and the settings pane.
     var temperatureUnit: TemperatureUnit = .celsius
@@ -41,23 +41,28 @@ struct FanControlWidgetSettings: Defaults.Serializable, Codable, Equatable, Hash
     var showProfilePicker: Bool = true
     /// Show the target RPM next to the measured RPM.
     var showTargetRPM: Bool = false
+    /// Show the fan curve of the active profile (double-wide layout only).
+    var showFanCurve: Bool = true
 
     init(gridSize: GridSizeChoice = .medium,
          visibleFanIDs: [Int]? = nil,
          visibleSensorKeys: [String]? = nil,
          temperatureUnit: TemperatureUnit = .celsius,
          showProfilePicker: Bool = true,
-         showTargetRPM: Bool = false) {
+         showTargetRPM: Bool = false,
+         showFanCurve: Bool = true) {
         self.gridSize = gridSize
         self.visibleFanIDs = visibleFanIDs
         self.visibleSensorKeys = visibleSensorKeys
         self.temperatureUnit = temperatureUnit
         self.showProfilePicker = showProfilePicker
         self.showTargetRPM = showTargetRPM
+        self.showFanCurve = showFanCurve
     }
 
     enum CodingKeys: String, CodingKey {
-        case gridSize, visibleFanIDs, visibleSensorKeys, temperatureUnit, showProfilePicker, showTargetRPM
+        case gridSize, visibleFanIDs, visibleSensorKeys, temperatureUnit, showProfilePicker, showTargetRPM,
+             showFanCurve
     }
 
     init(from decoder: Decoder) throws {
@@ -69,6 +74,7 @@ struct FanControlWidgetSettings: Defaults.Serializable, Codable, Equatable, Hash
         temperatureUnit = try container.decodeIfPresent(TemperatureUnit.self, forKey: .temperatureUnit) ?? defaults.temperatureUnit
         showProfilePicker = try container.decodeIfPresent(Bool.self, forKey: .showProfilePicker) ?? defaults.showProfilePicker
         showTargetRPM = try container.decodeIfPresent(Bool.self, forKey: .showTargetRPM) ?? defaults.showTargetRPM
+        showFanCurve = try container.decodeIfPresent(Bool.self, forKey: .showFanCurve) ?? defaults.showFanCurve
     }
 
     /// The fans to display, in hardware order.
@@ -78,20 +84,20 @@ struct FanControlWidgetSettings: Defaults.Serializable, Codable, Equatable, Hash
     }
 
     /// The sensors to display: the user's selection in selection order, or,
-    /// when nothing is selected, the 3 hottest finite readings of
-    /// `SensorAggregator.overview` (`SensorAggregator.hottestOverview`) — the
-    /// CPU (max) / GPU (max) aggregates stand in for their individual core keys
-    /// (so the hottest core is not listed twice), other sensors (battery,
-    /// storage, …) compete as before, and non-thermal / unreliable keys
-    /// (`SensorCatalog.isExcludedFromRanking`, e.g. `Tf06` on Mac14,9) never
-    /// take part. Without aggregates (e.g. an older kit or no CPU/GPU keys)
-    /// this is the plain 3 hottest (rankable) sensors. An explicit selection
-    /// is honoured as-is, excluded keys included.
+    /// when nothing is selected, the key temperatures
+    /// (`FanControlFormatting.keyTemperatures`: CPU (max), GPU (max), SSD
+    /// `TH0x`, whichever exist). Without aggregates (e.g. an older kit or no
+    /// CPU/GPU keys) this falls back to the 3 hottest overview sensors
+    /// (`SensorAggregator.hottestOverview`; non-thermal keys such as `Tf06`
+    /// never take part). An explicit selection is honoured as-is.
     func visibleSensors(from readings: [SensorReading],
                         aggregateDefinitions: [SensorAggregateDefinition] = FanControlPlatform.sensorAggregateDefinitions)
         -> [SensorReading] {
         guard let keys = visibleSensorKeys else {
-            return SensorAggregator.hottestOverview(readings, definitions: aggregateDefinitions, limit: 3)
+            let key = FanControlFormatting.keyTemperatures(readings)
+            return key.contains(where: \.isAggregate)
+                ? key
+                : SensorAggregator.hottestOverview(readings, definitions: aggregateDefinitions, limit: 3)
         }
         return keys.compactMap { key in readings.first { $0.id == key } }
     }
@@ -222,11 +228,90 @@ enum FanControlFormatting {
         readings.filter { !$0.isExcludedFromRanking } + readings.filter(\.isExcludedFromRanking)
     }
 
-    /// Localized display name for a profile: built-in names ("Automatic",
-    /// "Silent", "Maximum") go through Localizable.strings, user names are verbatim.
+    /// Localized display name for a profile. The six fixed profiles show
+    /// their localized default name ("Automatic", "Constant Quiet", …,
+    /// "Custom 1"); a renamed custom slot shows the user's name verbatim.
     static func profileName(_ profile: FanProfile) -> String {
+        if let defaultName = FanProfile.defaultName(id: profile.id) {
+            if profile.isCustomSlot && profile.name != defaultName { return profile.name }
+            return NSLocalizedString(defaultName, comment: "Fixed fan profile name")
+        }
         guard profile.isBuiltIn else { return profile.name }
         return NSLocalizedString(profile.name, comment: "Built-in fan profile name")
+    }
+
+    // MARK: Key temperatures
+
+    /// Keys of the key temperatures, in display order: CPU (max), GPU (max)
+    /// and the SSD (`TH0x`, "NAND (SSD)" on Apple Silicon).
+    static let keyTemperatureKeys = [SensorAggregator.ID.cpu, SensorAggregator.ID.gpu, "TH0x"]
+
+    /// The key temperatures present in `readings` (finite values only), in
+    /// `keyTemperatureKeys` order.
+    static func keyTemperatures(_ readings: [SensorReading]) -> [SensorReading] {
+        keyTemperatureKeys.compactMap { key in
+            readings.first { $0.id == key && $0.temperature.isFinite }
+        }
+    }
+
+    /// Short label of a key temperature ("CPU" / "GPU" / "SSD"), else the sensor name.
+    static func keyTemperatureLabel(_ sensor: SensorReading) -> String {
+        switch sensor.id {
+        case SensorAggregator.ID.cpu: return String(localized: "CPU")
+        case SensorAggregator.ID.gpu: return String(localized: "GPU")
+        case "TH0x": return String(localized: "SSD")
+        default: return sensorName(sensor)
+        }
+    }
+
+    // MARK: Profile descriptions
+
+    /// One-line summary of a mode, e.g. "3,000 RPM", "CPU (max) 50–80°C", "Automatic".
+    static func modeSummary(_ mode: FanControlMode, sensors: [SensorReading], unit: TemperatureUnit) -> String {
+        switch mode {
+        case .automatic:
+            return String(localized: "Automatic")
+        case .constant(let rpm):
+            return "\(rpm.formatted()) RPM"
+        case .sensor(let key, let start, let maxTemperature):
+            let name = sensors.first { $0.id == key }.map(sensorName)
+                ?? (key == SensorAggregator.ID.cpu ? NSLocalizedString("CPU (max)", comment: "Aggregate sensor name") : key)
+            return "\(name) \(temperature(start, unit: unit))–\(temperature(maxTemperature, unit: unit))"
+        }
+    }
+}
+
+// MARK: - Fixed profiles (the six of `ProfileStore`)
+
+enum FanControlProfiles {
+
+    /// The six fixed profiles in display order (`ProfileStore.fixedProfiles`).
+    /// `FanControlManager.availableProfiles` still lists the legacy
+    /// Silent / Maximum built-ins and programmatic profiles (`setFanRPM`'s
+    /// "Custom"), so the UI reads the store's fixed six instead.
+    @MainActor
+    static var all: [FanProfile] { FanControlManager.shared.profileStore.fixedProfiles }
+
+    /// The active profile's id; Automatic when nothing is selected. May be a
+    /// programmatic profile outside the six (then no selector entry is checked).
+    @MainActor
+    static var activeID: UUID {
+        FanControlManager.shared.profileStore.activeProfileID ?? FanProfile.BuiltInID.automatic
+    }
+
+    /// The active profile (Automatic when nothing is selected).
+    @MainActor
+    static var active: FanProfile {
+        FanControlManager.shared.profileStore.activeProfile ?? .automatic()
+    }
+
+    /// Applies `profile` with explicit per-fan modes (`FanProfile.resolved(for:)`):
+    /// `applyProfile` opens the write session only when `modes` holds a manual
+    /// mode, and the presets define theirs through `defaultMode`.
+    @MainActor
+    static func apply(_ profile: FanProfile) async throws {
+        let manager = FanControlManager.shared
+        try await manager.applyProfile(profile.resolved(for: manager.fans))
     }
 }
 #endif

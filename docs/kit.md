@@ -38,7 +38,7 @@ Everything except `FanWriteStrategy`, `FanTarget`, `ApplyGenerationGate` (intern
   `HelperClient.callTimeout` (8 s): on timeout it throws `.helperConnectionFailed("timeout")` and
   invalidates the connection (which ends the session; the helper restores the pre-session values),
   so a hung helper cannot block the `WriteSerializer` forever.
-- `stopMonitoring()` cancels a pending wake re-apply; polls that were queued while monitoring and
+- `stopMonitoring()` cancels pending wake re-apply attempts; polls that were queued while monitoring and
   run after `stopMonitoring()` are dropped and do not reopen the reader. `refreshNow()` while not
   monitoring opens the SMC for that one poll and closes it again (unless a write session is open).
 - `exportSMCDump()` (sync) blocks the caller until the in-flight poll and the whole dump finish;
@@ -84,6 +84,23 @@ leave the fan forced at a stale target (at idle `F0Tg` = 0, i.e. stopped). Two d
   error is rethrown / stored in `lastError`. A timeout invalidates the connection, so the helper
   restores instead (the rollback is skipped because the session is gone).
 
+**State drift (poll-time unsettled detection, 2026-10-20):** while a session is open every poll
+also reads each fan's mode (`FanDiscovery.fanControlModes`) and compares it with the throttle
+baseline (`UnsettledFanDetector.unsettledFans`, unit-tested). A fan is marked unsettled — and thus
+rewritten by this very poll, bypassing the throttle — when it is
+1. in manual mode with `F<i>Tg` below its hardware minimum − 50 RPM (stopped in manual; the
+   post-wake state of first-write test 4), whatever was applied, including fans never written in
+   the session (their planned state, usually `.automatic` → `F<i>Md ← 0`);
+2. applied `.manual(rpm)` but read back as automatic, or with `F<i>Tg` more than 50 RPM
+   (`UnsettledFanDetector.targetToleranceRPM`) away from `rpm`;
+3. applied `.automatic` but read back as manual.
+Target-only fans (no mode key / `FS! `) are only checked for rules 1–2 on the target. Each newly
+flagged fan is logged at notice level (category `fancontrol-kit`):
+`Unsettled fan(s) detected, rewriting: F0 manual=true Tg=0 applied=manual(rpm: 3000)`. Between
+`NSWorkspace.willSleepNotification` and wake, polls neither flag nor write (the helper has handed
+the fans back for the sleep); this suspension lapses on its own 30 s after the will-sleep
+notification if no wake notification arrives.
+
 **Apply generation (no poll can undo a user apply):** `applyProfile` / `setFanControlMode` /
 `setFanRPM` first store (user profiles, `upsert`) and select the profile on main, *then* bump the
 apply generation on `pollQueue`, then plan and write. Polls snapshot the active profile on main
@@ -127,18 +144,27 @@ if a built-in profile is active, its modes are copied into a user profile named 
 override keep working) or if `keepAlertsWhilePaused` is `true` (default; the high-temperature and
 fan-anomaly alerts keep firing). Otherwise polling stops while paused.
 
-**Sleep/wake:** 5 s after `NSWorkspace.didWakeNotification`, the manager refreshes (if
-monitoring) and, if a session is still open:
-- `reapplyProfileAfterWake == true` (default): re-applies the active profile (bypassing the
-  throttle, never opening a session);
-- `reapplyProfileAfterWake == false`: **closes the session.** The SMC may silently reset forced
-  fans to automatic during sleep while `appliedTargets` (the throttle baseline) and
-  `fanControlModes` still say manual; the poll loop would then never rewrite them (the targets did
-  not "change"). Closing makes the helper restore the pre-session values, so the reported state
-  matches the hardware again; the user re-applies a profile to take control.
-The flag is read when the 5 s delay elapses; `stopMonitoring()` cancels the pending work. The app
-must not add its own wake re-apply; it only mirrors its setting into this property (see Settings
-below).
+**Sleep/wake** (revised 2026-10-20 after first-write test 4: across sleep the SMC resets `F<i>Tg`
+to 0 but keeps `F<i>Md` = 1, so fans wake "manual, target 0" = stopped). Two layers; the helper is
+the safety authority (`docs/helper.md` §5 「スリープ／復帰」: it hands forced fans back to the SMC
+before sleep and re-applies the session's last targets at 0 / 1 / 3 s after wake on its own),
+the manager applies the policy:
+- `NSWorkspace.willSleepNotification`: nothing is written; pending wake attempts are cancelled and
+  poll-driven writes are suspended until wake (see "State drift" above).
+- `NSWorkspace.didWakeNotification` with a session open:
+  - `reapplyProfileAfterWake == true` (default): the active profile is re-applied **immediately**
+    and again at 2 s and 5 s (`FanControlManager.wakeReapplyDelays` = `[0, 2, 5]`), each with
+    `force: true` (bypassing the throttle, idempotent) and `allowOpeningSession: false`. Only the
+    last attempt records an error in `lastError` (the SMC may reject writes right at wake).
+  - `reapplyProfileAfterWake == false`: the session is **closed immediately** (the helper hands
+    the fans back); the user re-applies a profile to take control again.
+  - a poll runs at once (and before each later attempt), so the unsettled detection also catches
+    a stopped fan.
+The flag is read when each attempt runs; `stopMonitoring()` and a new will-sleep cancel pending
+attempts. Logged at notice level (category `fancontrol-kit`): `Woke with a session open:
+re-applying the active profile at 0.0s, 2.0s, 5.0s` / `System will sleep; poll writes suspended …`.
+The app must not add its own wake re-apply; it only mirrors its setting into this property (see
+Settings below).
 
 **Termination:** on `NSApplication.willTerminateNotification` (observers are registered on the
 first `startMonitoring` or `openSMCSession`), all fans are set to automatic and the session is
@@ -221,13 +247,56 @@ still open): the session stays closed until the user acts.
 
 ## Persistence
 
-`ProfileStore` (user profiles plus `activeProfileID`) is stored as JSON
-(`ProfileStore.encodeJSON`) in `UserDefaults` under **`fanControl.profileStore`**
-(`FanControlManager.profileStoreDefaultsKey`) on every change. The real app may swap this for a
-sindresorhus `Defaults` key with the same name. Built-in profiles (Automatic, Silent, Maximum)
-are generated for the current fans and are not stored; `availableProfiles` lists them first.
+`ProfileStore` (the fixed six profiles, additional programmatic profiles and `activeProfileID`,
+`schemaVersion` 2) is stored as JSON (`ProfileStore.encodeJSON`) in `UserDefaults` under
+**`fanControl.profileStore`** (`FanControlManager.profileStoreDefaultsKey`) on every change. The
+real app may swap this for a sindresorhus `Defaults` key with the same name. See "Profiles" below.
 `pollingInterval`, `reapplyProfileAfterWake` and `safetyPolicy` are not persisted by the kit; the
 app's settings layer owns them.
+
+## Profiles (fixed set of six, 2026-10-20)
+
+The app offers exactly six profiles (`FanProfile.fixedProfileIDs`, `ProfileStore.fixedProfiles`);
+users cannot create or delete profiles. Ids are fixed UUIDs (`FanProfile.BuiltInID`):
+
+| Profile | id `6F1A0000-0000-4000-8000-…` | Content (`FanProfile.Preset`, provisional values) | Editable |
+|---|---|---|---|
+| Automatic | `…000000000001` | SMC default (no override) | no |
+| Constant Quiet (定速・静音) | `…000000000011` | every fan 3000 RPM (`quietRPM`) | no |
+| Constant High (定速・強) | `…000000000012` | every fan 5000 RPM (`highRPM`) | no |
+| Boost (ブースト) | `…000000000013` | every fan `.sensor(agg:cpu, 50 → 80 °C)` | no |
+| Custom 1 (カスタム 1) | `…000000000021` | default = copy of Boost | per-fan modes + name |
+| Custom 2 (カスタム 2) | `…000000000022` | default = every fan 3500 RPM (`custom2RPM`) | per-fan modes + name |
+
+Constant RPMs are clamped to each fan's `Mn…Mx` when applied (Mac14,9: 2317…6800). The emergency
+override (`SafetyPolicy`) still forces every fan to max when hot, whatever the profile.
+
+- **"Every fan" presets:** `FanProfile.defaultMode` (new, optional, Codable-compatible) is the mode
+  of every fan without an entry in `modes`; `mode(for:)` = `modes[id] ?? defaultMode ?? .automatic`.
+  `FanControlEngine.plan` and the manager's poll use `mode(for:)`, so a stored preset works for any
+  fan count. `FanControlManager.apply` decides whether it needs the session from `modes` alone, so
+  the UI passes **`profile.resolved(for: fans)`** (explicit per-fan modes) to `applyProfile`
+  (`FanControlProfiles.apply` in the drop-in UI). The manager is unchanged.
+- **Presets are read-only and regenerated from code** on every decode/assignment, so a changed
+  preset value reaches existing installs. Only the custom slots are persisted as edited.
+- **API:** `upsert` (custom slot: modes / `defaultMode` / name; presets ignored), `rename(id:to:)`
+  (custom slots; empty name → default name), `reset(id:)` (custom slot → factory default; active
+  selection kept), `isModified(id:fans:)` (compares effective per-fan modes + name), `delete(id:)`
+  (no-op for the six). `profiles` / `activeProfileID` are normalized in `didSet`; an active id that
+  names no stored profile becomes `nil` (= Automatic).
+- **Additional (programmatic) profiles:** the manager itself stores profiles outside the six —
+  `setFanRPM` / `setFanControlMode` create "Custom" (`customProfileID`), and tools such as
+  HelperSmokeApp apply their own (`"Smoke sensor-linked"`). `ProfileStore` keeps them after the six
+  (`additionalProfiles`; `upsert` adds, `delete` removes) so such a profile stays active across polls,
+  wake re-apply and relaunch. The app UI never shows them (it reads `fixedProfiles`, not
+  `availableProfiles`, which still lists the legacy Silent / Maximum built-ins for compatibility).
+- **Migration** (JSON without `schemaVersion`, i.e. written before the fixed set): Silent / Maximum
+  are dropped; the first user profile with a sensor-linked mode is folded into Custom 1 (its
+  `modes`; name stays "Custom 1"); every other user profile is dropped (e.g. the smoke app's
+  constant "Custom"). Active selection: folded profile → Custom 1, Automatic → Automatic, anything
+  else → `nil` (Automatic). Nothing is re-applied by the migration. The migrated store is written
+  back on the next change. Note: DynamicNotchApp and HelperSmokeApp share the bundle id and thus
+  this store.
 
 ## Settings owned by the app
 
@@ -239,7 +308,7 @@ the DynamicNotch drop-in UI this is `FanControlAlertCoordinator.syncManagerSetti
 | Property | Default | Effect |
 |---|---|---|
 | `pollingInterval` | 2.0 s | timer interval (clamped to 0.5...300 s); setting it reschedules the timer |
-| `reapplyProfileAfterWake` | `true` | `true`: 5 s wake re-apply; `false`: close an open session on wake |
+| `reapplyProfileAfterWake` | `true` | `true`: re-apply on wake at 0 / 2 / 5 s; `false`: close an open session immediately on wake |
 | `keepAlertsWhilePaused` | `true` | keep a slow poll while paused without a session (the drop-in coordinator mirrors `highTemperatureAlertEnabled \|\| fanAnomalyAlertEnabled`) |
 | `safetyPolicy` | `FanControlPlatform.defaultSafetyPolicy` | thresholds; taken per poll. An app that persists its own policy should start from `SafetyPolicy.default(appleSilicon: FanControlPlatform.isAppleSilicon)` |
 | `clientTeamID` | `FanControlHelperConstants.teamIdentifierPlaceholder` | Team ID in the helper code-signing requirement checked on every new helper connection (forwards to `HelperClient.clientTeamID`); set before the first helper call unless the constant was replaced; ignored in manual-install mode (below) |
@@ -365,6 +434,9 @@ on Mac14,9 / macOS 26 with the read-only `fanfi-probe` executable (`swift run fa
 `--dump`, `--watch N`); results and per-model findings are in `docs/integration.md` §6 Phase 1.
 - Whether the provisional thresholds (alert 90 °C, emergency 95 °C, hysteresis 5 °C, sensor
   prefixes `Tp/Te/TC/Tg/TG`) suit each model (design doc §5.6).
-- Whether the SMC resets forced fans across sleep (the 5 s wake re-apply assumes it may).
+- Sleep/wake: on Mac14,9 the SMC resets `F<i>Tg` to 0 and keeps `F<i>Md` = 1 across sleep
+  (first-write test 4). The immediate wake re-apply, the helper's own sleep hand-back / wake
+  recovery and the unsettled detection are implemented but not yet re-tested on hardware
+  (integration.md §6 Phase 5).
 - Whether `@Observable` property `didSet` observers fire as expected (they are used for the notifications).
 - Battery impact of the 2 s default interval; whether the 2 s termination wait is enough.

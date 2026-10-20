@@ -1,7 +1,8 @@
 #if os(macOS)
 // Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
 //
-// "Sensors" tab of the Fan Control settings pane: every discovered sensor
+// "Sensors" tab of the Fan Control settings pane: the key temperatures
+// (CPU (max), GPU (max), SSD `TH0x`) at the top, then every discovered sensor
 // with its SMC key, name and temperature (replaces the earlier sensor table,
 // design doc §4.4). Sensor names are community-sourced (`SensorCatalog`).
 // Aggregate sensors ("CPU (max)", …; `SensorAggregator`) are listed first,
@@ -32,6 +33,17 @@ struct FanControlSensorsTabView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            GroupBox {
+                FanControlKeyTemperaturesView(sensors: FanControlFormatting.keyTemperatures(manager.sensorReadings),
+                                              unit: widgetSettings.temperatureUnit,
+                                              policy: manager.safetyPolicy,
+                                              style: .regular)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+            } label: {
+                Text("Key Temperatures")
+            }
+
             Table(rows, sortOrder: $sortOrder) {
                 TableColumn("Key", value: \.id) { sensor in
                     HStack(spacing: 4) {

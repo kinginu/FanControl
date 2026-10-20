@@ -67,6 +67,14 @@ struct FanControlWidgetSettingsView: View {
                 .padding(.vertical, 4)
 
                 HStack {
+                    Text("Show Fan Curve (Double Wide)")
+                    Spacer()
+                    Toggle("", isOn: $settings.showFanCurve)
+                        .labelsHidden()
+                }
+                .padding(.vertical, 4)
+
+                HStack {
                     Text("Show Target RPM")
                     Spacer()
                     Toggle("", isOn: $settings.showTargetRPM)
@@ -142,7 +150,7 @@ private struct SensorSelectionList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("Show 3 Hottest Sensors")
+                Text("Show Key Temperatures")
                 Spacer()
                 Toggle("", isOn: automatic)
                     .labelsHidden()
@@ -177,8 +185,8 @@ private struct SensorSelectionList: View {
         }
     }
 
-    /// On = `visibleSensorKeys == nil` (3 hottest). Turning it off starts from
-    /// the currently hottest three so the widget does not suddenly go empty.
+    /// On = `visibleSensorKeys == nil` (key temperatures: CPU / GPU / SSD).
+    /// Turning it off starts from those so the widget does not suddenly go empty.
     private var automatic: Binding<Bool> {
         Binding(
             get: { settings.visibleSensorKeys == nil },

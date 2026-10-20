@@ -27,6 +27,8 @@ struct FanControlGeneralTabView: View {
     private var manager: FanControlManager { FanControlManager.shared }
 
     var body: some View {
+        // Scrolls inside the pane's fixed size (FanControlSettingsView.contentSize).
+        ScrollView {
         Settings.Container(contentWidth: 480.0) {
             Settings.Section(label: { Text("Fan Control") }) {
                 HStack {
@@ -87,6 +89,7 @@ struct FanControlGeneralTabView: View {
             }
         }
         .padding(0)
+        }
         // `pollingInterval` / `reapplyProfileAfterWake` reach the manager through
         // `FanControlAlertCoordinator.syncManagerSettings()` (Defaults.updates).
     }

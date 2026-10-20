@@ -12,7 +12,6 @@
   Aggregate sensor names (SensorAggregator, e.g. "CPU (max)") are localized below.
 */
 
-
 /* MARK: Navigation / names */
 "Fan Control" = "ファン制御";
 "Fan Alert" = "ファン警告";
@@ -28,7 +27,6 @@
 "Fans" = "ファン";
 "Show All Fans" = "すべてのファンを表示";
 "No fans detected" = "ファンが見つかりません";
-"Show 3 Hottest Sensors" = "最も高温の 3 センサーを表示";
 "No sensors found" = "センサーが見つかりません";
 "Display" = "表示";
 "Temperature Unit" = "温度の単位";
@@ -80,17 +78,10 @@
 
 /* MARK: Profiles tab (FanControlProfilesTabView) */
 "Select a profile" = "プロファイルを選択してください";
-"New Profile" = "新規プロファイル";
-"%@ Copy" = "%@ のコピー";
-"Delete this profile?" = "このプロファイルを削除しますか？";
-"This cannot be undone." = "この操作は取り消せません。";
-"Delete" = "削除";
 "Cancel" = "キャンセル";
 "Profile Name" = "プロファイル名";
 "Active" = "使用中";
-"Built-in profiles are read-only. Duplicate one to customize it." = "組み込みプロファイルは編集できません。カスタマイズするには複製してください。";
 "Apply" = "適用";
-"Duplicate" = "複製";
 "Revert" = "元に戻す";
 "Save" = "保存";
 "Automatic" = "自動";
@@ -105,10 +96,6 @@
 "Maximum Temperature" = "最大温度";
 "Minimum speed at or below the start temperature, maximum speed at or above the maximum temperature." = "開始温度以下では最低回転数、最大温度以上では最大回転数で回ります。";
 "Turn on Fan Control in the General tab to apply profiles." = "「一般」タブでファン制御を有効にすると、プロファイルを適用できます。";
-
-/* MARK: Built-in profile names (FanProfile.automatic/silent/maximum; "Automatic" is shared with the mode picker above) */
-"Silent" = "静音";
-"Maximum" = "最大";
 
 /* MARK: Aggregate sensor names (SensorAggregator; FanControlFormatting.sensorName) */
 "CPU (max)" = "CPU（最大）";
@@ -127,7 +114,37 @@
 
 /* MARK: Nook widget (FanControlWidgetView) and Live Activity (FanControlLiveActivity) */
 "Fan control disabled" = "ファン制御は無効です";
-"Temperatures" = "温度";
 "Profile" = "プロファイル";
 "High temperature" = "高温";
 "Fan stopped" = "ファン停止";
+
+/* MARK: Fixed profile names (FanProfile.DefaultName; "Automatic" is shared with the mode picker above) */
+"Constant Quiet" = "定速・静音";
+"Constant High" = "定速・強";
+"Boost" = "ブースト";
+"Custom 1" = "カスタム 1";
+"Custom 2" = "カスタム 2";
+
+/* MARK: Profiles tab — fixed set (FanControlProfilesTabView) */
+"Presets" = "プリセット";
+"Custom" = "カスタム";
+"Reset to Default" = "初期設定に戻す";
+"Reset this profile to its default settings?" = "このプロファイルを初期設定に戻しますか？";
+"Your changes to this profile, including its name, are discarded." = "名前を含め、このプロファイルへの変更は破棄されます。";
+"macOS (the SMC) controls every fan. Fan control returns the fans to automatic." = "すべてのファンを macOS（SMC）が制御します。ファンは自動制御に戻ります。";
+"Every fan at a constant %@ RPM (limited to each fan's range). Read-only preset." = "すべてのファンを %@ RPM の一定速度で回します（各ファンの範囲内に制限）。編集できないプリセットです。";
+"Every fan follows %@: minimum speed at the start temperature, maximum speed at the maximum temperature. Read-only preset." = "すべてのファンが %@ に連動します。開始温度で最低回転数、最大温度で最大回転数になります。編集できないプリセットです。";
+"Editable profile. Choose a mode for each fan, then Save or Apply." = "編集できるプロファイルです。ファンごとにモードを選び、「保存」または「適用」を押してください。";
+"Dot = current speed" = "点 = 現在の回転数";
+
+/* MARK: Fan curve and key temperatures (FanCurveView, FanControlKeyTemperaturesView) */
+"Fan Curve" = "ファンカーブ";
+"Controlled by macOS" = "macOS が制御";
+"Key Temperatures" = "主要な温度";
+"CPU" = "CPU";
+"GPU" = "GPU";
+"SSD" = "SSD";
+
+/* MARK: Widget settings — fixed profiles (FanControlWidgetSettingsView) */
+"Show Key Temperatures" = "主要な温度を表示";
+"Show Fan Curve (Double Wide)" = "ファンカーブを表示（ダブルワイド）";

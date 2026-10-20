@@ -21,11 +21,11 @@
 |---|---|
 | `FanControlWidgetSettings.swift` | `FanControlWidgetSettings` / `FanControlGeneralSettings`（Defaults 永続化）、`Defaults.Keys`、表示用フォーマッタ |
 | `FanControlWidgetSettingsView.swift` | 設定 ▸ ウィジェット ▸ Fan Control（グリッドサイズ、表示ファン/センサー、°C/°F、プロファイル選択・目標 RPM 表示） |
-| `FanControlSettingsView.swift` | 「Fan Control」設定ペイン（TabView: 一般/プロファイル/センサー＋エラーフッタ） |
+| `FanControlSettingsView.swift` | 「Fan Control」設定ペイン（TabView: 一般/プロファイル/センサー＋エラーフッタ）。**全タブ共通の固定サイズ `contentSize` = 740×600 pt**（DynamicNotchApp ではホストが 760×640 の固定フレームで包む）（タブ切替でウィンドウが伸縮しない。伸びうる中身はスクロール） |
 | `FanControlGeneralTabView.swift` | 有効化、更新間隔、自動開始、非表示時停止、スリープ復帰再適用、警告、ヘルパー状態/インストール、自動制御復帰、SMC ダンプ書き出し |
-| `FanControlProfilesTabView.swift` | プロファイル一覧・適用・作成/複製/削除、ファン毎のモード編集（自動/固定/センサー連動） |
-| `FanControlSensorsTabView.swift` | 全センサー表（キー/名前/温度、ソート可） |
-| `FanControlWidgetView.swift` | Nook ウィジェット本体（medium 100pt / doubleWide 250pt） |
+| `FanControlProfilesTabView.swift` | 固定 6 プロファイル（プリセット 4 = 読取専用でパラメータ表示、カスタム 1/2 = 編集・名前変更・初期設定に戻す）、ファンカーブ表示、適用。作成・削除は無し（kit.md「Profiles」） |
+| `FanControlSensorsTabView.swift` | 主要な温度（CPU / GPU / SSD）＋全センサー表（キー/名前/温度、ソート可） |
+| `FanControlWidgetView.swift` | Nook ウィジェット本体（medium 100pt: ファン・主要温度・プロファイル選択 / doubleWide 250pt: ＋ファンカーブ）。`FanCurveView`・`FanControlKeyTemperaturesView` は設定ペインでも使う |
 | `FanControlLiveActivity.swift` | `FanControlAlertView`（Live Activity 表示）と `FanControlAlertCoordinator`（警告状態・一時展開通知・一般設定 `pollingInterval` / `reapplyProfileAfterWake`、および「いずれかの警告が ON」を `keepAlertsWhilePaused` として `FanControlManager` へ同期） |
 
 ## 1. パッケージの追加とリンク
@@ -269,6 +269,13 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 - [ ] プロファイル タブのセンサー連動ピッカー: 未確認（プロファイル編集を避けた）。
 - [x] 2x1 / ダブルワイド切替（設定 ▸ Nook ▸ Widgets ▸ fanControl のラジオをクリック、`gridSize` 2 → 5）で幅が 100 pt → 250 pt になり、ダブルワイドは
       「Fans」「Temperatures」の 2 列表示。（`fc1/widgets-fc/`, `fc1/widget-wide/`）°C/°F 切替は未確認。
+- [x] **固定 6 プロファイル UI（2026-10-20、読取のみ・適用は押していない）**: ウィジェットのプロファイル選択に 6 件（自動 / 定速・静音 / 定速・強 / ブースト /
+      区切り / カスタム 1 / カスタム 2、アクティブにチェック）。ダブルワイドは左にファン＋主要温度（CPU / GPU / SSD）、右にファンカーブ（30〜100 °C × Mn〜Mx、
+      緊急温度の赤破線、現在の動作点）。自動ではカーブの代わりに「macOS が制御」。2x1 はファン＋CPU / GPU＋選択メニュー（長い名前は「Constant Qu…」と省略）。
+      設定 ▸ プロファイル: プリセット 4 件は鍵アイコン・操作不可でパラメータとカーブを表示、カスタム 1/2 は名前欄・モード編集・「初期設定に戻す / 元に戻す / 保存」。
+      センサー タブ先頭に主要な温度。General / プロファイル / センサーの切替でウィンドウサイズが変わらない（ペイン 740×600 pt、ホスト固定フレーム 760×640 で、ウィンドウは常に 760×728 px）。旧形式のストア（スモークアプリの「Custom」）は
+      移行で破棄され、アクティブは自動になった。スクリーンショット: `DynamicNotchApp/.derivedData/shots/profiles/`（`dw/`、`s-*/`、`preview/`＝DEBUG `fanpreview:` フック）
+- [ ] 同上の未確認: 実ノッチでの 2x1 表示（オフスクリーン描画のみ）、手動プロファイル適用中の実カーブと動作点、日本語表示、°F 表示。
 - [ ] ファンレス機 / SMC 不可環境: 該当機なし。
 - [ ] Nook を閉じるとポーリングが止まる: 未計測。
 - [ ] 「SMC ダンプを書き出す…」: 未実施（保存パネル操作が必要）。
@@ -309,13 +316,16 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
 - [ ] `Mn` 未満の目標値（`enforceHardwareMinimum = false` で 1000 RPM 等）を適用 → `rpmOutOfRange` エラーで**何も書かれない**こと（`F0Md` が 0 のまま）。
 - [ ] プロファイル タブで「最大」を適用 → 接続状態が「接続済み（ファンを制御中）」、ファンが最大回転へ。
       Apple Silicon では `F0Md`=1 → `F0Tg` 書込、Intel では `FS! ` ビット → `F0Tg` 書込で回転数が変わること（`F0Ac` を確認）。
-- [ ] 新規プロファイルで「固定」スライダ / 「センサー連動」（センサー・開始/最大温度）を設定して保存 → 適用 → 期待通りの回転数。（2026-10-20 HelperSmokeApp: `agg:cpu` 45→75 °C を全ファンに適用 → 75 °C 超で 6800、74.35 °C で 6702 と線形カーブどおり。UI 経由は未実施。`verification/first-write-2026-10-20.md`）
-- [ ] 組み込みプロファイルは編集・削除できず、複製はできる。
+- [ ] プリセット「定速・静音」（3000）/「定速・強」（5000）/「ブースト」（`agg:cpu` 50→80 °C）をウィジェットと設定の両方から適用 → 期待どおりの回転数。
+      プリセットは `defaultMode` で定義されるため、UI は `FanProfile.resolved(for:)` を渡して適用する（`FanControlProfiles.apply`）。セッションが開くこと。
+- [ ] カスタム 1/2 を編集・保存・名前変更・「初期設定に戻す」→ 適用。アクティブなスロットを保存すると次のポーリングで反映される。
+- [ ] カスタムスロットで「固定」スライダ / 「センサー連動」（センサー・開始/最大温度）を設定して保存 → 適用 → 期待通りの回転数。（2026-10-20 HelperSmokeApp: `agg:cpu` 45→75 °C を全ファンに適用 → 75 °C 超で 6800、74.35 °C で 6702 と線形カーブどおり。UI 経由は未実施。`verification/first-write-2026-10-20.md`）
+- [ ] プリセットは編集・名前変更できず、どのプロファイルも削除できない（作成も無い）。
 - [ ] アプリ再起動後も保存したプロファイルとアクティブ選択が残る。
 - [ ] 「自動制御に戻す」でファンが SMC 制御に戻る。機能を OFF にしても戻る。アプリ終了時（⌘Q）も戻る。
 - [x] 手動制御中に `kill -9` → ヘルパーがセッションを解放しファンが自動に戻る（helper.md §5）。（2026-10-20 HelperSmokeApp: 約 2 秒で automatic に復帰。`verification/first-write-2026-10-20.md`）
 - [x] 手動制御中にヘルパーへ `sudo launchctl kill SIGTERM system/<label>` → ヘルパーが復元して終了コード 0、ファンは automatic（2026-10-20、同上）。
-- [ ] ウィジェットのプロファイルメニューから切替できる。
+- [ ] ウィジェットのプロファイル選択（6 件）から切替できる。ウィジェットでは編集できない。
 - [ ] 機能 OFF の間はプロファイル タブの「適用」が無効で、説明文が表示される。
 - [ ] 監視停止中に手動プロファイルを適用すると監視が自動で開始される。
 - [ ] 適用直後にポーリングが走っても、旧プロファイルの目標値に書き戻されない（`log stream` のヘルパー書込ログで確認）。
@@ -330,9 +340,16 @@ swift run fanfi-probe --watch 2  # ファン・温度を 2 秒ごとに再表示
       90°C（95 − `alertHysteresis`）以下に下がるまで解除されない（`FanControlManager.emergencyOverrideActive`）。
 - [ ] ファン停止（目標 > 0 で実測 0 が 3 回連続）→ 該当ファン行に警告アイコン、Live Activity「ファン停止」（テストは固定モードで物理的に止める等、注意して行う）。
 - [ ] 警告トグルを OFF にすると Live Activity が出ない。
-- [x] 手動プロファイル適用中にスリープ → 復帰後約 5 秒で再適用される（2026-10-20 HelperSmokeApp で確認。**ただし復帰直後は SMC が `Tg` を 0 にリセットし `Md`=1 のままなので数秒間ファンが停止する**。`verification/first-write-2026-10-20.md` テスト 4、要対応）（「スリープ解除後にプロファイルを再適用」ON 時。
-      OFF にすると再適用せず、復帰約 5 秒後に書込セッションを閉じる（ヘルパーがセッション前の値に戻す）。
-      設定は `FanControlAlertCoordinator` が `FanControlManager.reapplyProfileAfterWake` に同期）。
+- [x] 手動プロファイル適用中にスリープ → 復帰後約 5 秒で再適用される（2026-10-20 HelperSmokeApp で確認。**ただし復帰直後は SMC が `Tg` を 0 にリセットし `Md`=1 のままなので数秒間ファンが停止した**。`verification/first-write-2026-10-20.md` テスト 4）。
+- [ ] **再テスト（対策実装後、2026-10-20 実装）**: ヘルパーがスリープ前に強制中のファンを SMC に返し（`F<n>Md`=0）、復帰時に 0 / 1 / 3 秒で最後の目標を再適用、目標の記録が無い手動ファンは `F<n>Md`=0 に戻す（helper.md §5「スリープ／復帰」）。
+      アプリは復帰通知で即座・2 秒・5 秒に再適用し、ポーリングで「手動かつ `Tg` < `Mn`」等を検出して書き直す（kit.md「Sleep/wake」「State drift」）。
+      手順: アプリを再ビルド → `sudo install.sh` を再実行（ヘルパーの cdhash が変わるため必須）→ `fanfi-probe --watch 1` とヘルパーの `log stream`（`--level info`）、アプリの `category == "fancontrol-kit"` を並べ、Fan 1 を固定 3000 RPM にして蓋を閉じ 60 秒以上スリープ → 復帰。
+      期待するパターン: スリープ直前に `F0 … automatic`（ヘルパーの返却）になってよい。**復帰後に `manual(0)` のサンプルが出ない**（最初のサンプルから `manual(3000)`、または一瞬 `automatic` を経て `manual(3000)`）。Fan 2 は `automatic`（復帰直後に一瞬 `manual(0)` でも次のサンプルで `automatic`）。
+      SMC が通知より先に状態を変える可能性があるため、復帰直後の 1 サンプル（≤ 1 秒）の `manual(0)` は許容し記録する。2 サンプル以上続いたら不合格（ログでどの層が書いたかを確認）。
+      ヘルパーログに `Power: system will sleep; session of pid … open, handed back to the SMC: F0Md=0; remembered targets: F0 3000`、`Power: system has powered on; wake recovery at 0.0s, 1.0s, 3.0s`、`Power: wake recovery 1/3 … wrote …`（または `fans already match`）が出ること、`FAILED` が無いこと。
+      アプリログに `Woke with a session open: re-applying the active profile at 0.0s, 2.0s, 5.0s`。`Unsettled fan(s) detected` が出た場合は、どのファンがどの状態だったかを記録する。
+      「スリープ解除後にプロファイルを再適用」を OFF にした場合は、復帰直後にセッションが閉じ（ヘルパーが返す）、ファンが automatic になること（`manual(0)` が出ないこと）。
+      設定は `FanControlAlertCoordinator` が `FanControlManager.reapplyProfileAfterWake` に同期。
 - [ ] 書込セッション無しで Nook を閉じても、警告が 1 つでも ON なら低頻度ポーリング（`max(5×間隔, 10 秒)`）が続き警告が出る。両方 OFF なら停止する。
 - [ ] バッテリー駆動で更新間隔 10 秒・Nook 非表示時停止の効果を確認。
 

@@ -1,10 +1,14 @@
 #if os(macOS)
 // Drop-in file for the DynamicNotch app target (not part of the SwiftPM package).
 //
-// "Profiles" tab of the Fan Control settings pane: profile list, apply, and a
-// per-fan mode editor for custom profiles (replaces the earlier
+// "Profiles" tab of the Fan Control settings pane (replaces the earlier
 // profile editor dialogs, design doc §4.4).
-// Built-in profiles are read-only; duplicate one to customize it.
+// The profile set is fixed (`ProfileStore`): the presets Automatic,
+// Constant Quiet, Constant High and Boost are shown read-only with their
+// parameters; Custom 1 / Custom 2 are editable (per-fan mode, sensor,
+// start / maximum temperature, constant RPM; rename) and can be reset to
+// their default. No profiles are created or deleted. This is the only place
+// where profiles are edited (the notch widget only selects one).
 
 import SwiftUI
 import Defaults
@@ -14,6 +18,9 @@ import FanControlKit
 struct FanControlProfilesTabView: View {
 
     @Binding var actionError: String?
+    /// Profile selected when the tab first appears (e.g. a deep link or the
+    /// app's DEBUG preview hook); `nil` = the active profile.
+    var initialSelection: UUID? = nil
 
     @Default(.fanControlWidgetSettings) private var widgetSettings
     /// Apply is disabled while the feature is off: applying a manual profile
@@ -21,22 +28,22 @@ struct FanControlProfilesTabView: View {
     @Default(.fanControlGeneralSettings) private var general
 
     @State private var selectedID: UUID?
-    /// Working copy of the selected profile; saved explicitly.
+    /// Working copy of the selected profile with explicit per-fan modes
+    /// (`FanProfile.resolved(for:)`); saved explicitly (custom slots only).
     @State private var draft: FanProfile?
-    @State private var isConfirmingDelete = false
+    @State private var isConfirmingReset = false
 
     private var manager: FanControlManager { FanControlManager.shared }
 
     private var storedSelection: FanProfile? {
-        manager.availableProfiles.first { $0.id == selectedID }
+        selectedID.flatMap { manager.profileStore.profile(id: $0) }?.resolved(for: manager.fans)
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             ProfileList(selectedID: $selectedID,
-                        profiles: manager.availableProfiles,
-                        activeID: manager.activeProfile?.id,
-                        onAdd: addProfile)
+                        profiles: FanControlProfiles.all,
+                        activeID: FanControlProfiles.activeID)
                 .frame(width: 170)
 
             Divider()
@@ -45,16 +52,18 @@ struct FanControlProfilesTabView: View {
                 ProfileEditor(
                     draft: binding,
                     isDirty: draft != storedSelection,
-                    isActive: manager.activeProfile?.id == draft?.id,
+                    isModified: draft.map { manager.profileStore.isModified(id: $0.id, fans: manager.fans) } ?? false,
+                    isActive: FanControlProfiles.activeID == draft?.id,
                     canApply: general.isEnabled,
                     fans: manager.fans,
                     sensors: manager.sensorReadings,
+                    currentRPMs: manager.currentRPMs,
                     unit: widgetSettings.temperatureUnit,
+                    emergencyTemperature: manager.safetyPolicy.emergencyTemperature,
                     onApply: applyDraft,
                     onSave: saveDraft,
                     onRevert: loadDraft,
-                    onDuplicate: duplicateDraft,
-                    onDelete: { isConfirmingDelete = true }
+                    onReset: { isConfirmingReset = true }
                 )
             } else {
                 Text("Select a profile")
@@ -64,66 +73,53 @@ struct FanControlProfilesTabView: View {
         }
         .padding()
         .onAppear {
+            if selectedID == nil, let initialSelection, FanProfile.fixedProfileIDs.contains(initialSelection) {
+                selectedID = initialSelection
+            }
             if selectedID == nil {
-                selectedID = manager.activeProfile?.id ?? manager.availableProfiles.first?.id
+                let active = FanControlProfiles.activeID
+                selectedID = FanProfile.fixedProfileIDs.contains(active) ? active : FanProfile.BuiltInID.automatic
             }
             loadDraft()
         }
         .onChange(of: selectedID) { _, _ in loadDraft() }
-        .confirmationDialog("Delete this profile?", isPresented: $isConfirmingDelete) {
-            Button("Delete", role: .destructive, action: deleteDraft)
+        // Fans are discovered asynchronously; re-materialize an untouched draft.
+        .onChange(of: manager.fans) { _, _ in
+            if let draft, draft.modes.isEmpty || !draft.isCustomSlot { loadDraft() }
+        }
+        .confirmationDialog("Reset this profile to its default settings?", isPresented: $isConfirmingReset) {
+            Button("Reset to Default", role: .destructive, action: resetDraft)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This cannot be undone.")
+            Text("Your changes to this profile, including its name, are discarded.")
         }
     }
 
     // MARK: Actions
 
-    /// Loads the stored profile into the editor. Keeps a just-created draft if
-    /// the manager has not published it in `availableProfiles` yet.
     private func loadDraft() {
-        if let stored = storedSelection {
-            draft = stored
-        } else if draft?.id != selectedID {
-            draft = nil
-        }
+        draft = storedSelection
     }
 
     private func saveDraft() {
-        guard let draft, !draft.isBuiltIn else { return }
+        guard let draft, draft.isCustomSlot else { return }
         manager.saveProfile(draft)
     }
 
     private func applyDraft() {
         guard let draft else { return }
-        if !draft.isBuiltIn, draft != storedSelection {
+        if draft.isCustomSlot, draft != storedSelection {
             manager.saveProfile(draft)
         }
-        fanControlPerform($actionError) { try await manager.applyProfile(draft) }
+        fanControlPerform($actionError) { try await FanControlProfiles.apply(draft) }
     }
 
-    private func addProfile() {
-        let profile = FanProfile(name: String(localized: "New Profile"))
-        manager.saveProfile(profile)
-        selectedID = profile.id
-        draft = profile
-    }
-
-    private func duplicateDraft() {
-        guard let draft else { return }
-        let name = FanControlFormatting.profileName(draft)
-        let copy = FanProfile(name: String(localized: "\(name) Copy"), modes: draft.modes, isBuiltIn: false)
-        manager.saveProfile(copy)
-        selectedID = copy.id
-        self.draft = copy
-    }
-
-    private func deleteDraft() {
-        guard let draft, !draft.isBuiltIn else { return }
-        manager.deleteProfile(draft)
-        selectedID = manager.availableProfiles.first?.id
-        loadDraft()
+    /// Restores the slot's default. If it is the active profile, the next poll
+    /// applies the default content (as with any edit of the active profile).
+    private func resetDraft() {
+        guard let draft, draft.isCustomSlot, let fresh = FanProfile.fixedDefault(id: draft.id) else { return }
+        manager.saveProfile(fresh)
+        self.draft = fresh.resolved(for: manager.fans)
     }
 }
 
@@ -133,32 +129,35 @@ private struct ProfileList: View {
     @Binding var selectedID: UUID?
     let profiles: [FanProfile]
     let activeID: UUID?
-    let onAdd: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            List(profiles, selection: $selectedID) { profile in
-                HStack {
-                    Text(verbatim: FanControlFormatting.profileName(profile))
-                        .lineLimit(1)
-                    Spacer()
-                    if profile.id == activeID {
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(.secondary)
-                    } else if profile.isBuiltIn {
-                        Image(systemName: "lock.fill")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .tag(profile.id)
+        List(selection: $selectedID) {
+            Section("Presets") {
+                rows(profiles.filter { !$0.isCustomSlot })
             }
-            .listStyle(.bordered)
+            Section("Custom") {
+                rows(profiles.filter(\.isCustomSlot))
+            }
+        }
+        .listStyle(.bordered)
+    }
 
-            Button(action: onAdd) {
-                Label("New Profile", systemImage: "plus")
+    private func rows(_ items: [FanProfile]) -> some View {
+        ForEach(items) { profile in
+            HStack {
+                Text(verbatim: FanControlFormatting.profileName(profile))
+                    .lineLimit(1)
+                Spacer()
+                if profile.id == activeID {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(.secondary)
+                } else if !profile.isCustomSlot {
+                    Image(systemName: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
-            .buttonStyle(.borderless)
+            .tag(profile.id)
         }
     }
 }
@@ -167,27 +166,33 @@ private struct ProfileList: View {
 
 private struct ProfileEditor: View {
     @Binding var draft: FanProfile
+    /// The draft differs from the stored profile (unsaved edits).
     let isDirty: Bool
+    /// The stored profile differs from its factory default (Reset enabled).
+    let isModified: Bool
     let isActive: Bool
     let canApply: Bool
     let fans: [FanDevice]
     let sensors: [SensorReading]
+    let currentRPMs: [Int: Int]
     let unit: TemperatureUnit
+    let emergencyTemperature: Double
     let onApply: () -> Void
     let onSave: () -> Void
     let onRevert: () -> Void
-    let onDuplicate: () -> Void
-    let onDelete: () -> Void
+    let onReset: () -> Void
+
+    private var isEditable: Bool { draft.isCustomSlot }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                if draft.isBuiltIn {
+                if isEditable {
+                    TextField("Profile Name", text: nameBinding)
+                        .textFieldStyle(.roundedBorder)
+                } else {
                     Text(verbatim: FanControlFormatting.profileName(draft))
                         .font(.headline)
-                } else {
-                    TextField("Profile Name", text: $draft.name)
-                        .textFieldStyle(.roundedBorder)
                 }
                 if isActive {
                     Text("Active")
@@ -198,25 +203,31 @@ private struct ProfileEditor: View {
                 }
             }
 
-            if draft.isBuiltIn {
-                Text("Built-in profiles are read-only. Duplicate one to customize it.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
+            Text(verbatim: description)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             if fans.isEmpty {
                 Text("No fans detected")
                     .foregroundStyle(.secondary)
             } else {
+                // Curve + per-fan editors scroll inside the pane's fixed size.
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
+                        FanCurveView(profile: draft, fans: fans, sensors: sensors, currentRPMs: currentRPMs,
+                                     unit: unit, emergencyTemperature: emergencyTemperature, style: .regular)
+                            .frame(height: 110)
+                        FanCurveLegend(fans: fans)
+                        Divider()
                         ForEach(fans) { fan in
                             FanModeEditor(fan: fan, mode: modeBinding(for: fan), sensors: sensors, unit: unit)
+                                .disabled(!isEditable)
                             Divider()
                         }
                     }
+                    .padding(.trailing, 8)
                 }
-                .disabled(draft.isBuiltIn)
             }
 
             Spacer(minLength: 0)
@@ -232,25 +243,70 @@ private struct ProfileEditor: View {
                 Button("Apply", action: onApply)
                     .disabled(!canApply)
                 Spacer()
-                Button("Duplicate", action: onDuplicate)
-                Button("Delete", role: .destructive, action: onDelete)
-                    .disabled(draft.isBuiltIn)
-                Button("Revert", action: onRevert)
-                    .disabled(draft.isBuiltIn || !isDirty)
-                Button("Save", action: onSave)
-                    .disabled(draft.isBuiltIn || !isDirty)
-                    .keyboardShortcut(.defaultAction)
+                if isEditable {
+                    Button("Reset to Default", action: onReset)
+                        .disabled(!isModified && !isDirty)
+                    Button("Revert", action: onRevert)
+                        .disabled(!isDirty)
+                    Button("Save", action: onSave)
+                        .disabled(!isDirty)
+                        .keyboardShortcut(.defaultAction)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// `.automatic` is stored as a missing entry (see `FanProfile.modes`).
+    /// What the profile does (presets) or how to edit it (custom slots).
+    private var description: String {
+        switch draft.id {
+        case FanProfile.BuiltInID.automatic:
+            return String(localized: "macOS (the SMC) controls every fan. Fan control returns the fans to automatic.")
+        case FanProfile.BuiltInID.constantQuiet, FanProfile.BuiltInID.constantHigh:
+            let rpm: Int
+            if case .constant(let value) = draft.defaultMode { rpm = value } else { rpm = 0 }
+            return String(localized: "Every fan at a constant \(rpm.formatted()) RPM (limited to each fan's range). Read-only preset.")
+        case FanProfile.BuiltInID.boost:
+            let summary = draft.defaultMode.map { FanControlFormatting.modeSummary($0, sensors: sensors, unit: unit) } ?? ""
+            return String(localized: "Every fan follows \(summary): minimum speed at the start temperature, maximum speed at the maximum temperature. Read-only preset.")
+        default:
+            return String(localized: "Editable profile. Choose a mode for each fan, then Save or Apply.")
+        }
+    }
+
+    private var nameBinding: Binding<String> {
+        Binding(
+            get: { FanControlFormatting.profileName(draft) },
+            set: { draft.name = $0 }
+        )
+    }
+
+    /// Explicit per-fan entries (also `.automatic`), so they override `defaultMode`.
     private func modeBinding(for fan: FanDevice) -> Binding<FanControlMode> {
         Binding(
             get: { draft.mode(for: fan) },
-            set: { draft.modes[fan.id] = $0.isManual ? $0 : nil }
+            set: { draft.modes[fan.id] = $0 }
         )
+    }
+}
+
+/// Colour key of `FanCurveView` (one swatch per fan).
+struct FanCurveLegend: View {
+    let fans: [FanDevice]
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(Array(fans.enumerated()), id: \.element.id) { index, fan in
+                HStack(spacing: 4) {
+                    Circle().fill(FanCurveView.color(forFanAt: index)).frame(width: 7, height: 7)
+                    Text(verbatim: fan.name)
+                }
+            }
+            Spacer(minLength: 0)
+            Text("Dot = current speed")
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
     }
 }
 
@@ -271,22 +327,26 @@ private struct FanModeEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Name on its own line: next to the fixed-size segmented picker it could be
+            // squeezed to zero width and wrap one character per line (very tall pane).
             HStack {
                 Text(verbatim: fan.name)
                     .bold()
+                    .lineLimit(1)
                 Text(verbatim: "\(fan.rpmRange.lowerBound.formatted())–\(fan.rpmRange.upperBound.formatted()) RPM")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Spacer()
-                Picker("", selection: kind) {
-                    Text("Automatic").tag(Kind.automatic)
-                    Text("Constant").tag(Kind.constant)
-                    Text("Sensor-based").tag(Kind.sensor)
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .fixedSize()
+                    .lineLimit(1)
+                Spacer(minLength: 0)
             }
+            Picker("", selection: kind) {
+                Text("Automatic").tag(Kind.automatic)
+                Text("Constant").tag(Kind.constant)
+                Text("Sensor-based").tag(Kind.sensor)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .fixedSize()
 
             switch mode {
             case .automatic:
@@ -338,6 +398,7 @@ private struct FanModeEditor: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("Sensor")
+                    .fixedSize()
                 Spacer()
                 Picker("", selection: sensorKeyBinding) {
                     if !sensors.contains(where: { $0.id == key }) {
@@ -393,7 +454,7 @@ private struct FanModeEditor: View {
 
     private var sensorParameters: (key: String, start: Double, max: Double) {
         if case .sensor(let key, let start, let maxTemperature) = mode { return (key, start, maxTemperature) }
-        return (defaultSensorKey, 50, 80)
+        return (defaultSensorKey, FanProfile.Preset.boostStartTemperature, FanProfile.Preset.boostMaxTemperature)
     }
 
     private var sensorKeyBinding: Binding<String> {
@@ -448,7 +509,9 @@ private struct FanModeEditor: View {
                     mode = .constant(rpm: range.lowerBound + (range.upperBound - range.lowerBound) / 2)
                 case .sensor:
                     if case .sensor = mode { return }
-                    mode = .sensor(sensorKey: defaultSensorKey, startTemperature: 50, maxTemperature: 80)
+                    mode = .sensor(sensorKey: defaultSensorKey,
+                                   startTemperature: FanProfile.Preset.boostStartTemperature,
+                                   maxTemperature: FanProfile.Preset.boostMaxTemperature)
                 }
             }
         )

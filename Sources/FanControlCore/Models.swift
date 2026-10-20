@@ -90,50 +90,191 @@ public enum FanControlMode: Codable, Hashable, Sendable {
 }
 
 /// A named set of per-fan modes.
+///
+/// The app offers a fixed set of six profiles (`ProfileStore`, `FanProfile.fixedProfileIDs`):
+/// Automatic, Constant Quiet, Constant High, Boost (read-only presets) and
+/// Custom 1 / Custom 2 (user-editable slots).
 public struct FanProfile: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var name: String
-    /// Mode per fan, keyed by `FanDevice.id`. Missing fans are `.automatic`.
+    /// Mode per fan, keyed by `FanDevice.id`. Fans without an entry use
+    /// `defaultMode` (or `.automatic` when that is `nil`). An explicit
+    /// `.automatic` entry overrides `defaultMode`.
     public var modes: [Int: FanControlMode]
-    /// Built-in profiles cannot be deleted from a `ProfileStore`.
+    /// Built-in profiles cannot be deleted from a `ProfileStore`. `true` for
+    /// the presets (Automatic, Constant Quiet, Constant High, Boost) and the
+    /// legacy Silent / Maximum; `false` for the Custom 1 / Custom 2 slots.
     public var isBuiltIn: Bool
+    /// Mode for every fan that has no entry in `modes` ("every fan" presets,
+    /// which are defined before the fans are known). `nil` = `.automatic`.
+    ///
+    /// Note: `FanControlManager.applyProfile` decides whether it needs the
+    /// write session from `modes` alone, so pass `resolved(for:)` (explicit
+    /// per-fan modes) to it. Planning (`FanControlEngine.plan`) uses
+    /// `mode(for:)` and therefore honours `defaultMode` as stored.
+    public var defaultMode: FanControlMode?
 
-    public init(id: UUID = UUID(), name: String, modes: [Int: FanControlMode] = [:], isBuiltIn: Bool = false) {
+    public init(id: UUID = UUID(), name: String, modes: [Int: FanControlMode] = [:], isBuiltIn: Bool = false,
+                defaultMode: FanControlMode? = nil) {
         self.id = id
         self.name = name
         self.modes = modes
         self.isBuiltIn = isBuiltIn
+        self.defaultMode = defaultMode
     }
 
-    /// Fixed identifiers of the built-in profiles, so they dedupe across launches.
+    /// Fixed identifiers of the built-in profiles and custom slots, so they
+    /// dedupe across launches.
     public enum BuiltInID {
         public static let automatic = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000001")!
+        /// Legacy (before the fixed six): every fan at its `minRPM`. No longer offered;
+        /// migrated away by `ProfileStore` (kept because `FanControlManager` references it).
         public static let silent = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000002")!
+        /// Legacy (before the fixed six): every fan at its `maxRPM`. No longer offered;
+        /// the emergency override (`SafetyPolicy`) still forces max speed when hot.
         public static let maximum = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000003")!
+        public static let constantQuiet = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000011")!
+        public static let constantHigh = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000012")!
+        public static let boost = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000013")!
+        public static let custom1 = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000021")!
+        public static let custom2 = UUID(uuidString: "6F1A0000-0000-4000-8000-000000000022")!
     }
+
+    /// Parameters of the presets and the custom-slot defaults (provisional
+    /// values, to be confirmed by the user; see docs/kit.md "Profiles").
+    public enum Preset {
+        /// Constant Quiet: every fan at this RPM (clamped to Mn…Mx when applied).
+        public static let quietRPM = 3000
+        /// Constant High: every fan at this RPM (clamped to Mn…Mx when applied).
+        public static let highRPM = 5000
+        /// Boost: sensor followed by every fan.
+        public static let boostSensorKey = "agg:cpu"
+        /// Boost: fans at `minRPM` at or below this temperature (°C).
+        public static let boostStartTemperature = 50.0
+        /// Boost: fans at `maxRPM` at or above this temperature (°C).
+        public static let boostMaxTemperature = 80.0
+        /// Default of the Custom 2 slot: every fan at this RPM.
+        public static let custom2RPM = 3500
+
+        /// The Boost mode (`.sensor(agg:cpu, 50 → 80 °C)`).
+        public static var boostMode: FanControlMode {
+            .sensor(sensorKey: boostSensorKey, startTemperature: boostStartTemperature,
+                    maxTemperature: boostMaxTemperature)
+        }
+    }
+
+    /// Default (English) names of the fixed profiles; the app localizes them
+    /// (a custom slot whose name equals its default name is shown localized).
+    public enum DefaultName {
+        public static let automatic = "Automatic"
+        public static let constantQuiet = "Constant Quiet"
+        public static let constantHigh = "Constant High"
+        public static let boost = "Boost"
+        public static let custom1 = "Custom 1"
+        public static let custom2 = "Custom 2"
+    }
+
+    /// The six profiles offered by the app, in display order.
+    public static let fixedProfileIDs: [UUID] = [
+        BuiltInID.automatic, BuiltInID.constantQuiet, BuiltInID.constantHigh, BuiltInID.boost,
+        BuiltInID.custom1, BuiltInID.custom2,
+    ]
+
+    /// The user-editable slots (Custom 1, Custom 2).
+    public static let customSlotIDs: [UUID] = [BuiltInID.custom1, BuiltInID.custom2]
 
     /// Every fan under SMC control.
     public static func automatic() -> FanProfile {
-        FanProfile(id: BuiltInID.automatic, name: "Automatic", modes: [:], isBuiltIn: true)
+        FanProfile(id: BuiltInID.automatic, name: DefaultName.automatic, modes: [:], isBuiltIn: true)
     }
 
-    /// Every fan at a constant speed equal to its `minRPM`.
+    /// Every fan at `Preset.quietRPM` (3000 RPM).
+    public static func constantQuiet() -> FanProfile {
+        FanProfile(id: BuiltInID.constantQuiet, name: DefaultName.constantQuiet, isBuiltIn: true,
+                   defaultMode: .constant(rpm: Preset.quietRPM))
+    }
+
+    /// Every fan at `Preset.highRPM` (5000 RPM).
+    public static func constantHigh() -> FanProfile {
+        FanProfile(id: BuiltInID.constantHigh, name: DefaultName.constantHigh, isBuiltIn: true,
+                   defaultMode: .constant(rpm: Preset.highRPM))
+    }
+
+    /// Every fan follows `agg:cpu`: `minRPM` at ≤ 50 °C, linear to `maxRPM` at ≥ 80 °C.
+    public static func boost() -> FanProfile {
+        FanProfile(id: BuiltInID.boost, name: DefaultName.boost, isBuiltIn: true, defaultMode: Preset.boostMode)
+    }
+
+    /// Default content of the Custom 1 slot: a copy of Boost (editable).
+    public static func defaultCustom1() -> FanProfile {
+        FanProfile(id: BuiltInID.custom1, name: DefaultName.custom1, isBuiltIn: false, defaultMode: Preset.boostMode)
+    }
+
+    /// Default content of the Custom 2 slot: every fan at `Preset.custom2RPM` (3500 RPM).
+    public static func defaultCustom2() -> FanProfile {
+        FanProfile(id: BuiltInID.custom2, name: DefaultName.custom2, isBuiltIn: false,
+                   defaultMode: .constant(rpm: Preset.custom2RPM))
+    }
+
+    /// The factory content of fixed profile `id` (preset or custom-slot
+    /// default), or `nil` if `id` is not one of `fixedProfileIDs`.
+    public static func fixedDefault(id: UUID) -> FanProfile? {
+        switch id {
+        case BuiltInID.automatic: return automatic()
+        case BuiltInID.constantQuiet: return constantQuiet()
+        case BuiltInID.constantHigh: return constantHigh()
+        case BuiltInID.boost: return boost()
+        case BuiltInID.custom1: return defaultCustom1()
+        case BuiltInID.custom2: return defaultCustom2()
+        default: return nil
+        }
+    }
+
+    /// The default (English) name of fixed profile `id`.
+    public static func defaultName(id: UUID) -> String? { fixedDefault(id: id)?.name }
+
+    /// `true` for the Custom 1 / Custom 2 slots.
+    public var isCustomSlot: Bool { Self.customSlotIDs.contains(id) }
+
+    /// Legacy: every fan at a constant speed equal to its `minRPM`. Not part of
+    /// the fixed six (kept for `FanControlManager.availableProfiles`).
     public static func silent(for fans: [FanDevice]) -> FanProfile {
         FanProfile(id: BuiltInID.silent, name: "Silent",
                    modes: Dictionary(uniqueKeysWithValues: fans.map { ($0.id, .constant(rpm: $0.minRPM)) }),
                    isBuiltIn: true)
     }
 
-    /// Every fan at a constant speed equal to its `maxRPM`.
+    /// Legacy: every fan at a constant speed equal to its `maxRPM`. Not part of
+    /// the fixed six (kept for `FanControlManager.availableProfiles`).
     public static func maximum(for fans: [FanDevice]) -> FanProfile {
         FanProfile(id: BuiltInID.maximum, name: "Maximum",
                    modes: Dictionary(uniqueKeysWithValues: fans.map { ($0.id, .constant(rpm: $0.maxRPM)) }),
                    isBuiltIn: true)
     }
 
-    /// The mode configured for `fan`, defaulting to `.automatic`.
+    /// The mode configured for `fan`: its `modes` entry, else `defaultMode`,
+    /// else `.automatic`.
     public func mode(for fan: FanDevice) -> FanControlMode {
-        modes[fan.id] ?? .automatic
+        modes[fan.id] ?? defaultMode ?? .automatic
+    }
+
+    /// A copy with an explicit `modes` entry for every fan in `fans`
+    /// (`mode(for:)`; `.automatic` fans get no entry unless `defaultMode`
+    /// is manual, in which case `.automatic` is stored explicitly).
+    /// `defaultMode` is kept for fans not in `fans`. Pass this to
+    /// `FanControlManager.applyProfile`, which opens the write session only
+    /// when `modes` contains a manual mode.
+    public func resolved(for fans: [FanDevice]) -> FanProfile {
+        var copy = self
+        for fan in fans {
+            let mode = mode(for: fan)
+            if mode.isManual || (defaultMode?.isManual ?? false) {
+                copy.modes[fan.id] = mode
+            } else {
+                copy.modes[fan.id] = nil
+            }
+        }
+        return copy
     }
 }
 

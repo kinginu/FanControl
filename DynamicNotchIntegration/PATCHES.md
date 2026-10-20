@@ -152,6 +152,16 @@ func FanControlSettingsPaneController() -> SettingsPane {
 // SettingsWindowController(panes: [ …, FanControlSettingsPaneController() ], …)
 ```
 
+`FanControlSettingsView` は全タブ共通の固定サイズ（`FanControlSettingsView.contentSize` = 740×600 pt。タブ切替でウィンドウが伸縮しない。
+一般タブ・プロファイル編集・センサー表は内部でスクロール）を持つ。ホスト側でペインを固定フレームで包む場合はそれ以上にする。
+
+ホストアプリが全ペイン共通のヘルパーを持っている場合は、上の `FanControlSettingsPaneController()` の代わりに
+`FanControlSettingsView()` をそのヘルパーで包んで登録してよい。`DynamicNotchApp/` はそうしている
+（`Sources/WindowsManager.swift` の `settingsPane("fanControl", "Fan Control", "fan") { FanControlSettingsView() }`、
+全ペインを 760×640 の固定フレーム `settingsPaneSize` で包む。License ペインは削除済みで Fan Control は About の直前）。
+`Sources/Support/FanControl-Patches.swift` の `FanControlSettingsPaneController()` は他のホスト向けの参照実装として残しているが、DynamicNotchApp からは呼ばれない。
+プロファイルが固定 6 件になった変更（2026-10-20）では (a)〜(g) の配線は変わらない（ドロップインファイル内だけの変更）。
+
 ## (e) `AppDelegate.applicationDidFinishLaunching` — 監視の自動開始と警告コーディネータ
 
 ```swift
