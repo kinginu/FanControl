@@ -84,8 +84,7 @@ public struct SensorCatalogEntry: Hashable, Sendable {
 /// IMPORTANT: every name and key pattern in this file comes from public
 /// community knowledge (open-source SMC tools, forum posts) or from Mac14,9
 /// readings. Apple does not document SMC keys and they differ between models;
-/// the mapping must be verified on real hardware before being relied upon
-/// (design doc §5.7).
+/// the mapping must be verified on real hardware before being relied upon.
 ///
 /// Everything is driven by one table, `entries` (key pattern → label → group →
 /// excluded). A key is resolved against every matching row:
@@ -222,7 +221,7 @@ public enum SensorCatalog {
     /// English label keys `nameComponents(for:)` can return for SMC keys (the
     /// distinct labels of `entries` in table order, then `fallbackLabelKey`;
     /// aggregates return their aggregate name instead). Every entry is also a
-    /// Localizable.strings key in the DynamicNotch drop-ins.
+    /// Localizable.strings key in the host app (DynamicNotch ships them).
     public static let labelKeys: [String] = {
         var seen = Set<String>()
         let labels = entries.compactMap(\.label).filter { seen.insert($0).inserted }
@@ -280,8 +279,7 @@ public enum SensorCatalog {
 
     /// Structured name for an SMC temperature key (or aggregate id), from which
     /// `displayName(for:)` is derived and a UI builds a localized name:
-    /// `localized(labelKey)` followed by `" " + suffix` when `suffix` is set
-    /// (design doc §5.7).
+    /// `localized(labelKey)` followed by `" " + suffix` when `suffix` is set.
     ///
     /// - Exact rows: e.g. `TB1T` → ("Battery", "1"), `TH0x` → ("NAND (SSD)", nil).
     /// - Prefix rows: the rest of the key is the suffix, e.g. `Tp09` →
@@ -441,7 +439,7 @@ public extension SensorReading {
 }
 
 /// A sensor name split into a localizable label and a verbatim suffix
-/// (`SensorCatalog.nameComponents(for:)`, design doc §5.7).
+/// (`SensorCatalog.nameComponents(for:)`).
 public struct SensorNameComponents: Hashable, Sendable {
     /// English label, also the Localizable.strings key (one of
     /// `SensorCatalog.labelKeys`, or an aggregate name such as "CPU (max)").

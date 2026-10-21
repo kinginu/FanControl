@@ -1,10 +1,9 @@
 #if os(macOS)
 // "Sensors" tab of the Fan Control settings pane: the key temperatures
 // (CPU (max), GPU (max), SSD `TH0x`) at the top, then every discovered sensor
-// with its SMC key, name and temperature (replaces the earlier sensor table,
-// design doc §4.4). Sensor names are community-sourced (`SensorCatalog`) and
+// with its SMC key, name and temperature. Sensor names are community-sourced (`SensorCatalog`) and
 // localized by `FanControlSensorNames` (FanControlFormatting.swift; label from Localizable.strings + the
-// verbatim suffix, design doc §5.7); the raw SMC key stays in its own column.
+// verbatim suffix); the raw SMC key stays in its own column.
 // Aggregate sensors ("CPU (max)", …; `SensorAggregator`) are listed first,
 // whatever the sort order, with a "sum" icon in the key column. Keys excluded
 // from ranking (`SensorCatalog.isExcludedFromRanking`, e.g. `Tf*`: constant /

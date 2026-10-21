@@ -169,7 +169,7 @@ extension FanControlFormatting {
 
 // MARK: - Localized sensor names
 
-/// Localized sensor names (design doc §5.7), built from
+/// Localized sensor names, built from
 /// `SensorCatalog.nameComponents(for:)`: the label key ("CPU Performance Core",
 /// "Battery", …, "Sensor" for unknown keys, or an aggregate name such as
 /// "CPU (max)") goes through Localizable.strings, the suffix (rest of the SMC

@@ -717,7 +717,7 @@ is internal; a host may compile the same file into its own module for its own se
 (DynamicNotchApp does, by symlink) — both copies observe the same keys by KVO. Labels are looked up
 in the host's `Localizable.strings` (`Bundle.main`); some strings still name DynamicNotch and the
 Nook. Host-specific glue (DynamicNotch's Nook widgets, Live Activity view, Nook visibility hook)
-stays in `DynamicNotchIntegration/` (`PATCHES.md`).
+lives in the host app's repository, not in this package.
 
 ## Helper requirement and install status
 

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Allowed ranges of `SafetyThresholds` (pure; design doc §5.6):
+/// Allowed ranges of `SafetyThresholds` (pure):
 ///
 /// - alert: `alertRange` = 70…100 °C
 /// - emergency: `emergencyRange(forAlert:)` = (alert + 1)…105 °C

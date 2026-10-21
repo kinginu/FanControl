@@ -188,10 +188,10 @@ helper itself is never sandboxed.
 The core libraries contain no views. Host-independent SwiftUI lives in the separate product
 `FanControlUI` (`Sources/FanControlUI/`: the settings pane and its General / Profiles / Sensors
 tabs, the curve view and editor, temperature charts, the alert coordinator and the settings
-storage; kit.md, "UI layer"). Link it alongside `FanControlCore` / `FanControlKit`. DynamicNotch
-adds only its host glue from `DynamicNotchIntegration/` (widgets, widget settings, the live
-activity view and the Nook hooks; PATCHES.md). Whatever draws the UI, the app has to wire up the
-following:
+storage; kit.md, "UI layer"). Link it alongside `FanControlCore` / `FanControlKit`. A host adds
+only its own glue on top (DynamicNotch, for example, keeps its notch widgets, widget settings,
+live-activity view and visibility hooks in its own repository). Whatever draws the UI, the app
+has to wire up the following:
 
 1. At launch: copy your settings into the manager (`pollingInterval`, `slowPollingOnBattery`,
    `reapplyProfileAfterWake`, `keepAlertsWhilePaused`, thresholds through

@@ -5,7 +5,7 @@ import Testing
 import FanControlCore
 @testable import FanControlKit
 
-/// Power-aware polling (design doc §5.4 (a)) and conflict detection (§5.2) at the
+/// Power-aware polling and conflict detection at the
 /// manager level. The timer itself is covered by `MonitoringServiceTests` (starting
 /// monitoring on a manager would open the IOKit SMC reader).
 @Suite("Power-aware polling (manager)", .tags(.power, .manager))

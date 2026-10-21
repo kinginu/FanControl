@@ -4,7 +4,7 @@ import Testing
 import FanControlCore
 @testable import FanControlKit
 
-/// `FanControlManager.applySafetyThresholds(_:)` (design doc §5.6): the app's
+/// `FanControlManager.applySafetyThresholds(_:)`: the app's
 /// threshold setting reaches `safetyPolicy`, which every poll evaluates.
 @Suite("Safety thresholds (manager)", .tags(.safety, .manager))
 @MainActor

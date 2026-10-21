@@ -1,7 +1,7 @@
 #if os(macOS)
 import AppKit
 
-/// Another fan control app whose writes would fight ours (design doc §5.2).
+/// Another fan control app whose writes would fight ours.
 /// Our helper uses its own Mach service (`FanControlHelperConstants`), so the two
 /// helpers do not collide; but both apps writing `F<n>Md` / `F<n>Tg` at the same
 /// time override each other.
@@ -45,7 +45,7 @@ public struct ConflictingControllerStatus: Sendable, Hashable {
     }
 }
 
-/// Detects other fan control apps (design doc §5.2 (b)). Probes are injectable for tests;
+/// Detects other fan control apps. Probes are injectable for tests;
 /// the defaults ask `NSRunningApplication` and the file system (cheap, no I/O beyond `stat`).
 public struct ConflictingControllerDetector: Sendable {
     public static let launchDaemonsDirectory = "/Library/LaunchDaemons"

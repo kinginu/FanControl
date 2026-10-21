@@ -1,8 +1,8 @@
 #if os(macOS)
-// The Fan Control alert state (design doc §4.2) and the single place that mirrors the stored
+// The Fan Control alert state and the single place that mirrors the stored
 // general settings and thresholds into `FanControlManager`.
 //
-// Host wiring (DynamicNotch: PATCHES.md (e)(f)): create `FanControlAlertCoordinator.shared` at
+// Host wiring (e.g. DynamicNotch): create `FanControlAlertCoordinator.shared` at
 // launch, before `startMonitoring()`, so the manager already has the user's polling interval
 // and wake setting, and forward `onAlertChange` to the host's alert UI (DynamicNotch: insert /
 // remove `LiveActivity.fanAlert`). Optionally observe `transientNotificationName` to briefly
@@ -20,8 +20,8 @@ public enum FanControlAlertKind: Equatable, Hashable, Sendable {
     case highTemperature
     /// At least one fan reports 0 RPM while a non-zero target is set.
     case fanStopped
-    /// Another fan control app (FanFi) started running (`conflictingControllers`,
-    /// design doc §5.2). Shown once per detection for `conflictAlertDuration`, not
+    /// Another fan control app (FanFi) started running (`conflictingControllers`).
+    /// Shown once per detection for `conflictAlertDuration`, not
     /// again until the conflict has cleared.
     case conflictingController
 }
@@ -88,7 +88,7 @@ public final class FanControlAlertCoordinator {
                 self?.reevaluate()
             }
         }
-        // Temperature thresholds changed in Settings (General tab, design doc §5.6).
+        // Temperature thresholds changed in Settings (General tab).
         thresholdsTask = Task { [weak self] in
             for await _ in SettingsStore.updates(.fanControlThresholdSettings, initial: false) {
                 self?.syncManagerSettings()

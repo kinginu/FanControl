@@ -1,6 +1,5 @@
 #if os(macOS)
-// "Profiles" tab of the Fan Control settings pane (replaces the earlier
-// profile editor dialogs, design doc §4.4).
+// "Profiles" tab of the Fan Control settings pane.
 // The profile set is fixed (`ProfileStore`): the presets Automatic,
 // Constant Quiet, Constant High, Boost and Max are shown read-only with their
 // parameters (Boost with its real multi-point curve); Custom 1 / Custom 2 are

@@ -1,6 +1,6 @@
 #if os(macOS)
-// The "Fan Control" settings pane (design doc §4.3), meant as one tab of the
-// host's native SwiftUI `Settings` scene (DynamicNotch: PATCHES.md (d)). General /
+// The "Fan Control" settings pane, meant as one tab of the
+// host's native SwiftUI `Settings` scene (e.g. DynamicNotch). General /
 // Profiles / Sensors sub-tabs as a segmented control (a nested `TabView` would
 // be hoisted into the Settings window's toolbar), plus an error footer.
 //

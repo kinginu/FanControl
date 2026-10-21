@@ -1,7 +1,7 @@
 import Testing
 @testable import FanControlCore
 
-/// `SensorCatalog.nameComponents(for:)` (design doc §5.7, localizable sensor names).
+/// `SensorCatalog.nameComponents(for:)` (localizable sensor names).
 @Suite("Sensor name components", .tags(.sensors))
 struct SensorNameComponentsTests {
 

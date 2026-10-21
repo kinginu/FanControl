@@ -2,7 +2,7 @@
 import Foundation
 import FanControlCore
 
-// MARK: - Temperature thresholds (design doc §5.6)
+// MARK: - Temperature thresholds
 
 /// User-set alert / emergency / hysteresis thresholds, persisted under their own
 /// stored-setting key (`FanControlSettingKey.thresholds`, "fanControlThresholdSettings", separate from

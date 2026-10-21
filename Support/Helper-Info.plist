@@ -15,7 +15,7 @@
     FanControlMachServiceName                         Mach service = launchd Label (defaults to FanControlHelperIdentifier)
     FanControlClientBundleIdentifier                  the only app the helper accepts (= the app's PRODUCT_BUNDLE_IDENTIFIER)
     FanControlClientTeamID                            Team ID of both binaries (SMAppService path; TEAMID0000 = not configured)
-  Replace FanControlClientTeamID with the real Team ID before shipping (design doc §5.1).
+  Replace FanControlClientTeamID with the real Team ID before shipping.
 -->
 <plist version="1.0">
 <dict>

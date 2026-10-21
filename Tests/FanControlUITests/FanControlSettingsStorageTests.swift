@@ -1,7 +1,7 @@
 // Stored format of the Fan Control settings keys: SettingsStore reads exactly what
 // sindresorhus/Defaults 8.2 wrote (JSON strings, sorted keys). The stored strings below are the
-// Fan Control entries of the user's settings export of 2026-10-20 (formerly read from the
-// DynamicNotchApp fixture by Tools/IntegrationTypeCheck). Each test uses a throw-away suite.
+// Fan Control entries of the user's settings export of 2026-10-20. Each test uses a throw-away
+// suite.
 import Foundation
 import Testing
 import FanControlCore

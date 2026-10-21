@@ -4,8 +4,8 @@
 // such as sleep or a paused Nook, downsampled to bucket means, the high-temperature alert
 // threshold as a dashed red rule with its value, "−5 min" … "now" under it.
 // Series colours are categorical (blue / aqua / violet); red and orange stay reserved for the
-// alert / warm status. Used by the DynamicNotch Temperature widget (drop-in
-// FanControlTemperatureWidgetView.swift), which adds the header, window chips and values.
+// alert / warm status. Used by DynamicNotch's Temperature widget (host glue in that
+// app's repository), which adds the header, window chips and values.
 
 import SwiftUI
 import Charts

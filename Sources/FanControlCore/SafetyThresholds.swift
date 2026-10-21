@@ -1,7 +1,7 @@
 import Foundation
 
-/// The three user-adjustable temperature thresholds of `SafetyPolicy`
-/// (design doc §5.6). Kept separate from the policy so that a settings UI can
+/// The three user-adjustable temperature thresholds of `SafetyPolicy`.
+/// Kept separate from the policy so that a settings UI can
 /// persist and edit them without touching `emergencySensorPrefixes` or
 /// `enforceHardwareMinimum`.
 public struct SafetyThresholds: Codable, Hashable, Sendable {

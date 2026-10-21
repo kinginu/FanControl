@@ -2,7 +2,7 @@ import Foundation
 
 public extension Notification.Name {
     /// Posted (object: `FanControlManager`) when `highTempAlertActive` changes.
-    /// `userInfo["active"]` is the new `Bool`. Hook for a Live Activity (design doc §4.2).
+    /// `userInfo["active"]` is the new `Bool`. Hook for a Live Activity.
     static let fanControlHighTemperatureChanged = Notification.Name("FanControlHighTemperatureChanged")
     /// Posted (object: `FanControlManager`) when `anomalousFanIDs` changes.
     /// `userInfo["fanIDs"]` is the new `Set<Int>`.
@@ -22,8 +22,7 @@ import FanControlCore
 import FanControlSMC
 import FanControlXPC
 
-/// App-side fan control state and actions (design doc §3.1), following the
-/// DynamicNotch manager pattern (`@Observable` + `static let shared`).
+/// App-side fan control state and actions (`@Observable` + `static let shared`).
 ///
 /// A thin facade (docs/kit.md "Architecture"): it owns the poll snapshot that
 /// `FanControlPoller` publishes, the profile store and the safety / tuning
@@ -167,8 +166,8 @@ public final class FanControlManager {
     public var helperStatus: HelperInstallStatus { helper.helperStatus }
     public var helperConnectionState: HelperConnectionState { helper.helperConnectionState }
     public var isSMCWriteSessionOpen: Bool { helper.isSMCWriteSessionOpen }
-    /// Display names of other fan control apps that are running now (e.g. `["FanFi"]`,
-    /// design doc §5.2): both writing at once override each other. Refreshed on
+    /// Display names of other fan control apps that are running now (e.g. `["FanFi"]`):
+    /// both writing at once override each other. Refreshed on
     /// `startMonitoring()`, on app launch / terminate notifications and at most every
     /// `conflictCheckInterval` while polling; `refreshConflictingControllers()` forces it.
     /// Changes post `.fanControlConflictingControllersChanged`.
@@ -187,8 +186,8 @@ public final class FanControlManager {
         set { monitoring.pollingInterval = newValue }
     }
     /// When `true` (default), polling slows to `batteryPollingInterval` (if that is
-    /// longer than `pollingInterval`) while the Mac runs on battery (design doc
-    /// §5.4 (a)). The app mirrors `FanControlGeneralSettings.slowPollingOnBattery` into this.
+    /// longer than `pollingInterval`) while the Mac runs on battery.
+    /// The app mirrors `FanControlGeneralSettings.slowPollingOnBattery` into this.
     public var slowPollingOnBattery: Bool {
         get { monitoring.slowPollingOnBattery }
         set { monitoring.slowPollingOnBattery = newValue }
@@ -210,8 +209,8 @@ public final class FanControlManager {
     /// Copies user-set thresholds (clamped by `ThresholdBounds`) into
     /// `safetyPolicy`, keeping `emergencySensorPrefixes` and
     /// `enforceHardwareMinimum`. Assigns only on a change; the next poll
-    /// evaluates the alert and the emergency latch against the new values
-    /// (design doc §5.6). The app calls this when its threshold setting changes.
+    /// evaluates the alert and the emergency latch against the new values.
+    /// The app calls this when its threshold setting changes.
     public func applySafetyThresholds(_ thresholds: SafetyThresholds) {
         let clamped = ThresholdBounds.clamped(thresholds)
         guard safetyPolicy.thresholds != clamped else { return }
@@ -429,7 +428,7 @@ public final class FanControlManager {
     }
 
     /// Call with `true` when the Nook is hidden and `false` when it is shown
-    /// (design doc §5.4; the host drives it from its Nook visibility, PATCHES.md (b)).
+    /// (the host drives it from its Nook visibility).
     /// While the pause is in effect (`isPauseInEffect`: paused and no live-data
     /// hold) polling slows down to `max(5 × pollingInterval, 10 s)` while a write
     /// session is open (so sensor-based modes and the emergency override keep
@@ -558,7 +557,7 @@ public final class FanControlManager {
         lastError = nil
     }
 
-    /// Every SMC key with type, size, attributes and raw bytes (diagnostics, design doc §5.7).
+    /// Every SMC key with type, size, attributes and raw bytes (diagnostics).
     ///
     /// **Blocking**: waits (`queue.sync` on the poll queue) for the in-flight poll and
     /// then for the whole dump, which reads every key and can take seconds. Never call

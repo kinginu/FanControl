@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import FanControlCore
 
-/// `ThresholdBounds` / `SafetyThresholds` (design doc §5.6).
+/// `ThresholdBounds` / `SafetyThresholds`.
 @Suite("Threshold bounds", .tags(.safety))
 struct ThresholdBoundsTests {
 

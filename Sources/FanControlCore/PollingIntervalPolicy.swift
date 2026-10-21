@@ -1,6 +1,6 @@
 import Foundation
 
-/// Pure poll-interval selection (design doc §5.4 (a) and (c)), used by
+/// Pure poll-interval selection, used by
 /// `FanControlManager` to schedule its timer.
 public enum PollingIntervalPolicy {
 

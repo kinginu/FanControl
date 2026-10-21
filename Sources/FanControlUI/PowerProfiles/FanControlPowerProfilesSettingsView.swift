@@ -2,7 +2,7 @@
 // F2: the "Power Profiles" settings pane (DynamicNotchApp/docs/power-profiles.md): a master
 // switch, the live context, and an ordered rules editor (first match wins). Each rule maps
 // power source / lid / time window to a fan profile and a Low Power Mode setting.
-// Meant as a top-level tab of the host's settings window (DynamicNotch: PATCHES.md (h));
+// Meant as a top-level tab of the host's settings window (e.g. DynamicNotch);
 // `PowerProfileEngine` persists the rules.
 
 import SwiftUI
@@ -398,7 +398,7 @@ private extension String {
     var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }
 
-/// Host start-up hook (DynamicNotch: PATCHES.md (h)): call once from
+/// Host start-up hook (e.g. DynamicNotch): call once from
 /// `applicationDidFinishLaunching`, after the Fan Control start-up. Starts the engine (cheap and
 /// inert while Power Profiles are off) and keeps fan switching off while the Fan Control feature
 /// is disabled (`FanControlSettingKey.general`). When the feature is switched back on, a

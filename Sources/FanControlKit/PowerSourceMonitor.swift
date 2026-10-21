@@ -2,7 +2,7 @@
 import Foundation
 import IOKit.ps
 
-/// Where the Mac currently draws power from (design doc §5.4 (a)).
+/// Where the Mac currently draws power from.
 /// Injected into `FanControlManager` (`init(powerSource:)`) so tests can switch it.
 @MainActor
 public protocol PowerSourceProviding: AnyObject {

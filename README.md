@@ -35,7 +35,6 @@ Supporting material:
 | `Support/LaunchDaemons/` | The launchd plist for the `SMAppService` path with the default identifiers |
 | `Support/manual-install/` | `install.sh`, `uninstall.sh` and `status.sh` for the developer / personal-use mode ([README](Support/manual-install/README.md)) |
 | `Tools/HelperSmokeApp/` | A minimal sample host app (XcodeGen) that embeds the helper and drives the real API. It was used for every hardware test. |
-| `Tools/IntegrationTypeCheck/` | A type-check harness for UI drop-in files |
 | `docs/` | Start at the [documentation index](docs/README.md): [architecture.md](docs/architecture.md), [integration.md](docs/integration.md), [kit.md](docs/kit.md), [helper.md](docs/helper.md), [verification/SUMMARY.md](docs/verification/SUMMARY.md) |
 
 ## Requirements

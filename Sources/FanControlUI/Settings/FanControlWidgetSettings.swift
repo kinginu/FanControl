@@ -1,6 +1,6 @@
 #if os(macOS)
 // Settings models of the Fan Control widget and the Fan Control settings pane, stored under
-// `FanControlSettingKey.widget` / `.general` (design doc §4.1, §4.3). The JSON field names are
+// `FanControlSettingKey.widget` / `.general`. The JSON field names are
 // the stored format (sindresorhus/Defaults 8.2, sorted keys): never rename one.
 //
 // Decoding is tolerant (`decodeIfPresent` with defaults) so that adding a field in a later
@@ -110,16 +110,16 @@ public struct FanControlWidgetSettings: Codable, CodableStoredValue, Equatable, 
 
 public struct FanControlGeneralSettings: Codable, CodableStoredValue, Equatable, Hashable, Sendable {
 
-    /// Polling intervals offered in the settings pane (seconds, design doc §4.3).
+    /// Polling intervals offered in the settings pane (seconds).
     public static let pollingIntervalChoices: [TimeInterval] = [1, 2, 5, 10]
 
-    /// Master switch for the fan control feature (off by default, design doc §5.5).
+    /// Master switch for the fan control feature (off by default).
     public var isEnabled: Bool = false
     /// Sensor/RPM polling interval in seconds.
     public var pollingInterval: TimeInterval = 2.0
     /// Start monitoring at app launch when the feature is enabled.
     public var autoStartMonitoring: Bool = true
-    /// Pause polling while the Nook (and therefore the widget) is hidden (design doc §5.4 (c)).
+    /// Pause polling while the Nook (and therefore the widget) is hidden.
     public var pauseWhenNookHidden: Bool = true
     /// Re-apply the active profile after the Mac wakes from sleep.
     public var reapplyProfileAfterWake: Bool = true
@@ -127,7 +127,7 @@ public struct FanControlGeneralSettings: Codable, CodableStoredValue, Equatable,
     public var highTemperatureAlertEnabled: Bool = true
     /// Show the fan-stopped Live Activity.
     public var fanAnomalyAlertEnabled: Bool = true
-    /// Poll every 10 s (or the longer polling interval) on battery (design doc §5.4 (a)).
+    /// Poll every 10 s (or the longer polling interval) on battery.
     public var slowPollingOnBattery: Bool = true
 
     public init(isEnabled: Bool = false,

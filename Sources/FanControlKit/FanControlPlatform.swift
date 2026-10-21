@@ -23,11 +23,11 @@ public enum FanControlPlatform {
     }
 
     /// `SafetyPolicy.default`: the policy `FanControlManager` starts with.
-    /// Kept as an entry point for the smoke app and the drop-ins.
+    /// Kept as an entry point for the smoke app and host glue.
     public static var defaultSafetyPolicy: SafetyPolicy { .default }
 
     /// `SensorAggregator.definitions`: the aggregate sensors `FanControlManager`
-    /// appends to `sensorReadings`. Referenced by the DynamicNotch drop-ins
+    /// appends to `sensorReadings`. Referenced by DynamicNotch's host glue
     /// (`FanControlWidgetSettings.swift`).
     public static var sensorAggregateDefinitions: [SensorAggregateDefinition] {
         SensorAggregator.definitions

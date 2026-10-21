@@ -8,8 +8,8 @@ public enum FanTarget: Hashable, Sendable {
     case manual(rpm: Int)
 }
 
-/// SMC write sequences for switching fans between automatic and manual control
-/// (design doc §5.7). **Apple Silicon only** (Intel support dropped 2026-10-20):
+/// SMC write sequences for switching fans between automatic and manual control.
+/// **Apple Silicon only** (Intel support dropped 2026-10-20):
 ///
 /// - each fan has a mode key `F<i>Md` (`ui8`, 0 = automatic, 1 = forced);
 /// - targets `F<i>Tg` are written with the type/size reported by `keyInfo`

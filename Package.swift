@@ -14,7 +14,7 @@ let package = Package(
         .library(name: "FanControlKit", targets: ["FanControlKit"]),
         // SwiftUI settings pane, profile / curve editors, temperature chart and the stored
         // Fan Control settings (docs/kit.md "UI layer"). Host-specific glue (DynamicNotch's
-        // Nook widgets, Live Activity, visibility hook) stays in DynamicNotchIntegration/.
+        // Nook widgets, Live Activity, visibility hook) lives in the host app's own repository.
         .library(name: "FanControlUI", targets: ["FanControlUI"]),
         .executable(name: "FanControlHelper", targets: ["FanControlHelper"]),
         .executable(name: "fanfi-probe", targets: ["FanControlProbe"]),

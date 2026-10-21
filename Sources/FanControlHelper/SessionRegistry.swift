@@ -51,7 +51,7 @@ struct RestoreReport: Sendable {
     }
 }
 
-/// Single-owner SMC write session (design doc §5.3). The process-wide entry point;
+/// Single-owner SMC write session. The process-wide entry point;
 /// all state lives in `SessionState` behind one mutex.
 ///
 /// Lifecycle (`SessionPhase`):
