@@ -14,7 +14,9 @@ your own Mac. For apps you give to other people, use the `SMAppService` path ins
 | `common.sh` | The manual-install layer (sourced): installed paths, the client requirement, the plist generator, launchd queries, `load_identifiers_from_app`. Tests check that its values match the Swift code. |
 | `FanControlHelper.manual.plist` | The LaunchDaemon template. Its placeholder values make the helper refuse to start if the template is installed unfilled. |
 
-The scripts share two files one level up:
+The scripts share two files one level up (a flat copy with both files next to the scripts works
+too, which is how a host app bundles them; [docs/helper.md](../../docs/helper.md) §6 "Installing
+from the app"):
 
 | File | Purpose |
 |---|---|

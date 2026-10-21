@@ -76,10 +76,18 @@ public func fanControlErrorMessage(_ error: Error) -> String {
 /// (`HelperConnectionState.rejected(reason:)` / `HelperInstallStatus.installedManuallyMismatch`).
 @MainActor
 public func fanControlRejectionHelp(_ reason: HelperRejectionReason) -> String {
+    // With a host installer (FanControlHostActions) the remedy is a button in the same section.
+    let hostInstalls = FanControlHostActions.providesHelperInstaller
     switch reason {
     case .clientNotPinned, .droppedByHelper:
+        if hostInstalls {
+            return String(localized: "The installed helper is pinned to a different build of DynamicNotch and refuses this app. Click Install Helper… to install it for this build.")
+        }
         return String(localized: "The installed helper is pinned to a different build of DynamicNotch and refuses this app. Re-run sudo install.sh with this app (FanControl/Support/manual-install/), then click Check Again.")
     case .helperSignatureMismatch:
+        if hostInstalls {
+            return String(localized: "The installed helper’s code signature does not match what DynamicNotch expects. Click Install Helper… to install the helper of this build.")
+        }
         return String(localized: "The installed helper’s code signature does not match what DynamicNotch expects. Re-run sudo install.sh with this app (FanControl/Support/manual-install/), then click Check Again.")
     }
 }

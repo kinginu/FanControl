@@ -707,6 +707,7 @@ manager, for hosts that want the stock settings and editors:
 | Alerts | `FanControlAlertCoordinator.shared` (`currentAlert`, `onAlertChange`, `transientNotificationName`); it also mirrors the stored general settings and thresholds into the manager ("Settings owned by the app") |
 | Power profiles (F2) | `FanControlPowerProfilesSettingsView` (rules editor pane), `FanControlPowerProfileStatusLine(isCompact:)`, `FanControlPowerProfiles.start()` ("Power profiles and profile precedence") |
 | Errors | `FanControlErrorFooter`, `fanControlPerform`, `fanControlErrorMessage`, `fanControlRejectionHelp` |
+| Host hooks | `FanControlHostActions.installHelper` / `.uninstallHelper` (the host installs the helper in manual mode, e.g. with bundled scripts; adds "Install Helper…" / "Uninstall Helper…" to the General tab), `FanControlHelperInstallerFailure` (helper.md §6 "Installing from the app") |
 | Formatting | `FanControlFormatting`, `FanControlSensorNames`, `FanControlProfiles` (the seven fixed profiles, `apply`) |
 | Stored settings | `FanControlWidgetSettings`, `FanControlGeneralSettings`, `FanControlThresholdSettings`, `FanControlTemperatureWidgetSettings`; keys `FanControlSettingKey` (`.widget`, `.general`, `.thresholds`, `.temperatureWidget`, `.automation`: `value`, `updates()`, `name`) and the property wrapper `@FanControlSetting(.widget)` |
 

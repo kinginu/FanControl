@@ -707,6 +707,38 @@ and the Swift constants agree.
 - If a manually installed helper reports a different protocol version, the app asks you to re-run
   `install.sh` instead of re-registering.
 
+### Installing from the app
+
+The scripts work from a flat copy too: `common.sh` sources `lib.sh` and `identifiers.sh` from its
+own directory when they are there, and from `..` (the source tree) otherwise. A host can therefore
+bundle `Support/manual-install/*` plus `Support/lib.sh` and `Support/identifiers.sh` in one folder
+of its app, for example `Contents/Resources/manual-install/`, and users run
+`sudo <App>/Contents/Resources/manual-install/install.sh <App>` without a checkout of this
+package (`Tools/test-support-scripts.sh` tests that layout).
+
+`FanControlUI` lets the host put the installer behind buttons. Set the closures of
+`FanControlHostActions` once at launch:
+
+```swift
+FanControlHostActions.installHelper = { progress in
+    // e.g. run the bundled install.sh --app <this app> as root (password dialog);
+    // call progress(outputSoFar) while it runs, return the full output,
+    // throw CancellationError() if the user cancelled,
+    // or FanControlHelperInstallerFailure(summary:output:) if it failed.
+}
+FanControlHostActions.uninstallHelper = { progress in /* uninstall.sh --app <this app> */ }
+```
+
+With `installHelper` set, Settings ▸ Fan Control ▸ General shows **Install Helper…** instead of
+the `SMAppService` registration while the helper is not installed (`.notRegistered`, `.unknown`,
+`.notFound`), pinned to another build (`.installedManuallyMismatch`) or refused, and the rejection
+texts point at that button; with `uninstallHelper` set it shows **Uninstall Helper…** for a manual
+installation. After a successful install the pane re-reads the status and runs "Check Again"
+(`FanControlManager.retryHelperConnection()`). Without the closures the pane is unchanged (no
+install action for a manual installation). DynamicNotch's implementation runs the scripts with
+`osascript` and `do shell script … with administrator privileges`, passing the quoted command as
+an argument rather than splicing it into AppleScript (its `docs/fan-control-integration.md` §6).
+
 ### When the pinned cdhash does not match
 
 If you rebuild or replace the app without re-running `install.sh`, or if you installed the helper
@@ -725,7 +757,8 @@ The app then behaves as follows (kit.md, "Helper connection lifecycle"):
   the app is relaunched, or `install.sh` is re-run, which changes the size and mtime of the plist
   and the helper binary. Meanwhile, every action fails immediately without connecting. Other
   failures back off from 2 s, doubling up to 5 min.
-- **The fix:** run `sudo ./install.sh <this app>`, then click "Check Again".
+- **The fix:** run `sudo ./install.sh <this app>`, then click "Check Again" (or, in a host that
+  sets `FanControlHostActions.installHelper`, click "Install Helper…", which does both).
   `./status.sh <App.app>` also checks the match.
 
 ### Procedure

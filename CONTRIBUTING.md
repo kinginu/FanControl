@@ -27,8 +27,9 @@ swift run fanfi-probe --watch 2  # read-only check against real hardware
   and then `xcodebuild … CODE_SIGN_IDENTITY=-` (see its README).
 
 A change is ready when `swift build` produces **zero warnings** and the whole test suite passes
-(587 tests in 79 suites at 1.0.0). There is no CI yet, so run both locally before you send a
-change.
+(587 tests in 79 suites at 1.0.1). CI ([.github/workflows/ci.yml](.github/workflows/ci.yml))
+runs both with warnings as errors, plus `Tools/test-support-scripts.sh`, on every pull request;
+`main` only accepts pull requests that pass them. Run them locally before you send a change.
 
 ## Swift 6 rules
 
@@ -75,7 +76,7 @@ change.
 
 ## Versioning
 
-The package uses Semantic Versioning; the current release is **1.0.0**. Record every
+The package uses Semantic Versioning; the current release is **1.0.1**. Record every
 user-visible change under an "Unreleased" heading in [CHANGELOG.md](CHANGELOG.md), and bump
 `FanControlHelperConstants.protocolVersion` (and say so in the changelog) whenever the XPC
 contract changes.

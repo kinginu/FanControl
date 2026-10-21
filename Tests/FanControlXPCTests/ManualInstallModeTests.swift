@@ -168,7 +168,9 @@ struct ManualInstallScriptConsistencyTests {
 
     @Test func commonShMatchesConstants() throws {
         let sh = try String(contentsOf: Self.dir.appendingPathComponent("common.sh"), encoding: .utf8)
-        #expect(sh.contains("source \"${SCRIPT_DIR}/../identifiers.sh\""))
+        // identifiers.sh from the source tree (Support/) or from a flat copy next to common.sh.
+        #expect(sh.contains("source \"${FC_LIB_DIR}/identifiers.sh\""))
+        #expect(sh.contains("FC_LIB_DIR=\"$(cd \"${SCRIPT_DIR}/..\" && pwd)\""))
         #expect(sh.contains("TEMPLATE=\"${SCRIPT_DIR}/FanControlHelper.manual.plist\""))
         #expect(sh.contains("HELPER_IN_APP=\"Contents/MacOS/\(C.helperExecutableName)\""))
         #expect(sh.contains("HELPER_DEST=\"/Library/PrivilegedHelperTools/${LABEL}\""))

@@ -224,7 +224,14 @@ public struct FanControlGeneralTabView: View {
 private struct HelperStatusRows: View {
     @Binding var actionError: String?
 
+    /// Output of the last (or running) host installer run (`FanControlHostActions`).
+    @State private var installerLog: String?
+    @State private var showsInstallerLog = false
+    /// Non-nil while a host installer runs ("Installing…" / "Uninstalling…"); buttons disabled.
+    @State private var runningInstaller: LocalizedStringKey?
+
     private var manager: FanControlManager { FanControlManager.shared }
+    private var hostInstalls: Bool { FanControlHostActions.providesHelperInstaller }
 
     /// One form row per item (`LabeledContent` shows the value right-aligned, like System Settings).
     var body: some View {
@@ -246,15 +253,27 @@ private struct HelperStatusRows: View {
             case .enabled:
                 EmptyView()
             case .installedManually:
-                // Manual / personal mode (FanControl/Support/manual-install/): installed
-                // by root, so the app offers no install/uninstall action.
-                Text("The helper was installed manually with install.sh. After updating DynamicNotch, run sudo install.sh again; remove it with sudo uninstall.sh (FanControl/Support/manual-install/).")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button("Check Again") {
-                    // Forgets a rejection / backoff and probes the helper once (read-only).
-                    fanControlPerform($actionError) { try await manager.retryHelperConnection() }
+                // Manual / personal mode (FanControl/Support/manual-install/): installed by
+                // root. Without a host installer the app offers no install/uninstall action.
+                if hostInstalls {
+                    Text("The helper is installed for this build of DynamicNotch. After every update of DynamicNotch, install the helper again (it only accepts the build it was installed for).")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("The helper was installed manually with install.sh. After updating DynamicNotch, run sudo install.sh again; remove it with sudo uninstall.sh (FanControl/Support/manual-install/).")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack {
+                    // A rejection although the files are there (e.g. the installed helper is
+                    // another build's): reinstalling is the remedy.
+                    if hostInstalls, case .rejected = manager.helperConnectionState {
+                        installButton
+                    }
+                    checkAgainButton
+                    uninstallButton
                 }
             case .installedManuallyMismatch:
                 // The plist pins another build's cdhash: the app does not connect at all
@@ -263,8 +282,10 @@ private struct HelperStatusRows: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Check Again") {
-                    fanControlPerform($actionError) { try await manager.retryHelperConnection() }
+                HStack {
+                    if hostInstalls { installButton }
+                    checkAgainButton
+                    uninstallButton
                 }
             case .requiresApproval:
                 Text("Allow “DynamicNotch” in System Settings ▸ General ▸ Login Items & Extensions (macOS 15) / Login Items (macOS 14) to let it change fan speeds.")
@@ -279,24 +300,114 @@ private struct HelperStatusRows: View {
                         manager.refreshHelperStatus()
                     }
                 }
-            case .notFound:
+            case .notFound where !hostInstalls:
                 // Packaging error: `SMAppService` cannot find the launchd plist,
                 // so installing cannot succeed. No install button.
                 Text("The helper’s launchd plist is missing from DynamicNotch.app. Reinstall DynamicNotch to change fan speeds.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            case .notRegistered, .unknown:
+            case .notRegistered, .unknown, .notFound:
+                // (.notFound only with a host installer, which does not need the SMAppService plist.)
                 Text("Reading temperatures works without the helper. Changing fan speeds requires installing it (administrator approval is needed).")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Install Helper…") {
-                    fanControlPerform($actionError) {
-                        try await manager.installHelper()
-                        manager.refreshHelperStatus()
+                if hostInstalls {
+                    installButton
+                } else {
+                    Button("Install Helper…") {
+                        fanControlPerform($actionError) {
+                            try await manager.installHelper()
+                            manager.refreshHelperStatus()
+                        }
                     }
                 }
+            }
+
+            if let runningInstaller {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(runningInstaller)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let installerLog {
+                DisclosureGroup("Installer Output", isExpanded: $showsInstallerLog) {
+                    ScrollView {
+                        Text(verbatim: installerLog.isEmpty ? "—" : installerLog)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 160)
+                }
+            }
+        }
+    }
+
+    // MARK: Actions
+
+    private var checkAgainButton: some View {
+        Button("Check Again") {
+            // Forgets a rejection / backoff and probes the helper once (read-only).
+            fanControlPerform($actionError) { try await manager.retryHelperConnection() }
+        }
+        .disabled(runningInstaller != nil)
+    }
+
+    /// "Install Helper…" through the host (`FanControlHostActions.installHelper`): asks for an
+    /// administrator password, installs the helper pinned to this build, then checks again.
+    @ViewBuilder private var installButton: some View {
+        if let install = FanControlHostActions.installHelper {
+            Button("Install Helper…") {
+                runInstaller(install, status: "Installing the helper…") {
+                    manager.refreshHelperStatus()
+                    try await manager.retryHelperConnection()
+                }
+            }
+            .disabled(runningInstaller != nil)
+        }
+    }
+
+    /// "Uninstall Helper…" (`FanControlHostActions.uninstallHelper`). launchd stops the helper,
+    /// which hands the fans back to macOS before exiting.
+    @ViewBuilder private var uninstallButton: some View {
+        if let uninstall = FanControlHostActions.uninstallHelper {
+            Button("Uninstall Helper…") {
+                runInstaller(uninstall, status: "Uninstalling the helper…") {
+                    manager.refreshHelperStatus()
+                }
+            }
+            .disabled(runningInstaller != nil)
+        }
+    }
+
+    private func runInstaller(_ action: @escaping FanControlHostActions.HelperInstallerAction,
+                              status: LocalizedStringKey,
+                              then followUp: @escaping @MainActor () async throws -> Void) {
+        guard runningInstaller == nil else { return }
+        runningInstaller = status
+        installerLog = ""
+        actionError = nil
+        Task { @MainActor in
+            defer { runningInstaller = nil }
+            do {
+                installerLog = try await action { installerLog = $0 }
+                try await followUp()
+            } catch is CancellationError {
+                // The user cancelled the password dialog: nothing happened.
+                manager.refreshHelperStatus()
+                if installerLog?.isEmpty ?? true { installerLog = nil }
+            } catch let failure as FanControlHelperInstallerFailure {
+                installerLog = failure.output
+                showsInstallerLog = true
+                actionError = failure.summary
+                manager.refreshHelperStatus()
+            } catch {
+                actionError = fanControlErrorMessage(error)
+                manager.refreshHelperStatus()
             }
         }
     }

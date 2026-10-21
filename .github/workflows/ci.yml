@@ -1,0 +1,56 @@
+# FanControl CI: build with warnings as errors, the test suites, and the support-script self-test.
+# Nothing here needs root, the SMC or a helper: the tests that read a real SMC are opt-in
+# (FANCONTROL_LIVE_SMC_TESTS=1, Tests/FanControlSMCTests/LiveSMCReadTests.swift), and
+# Tools/test-support-scripts.sh runs the scripts in their no-root modes only.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # macos-26 image: Xcode 26.6 (default) with the macOS 26.5 SDK.
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+defaults:
+  run:
+    shell: bash   # -eo pipefail
+
+jobs:
+  build-and-test:
+    name: build-and-test
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Build (warnings as errors)
+        run: swift build -Xswiftc -warnings-as-errors
+      - name: Test
+        run: swift test -Xswiftc -warnings-as-errors
+
+  support-scripts:
+    name: support-scripts
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install shellcheck
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install shellcheck
+      - name: Self-test of the install scripts (no root; includes shellcheck)
+        run: Tools/test-support-scripts.sh
