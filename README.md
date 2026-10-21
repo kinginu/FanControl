@@ -14,6 +14,10 @@ wake.
 > Controlling fans by hand can make a Mac run hotter than macOS would let it. Read the
 > [safety model](#safety-model) before you use it.
 
+FanControl is used by [DynamicNotch](https://github.com/kinginu/DynamicNotch), a notch companion app
+for Apple Silicon MacBooks, which embeds it as a git submodule and ships the helper as an Xcode
+target.
+
 ## What's in the package
 
 | Product | Kind | What it does |
@@ -44,8 +48,8 @@ Supporting material:
   Intel Macs are not supported.
 - **macOS 26** or later as the deployment target, and Swift 6.0+ tools. Every target, tests
   included, builds in the Swift 6 language mode with complete strict concurrency.
-- Xcode 26 to build the helper target and a host app. The package alone builds with Command Line
-  Tools.
+- Xcode 26 (tested with 26.6) to build the helper target and a host app. The package alone builds
+  with Command Line Tools.
 - Verified hardware so far: **Mac14,9** (MacBook Pro 14", M2 Pro, two fans, 2317–6800 RPM).
   The package also handles fanless Macs, which have no `FNum` fans and are read-only, but this has
   not been tested.
@@ -246,7 +250,8 @@ The app ↔ helper XPC contract has end-to-end tests (`Tests/FanControlKitTests/
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The package has no third-party dependencies, so there is no
+THIRD-PARTY-NOTICES file.
 
 This project is not affiliated with Apple. "SMC key" names and their meanings are reverse-engineered
 community knowledge. Use at your own risk.
