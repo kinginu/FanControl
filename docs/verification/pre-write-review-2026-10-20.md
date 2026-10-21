@@ -1,6 +1,8 @@
 # SMC 書込経路の書込前レビュー（2026-10-20）
 
 > **Historical record (2026-10-20, in Japanese).** It describes the code as it was on that date; the implementation has moved on since (file names, line numbers and some behaviour differ). Current behaviour: [kit.md](../kit.md), [helper.md](../helper.md). Summary of all hardware results: [SUMMARY.md](SUMMARY.md).
+>
+> **Paths:** this record predates the standalone repository. `FanControl/…` is now the repository root; the host glue it mentions (`FanControl/DynamicNotchIntegration/…`, `PATCHES.md`, `Tools/IntegrationTypeCheck`) has since moved to the DynamicNotch app repository (`DynamicNotchApp/Sources/FanControlGlue/`, built directly by the app).
 
 対象: 実機で初めて SMC に書き込む前の、書込経路全体のコードレビュー。
 **このレビューでは SMC へは一切書き込んでいない**（ヘルパーも起動していない）。読取専用の `fanfi-probe` のみ実行した。

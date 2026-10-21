@@ -1,6 +1,8 @@
 # FanControl 多視点レビュー（2026-10-20、ワークフロー実行）
 
 > **Historical record (2026-10-20, in Japanese).** It describes the code as it was on that date; the implementation has moved on since (file names, line numbers and some behaviour differ). Current behaviour: [kit.md](../kit.md), [helper.md](../helper.md). Summary of all hardware results: [SUMMARY.md](SUMMARY.md).
+>
+> **Paths:** this record predates the standalone repository. `FanControl/…` is now the repository root; the host glue it mentions (`FanControl/DynamicNotchIntegration/…`, `PATCHES.md`, `Tools/IntegrationTypeCheck`) has since moved to the DynamicNotch app repository (`DynamicNotchApp/Sources/FanControlGlue/`, built directly by the app).
 
 7 つの視点（ヘルパーの安全性／書込・復元／スリープ復帰／XPC 接続／並行性／コアロジック／UI 統合）で各 1 エージェントがレビューし、指摘ごとに独立した反証担当 2 名が検証した（45 エージェント、読み取り専用）。19 件中 **7 件が確定**、12 件は反証されて却下。確定分の修正は別コミット。
 

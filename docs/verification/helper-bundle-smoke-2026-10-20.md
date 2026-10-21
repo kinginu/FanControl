@@ -1,6 +1,8 @@
 # ヘルパー埋め込みレシピの最小アプリ検証（2026-10-20）
 
 > **Historical record (2026-10-20, in Japanese).** It describes the code as it was on that date; the implementation has moved on since (file names, line numbers and some behaviour differ). Current behaviour: [kit.md](../kit.md), [helper.md](../helper.md). Summary of all hardware results: [SUMMARY.md](SUMMARY.md).
+>
+> **Paths:** this record predates the standalone repository. `FanControl/…` is now the repository root; the host glue it mentions (`FanControl/DynamicNotchIntegration/…`, `PATCHES.md`, `Tools/IntegrationTypeCheck`) has since moved to the DynamicNotch app repository (`DynamicNotchApp/Sources/FanControlGlue/`, built directly by the app).
 
 `docs/integration.md` §1〜§4 と `docs/helper.md` §1〜§2 の Xcode 側手順（Command Line Tool ターゲット + `-sectcreate` +
 Copy Files 2 つ）を、DynamicNotch 本体に適用する前に最小アプリ `Tools/HelperSmokeApp`（XcodeGen）で実際に `xcodebuild` して確かめた記録。
