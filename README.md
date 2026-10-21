@@ -1,5 +1,7 @@
 # FanControl
 
+[![CI](https://github.com/kinginu/FanControl/actions/workflows/ci.yml/badge.svg)](https://github.com/kinginu/FanControl/actions/workflows/ci.yml)
+
 A safety-first fan control stack for **Apple Silicon Macs**, written entirely in Swift.
 
 The app reads temperatures and fan speeds directly from the System Management Controller (SMC)
@@ -9,7 +11,7 @@ fan keys on an allowlist and values inside the fan's hardware range. It also han
 to macOS when the client goes away, on SIGTERM, and before sleep, and it repairs fan state after
 wake.
 
-> **Status: version 1.0.0 ([CHANGELOG](CHANGELOG.md)), tested on one machine.** Everything below was built and run on a
+> **Status: version 1.0.1 ([CHANGELOG](CHANGELOG.md)), tested on one machine.** Everything below was built and run on a
 > MacBook Pro Mac14,9 (M2 Pro) with macOS 26.5. Other Apple Silicon models have not been tested.
 > Controlling fans by hand can make a Mac run hotter than macOS would let it. Read the
 > [safety model](#safety-model) before you use it.
@@ -129,8 +131,12 @@ cdhash**. The app in turn pins the cdhash of the installed helper. Security cave
   the cdhash changes.
 - Do not use this mode to distribute to other people.
 
+A host app can bundle the scripts (they also run from a flat copy with `lib.sh` and
+`identifiers.sh` beside them) and put them behind an "Install Helper…" button through
+`FanControlHostActions` in FanControlUI.
+
 Details: [Support/manual-install/README.md](Support/manual-install/README.md),
-[docs/helper.md](docs/helper.md) §6.
+[docs/helper.md](docs/helper.md) §6 (including "Installing from the app").
 
 ### 4. Control
 

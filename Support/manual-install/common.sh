@@ -5,17 +5,25 @@
 # ManualInstallMode.swift (checked by FanControlXPCTests/ManualInstallScriptConsistencyTests).
 #
 # Generic helpers (logging, die, run, parse_cli, require_root, resolve_app, plist and codesign
-# helpers) come from ../lib.sh; the identifiers (HELPER_ID, LABEL, APP_BUNDLE_ID) from
-# ../identifiers.sh: built-in defaults, overridable with FANCONTROL_HELPER_IDENTIFIER /
+# helpers) come from ../lib.sh (or ./lib.sh in a flat copy); the identifiers (HELPER_ID, LABEL,
+# APP_BUNDLE_ID) from ../identifiers.sh (or ./identifiers.sh): built-in defaults, overridable with FANCONTROL_HELPER_IDENTIFIER /
 # FANCONTROL_MACH_SERVICE_NAME / FANCONTROL_CLIENT_BUNDLE_IDENTIFIER. Given an app, the scripts
 # read them from the helper's embedded Info.plist instead (load_identifiers_from_app), so a host
 # with its own identifiers needs no edits here. docs/helper.md "Configuring identifiers".
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Two layouts: the source tree (Support/lib.sh next to Support/manual-install/) and a flat copy
+# with lib.sh and identifiers.sh beside these scripts, as a host app bundles them (DynamicNotch:
+# Contents/Resources/manual-install/; docs/helper.md "Bundling the scripts in the app").
+if [[ -f "${SCRIPT_DIR}/lib.sh" ]]; then
+    FC_LIB_DIR="${SCRIPT_DIR}"
+else
+    FC_LIB_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+fi
 # shellcheck source-path=SCRIPTDIR source-path=SCRIPTDIR/.. source=../lib.sh
-source "${SCRIPT_DIR}/../lib.sh"
+source "${FC_LIB_DIR}/lib.sh"
 # shellcheck source-path=SCRIPTDIR source-path=SCRIPTDIR/.. source=../identifiers.sh
-source "${SCRIPT_DIR}/../identifiers.sh"
+source "${FC_LIB_DIR}/identifiers.sh"
 
 HELPER_IN_APP="Contents/MacOS/FanControlHelper"               # helperExecutableName inside the app
 ENV_KEY="FANCONTROL_CLIENT_REQUIREMENT"                       # clientRequirementEnvironmentKey

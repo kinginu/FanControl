@@ -35,6 +35,7 @@ while (( $# > 0 )); do
 done
 if [[ -z "$WORK" ]]; then
     WORK="$(mktemp -d "${TMPDIR:-/tmp}/fanfi-selftest.XXXXXX")"
+    WORK="$(cd "$WORK" && pwd -P)"   # resolve_app canonicalises (/var → /private/var)
 else
     mkdir -p "$WORK"
     WORK="$(cd "$WORK" && pwd -P)"
@@ -374,6 +375,17 @@ expect_fail "install.sh refuses a non-bundle" 1 "no Contents/Info.plist" "$MANUA
 expect_output "uninstall.sh --dry-run with nothing installed" "Nothing to remove." "$MANUAL/uninstall.sh" --dry-run --app "$FAKE_APP"
 expect_output "uninstall.sh --dry-run reads the label from the app" "Label: $T_HELPER_ID" "$MANUAL/uninstall.sh" -n "$FAKE_APP"
 expect_fail "status.sh reports a missing installation" 1 "missing  /Library/LaunchDaemons/$T_HELPER_ID.plist" "$MANUAL/status.sh" "$FAKE_APP"
+
+# Flat copy, as a host app bundles the scripts (lib.sh and identifiers.sh beside them;
+# DynamicNotch: Contents/Resources/manual-install/). Its parent holds nothing else, so the
+# scripts cannot fall back to ../lib.sh.
+FLAT="$FX/flat/manual-install"
+mkdir -p "$FLAT"
+cp "$MANUAL"/* "$SUPPORT/lib.sh" "$SUPPORT/identifiers.sh" "$FLAT/"
+expect_output "flat copy: install.sh --dry-run pins the app cdhash" "cdhash H\"$APP_HASH\"" "$FLAT/install.sh" --dry-run "$FAKE_APP"
+expect_output "flat copy: install.sh --dry-run uses the bundled template" "<string>$T_HELPER_ID</string>" "$FLAT/install.sh" -n "$FAKE_APP"
+expect_output "flat copy: uninstall.sh --dry-run" "Label: $T_HELPER_ID" "$FLAT/uninstall.sh" -n "$FAKE_APP"
+expect_fail "flat copy: status.sh reports a missing installation" 1 "missing  /Library/LaunchDaemons/$T_HELPER_ID.plist" "$FLAT/status.sh" "$FAKE_APP"
 
 # embed-helper-config.sh on a copy of the app
 EMB="$FX/Embed.app"

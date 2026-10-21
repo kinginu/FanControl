@@ -5,6 +5,27 @@ All notable changes to this package are documented here. The format follows
 [Semantic Versioning](https://semver.org/). The XPC contract between the app and the helper has
 its own number, `FanControlHelperConstants.protocolVersion`, which is listed with each release.
 
+## [1.0.1] — 2026-10-21
+
+Helper XPC protocol **version 2** (unchanged; no helper rebuild needed for the protocol).
+
+### Added
+
+- `FanControlHostActions.installHelper` / `.uninstallHelper` (FanControlUI): a host that installs
+  the helper itself in manual mode gets **Install Helper…** / **Uninstall Helper…** in the General
+  tab, live installer output, and "Check Again" after a successful install; the rejection texts
+  point at the button. `FanControlHelperInstallerFailure` carries a failed run's summary and
+  output. Without the closures the pane is unchanged.
+- The manual-install scripts also run from a flat copy (`lib.sh` and `identifiers.sh` next to
+  them), so a host can bundle them in its app (`docs/helper.md` §6 "Installing from the app").
+- CI (GitHub Actions, `macos-26`, Xcode 26.6): `swift build` and `swift test` with warnings as
+  errors, and the support-script self-test.
+
+### Fixed
+
+- `Tools/test-support-scripts.sh` resolves its temporary directory (`/var` → `/private/var`), so
+  three path comparisons no longer fail.
+
 ## [1.0.0] — 2026-10-21
 
 First release. Helper XPC protocol **version 2**.
@@ -76,4 +97,5 @@ First release. Helper XPC protocol **version 2**.
   control") is the way out.
 - Many sensor keys have no known name and show up as "Sensor XXXX".
 
+[1.0.1]: https://github.com/kinginu/FanControl/releases/tag/v1.0.1
 [1.0.0]: https://github.com/kinginu/FanControl/releases/tag/v1.0.0
